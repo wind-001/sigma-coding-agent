@@ -222,9 +222,8 @@ class AgentLoop:
     ) -> tuple[AssistantMessage, list[ParsedCall]]:
         """消费事件流，聚合成一条 assistant 消息与解析后的工具调用。
 
-        ``openai_compat.py`` 明确把这个聚合留给 loop：
-        provider 层只保证"分片被正确按 index 归属"，
-        拼成消息是这里的职责。
+        provider 层（``sigma_ai.openai``）明确把这个聚合留给 loop：
+        它只保证"分片被正确按 index 归属"，拼成消息是这里的职责。
         """
         text_parts: list[str] = []
         text_signature: str | None = None

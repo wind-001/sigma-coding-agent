@@ -282,13 +282,17 @@ sigma/
 │   │   ├── base.py                # BaseProvider（ABC）
 │   │   ├── messages.py            # LLM 层：四个消息模型 + 内容块（4.0.1 / 4.0.2）
 │   │   ├── events.py              # StreamEvent 判别联合
-│   │   ├── openai_compat.py       # OpenAI 兼容实现（P1 唯一的 provider）
+│   │   ├── openai/                # OpenAI 兼容协议（2026-09-20 从单文件拆开）
+│   │   │   ├── protocol.py        #   finish_reason 映射 / usage / 错误体解析
+│   │   │   ├── convert.py         #   LLM 消息 → 请求体
+│   │   │   ├── sse.py             #   SSE 分帧与行解析
+│   │   │   └── provider.py        #   OpenAICompatProvider
 │   │   ├── anthropic.py           # P4 之后
 │   │   └── fake.py                # 确定性回放（见 7.2）
 │   ├── sigma_agent/
-│   │   ├── base.py                # BaseLoop / BaseTool（ABC）
+│   │   ├── base.py                # BaseTool（ABC）；BaseLoop 已于 2026-09-20 删除
 │   │   ├── agent_messages.py      # agent 层：AgentMessage（ABC）+ 注册表 + convert_to_llm（4.0.3–4.0.6）
-│   │   ├── loop.py                # AgentLoop —— BaseLoop 的唯一子类
+│   │   ├── loop.py                # AgentLoop —— 唯一的循环实现（无基类）
 │   │   ├── registry.py            # 工具注册表 + 热重载
 │   │   ├── hooks.py               # 钩子总线（BaseHook ABC）
 │   │   ├── checkpoint.py          # 影子 git

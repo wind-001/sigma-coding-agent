@@ -35,7 +35,7 @@ from sigma_agent.agent_messages import (
     ToolResultAgentMessage,
 )
 from sigma_agent.types import TurnResult
-from sigma_ai.openai_compat import OpenAICompatProvider
+from sigma_ai.openai import OpenAICompatProvider
 
 EXIT_OK = 0
 EXIT_HARNESS_ERROR = 2

@@ -47,15 +47,15 @@ from sigma_ai.messages import (
     Usage,
     UserMessage,
 )
-from sigma_ai.openai_compat import (
-    OpenAICompatProvider,
+from sigma_ai.openai import OpenAICompatProvider
+from sigma_ai.openai.convert import message_to_openai
+from sigma_ai.openai.protocol import (
     UnmappedFinishReason,
     _error_from_response,
     _map_finish_reason,
     _parse_usage,
-    message_to_openai,
-    parse_sse_line,
 )
+from sigma_ai.openai.sse import parse_sse_line
 
 # ---------------------------------------------------------------------------
 # 测试替身

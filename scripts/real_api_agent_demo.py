@@ -46,7 +46,7 @@ from sigma_agent.loop import AgentLoop  # noqa: E402
 from sigma_agent.registry import ToolRegistry  # noqa: E402
 from sigma_ai.base import CancelToken, SamplingParams  # noqa: E402
 from sigma_ai.messages import SystemMessage, UserMessage  # noqa: E402
-from sigma_ai.openai_compat import OpenAICompatProvider  # noqa: E402
+from sigma_ai.openai import OpenAICompatProvider  # noqa: E402
 from sigma_tools.read import ReadTool  # noqa: E402
 from sigma_tools.write import WriteTool  # noqa: E402
 

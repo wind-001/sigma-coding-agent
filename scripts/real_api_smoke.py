@@ -2,7 +2,7 @@
 
 这个脚本的目的**不是**"聊一句看看能不能通"。
 
-``core/sigma_ai/openai_compat.py`` 的 docstring 结尾写着：
+``core/sigma_ai/openai/provider.py`` 的 docstring 结尾写着：
 
     > 批次 1 无法验证的项（详规第 9 节 R2–R6）
     > 错误码映射的真实性 / SSE 分帧的健壮性 / ``finish_reason`` 的实际取值 /
@@ -65,7 +65,8 @@ from sigma_ai.messages import (
     Usage,
     UserMessage,
 )
-from sigma_ai.openai_compat import OpenAICompatProvider, UnmappedFinishReason
+from sigma_ai.openai import OpenAICompatProvider
+from sigma_ai.openai.protocol import UnmappedFinishReason
 
 # ---------------------------------------------------------------------------
 # 常用厂商预设。--preset 选一个即可，省得每次敲 base_url。

@@ -152,7 +152,7 @@ def classify_http_status(status_code: int, message: str = "") -> ErrorCode:
     """把 HTTP 状态码映射到错误码。
 
     这是**兜底**路径：优先走厂商特定的映射函数（如
-    ``openai_compat.classify_response``），认不出时用这个。
+    ``sigma_ai.openai.protocol`` 里的 HTTP 状态码分类），认不出时用这个。
 
     ``400`` 需结合 ``message`` 判断是否上下文超限——很多厂商用它表示
     "prompt too long"，而 OpenAI 兼容协议的正式超限码是 ``400`` +
