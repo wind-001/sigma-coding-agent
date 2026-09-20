@@ -11,6 +11,9 @@ venv/
 .mypy_cache/
 .pytest_cache/
 
+# 手动试验用的演示工作区（scripts/make_demo_workspace.py 生成）
+demo/
+
 # 环境变量与密钥：绝不进版本库
 # （2026-09-20 补：此前只忽略 .venv，.env 会**被提交**。
 #   scripts/real_api_smoke.py 提示用户可改用 .env 存 key，
