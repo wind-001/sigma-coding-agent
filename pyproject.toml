@@ -19,7 +19,6 @@ dev = [
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "import-linter>=2.0",
-    "ruff>=0.5",
 ]
 
 [project.scripts]
@@ -43,9 +42,13 @@ python_version = "3.12"
 mypy_path = "core"
 strict = true
 
-[tool.ruff]
-line-length = 100
-target-version = "py312"
+# 三道门禁 = lint-imports / mypy / pytest。
+#
+# ruff 已于 2026-09-20 移除（本人决定：追求大道至简，不必要的功能不要）。
+# 移除理由不只是"少一个工具"：ruff **从未进 CI**，
+# 却在 P1-批次1.5-详规 的 G19 里被列为门槛——
+# 那是"声明的门槛大于实际执行的门槛"，属于名义约束。
+# 与其留一个名义门槛，不如删掉。
 
 # 分层依赖契约。列表自上而下 = 由高到低，
 # 低层不允许引用高层。
