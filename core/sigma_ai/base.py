@@ -93,6 +93,26 @@ class CancelToken(ABC):
         raise NotImplementedError
 
 
+class NeverCancelled(CancelToken):
+    """永不取消的取消令牌。
+
+    P1 的默认实现——CLI 还没有中断处理（属 P3，与 steering 一起做）。
+
+    **它存在的意义是让调用方不必各写一遍。** 测试、``sdk``、demo 脚本
+    三处都需要"没有取消"这个语义，各写一份的结果是三份略有差异的实现，
+    而差异会在某一天变成"测试通过但 CLI 崩了"。
+
+    放在与 ``CancelToken`` 同处，是因为它就是这条抽象的最简实现——
+    与 ``FakeProvider`` 之于 ``BaseProvider`` 同理。
+    """
+
+    def is_cancelled(self) -> bool:
+        return False
+
+    def raise_if_cancelled(self) -> None:
+        return None
+
+
 class BaseProvider(ABC):
     """所有 Provider 的抽象基类。
 
