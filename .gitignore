@@ -10,7 +10,14 @@ venv/
 # 工具缓存
 .mypy_cache/
 .pytest_cache/
-.ruff_cache/
+
+# 环境变量与密钥：绝不进版本库
+# （2026-09-20 补：此前只忽略 .venv，.env 会**被提交**。
+#   scripts/real_api_smoke.py 提示用户可改用 .env 存 key，
+#   所以这条必须先堵上。）
+.env
+.env.*
+!.env.example
 
 # sigma 运行时数据：会话树与影子 git 仓库
 # 见 docs/architecture.md 第 6.2 节
