@@ -5,8 +5,8 @@
 目标不是功能数量，而是**每一个设计决定都能被追问而不塌**。
 所以这个仓库里，约束是被 CI 强制的，指标是有基线的，边界是写明的。
 
-> 当前状态：**P0 骨架完成；P1 计划待审阅，尚未开工。**
-> 现阶段可运行的只有三道自检门禁和一个占位 CLI。
+> 当前状态：**P0 骨架完成；P1 计划已审阅通过（Q0–Q4 已拍板），批次 0 已完成，批次 1 待开工。**
+> 现阶段可运行的是三道自检门禁与一个占位 CLI；项目 `.venv` 已就绪，门禁可在其中复现。
 
 ## 已拍板的决策
 
@@ -15,6 +15,12 @@
 | a1 | 产品壳范围与草图对齐：**砍掉 Slack Bot / Web UI / RPC Mode** | 2026-09-20 |
 | a2 | 所有抽象接口**一律用继承制（`abc.ABC`）**，不用 `typing.Protocol`；数据载体用 Pydantic `BaseModel` | 2026-09-20 |
 | a3 | 首个 Provider 做 **OpenAI 兼容协议**（覆盖 DeepSeek / Kimi / GLM / 通义 / Ollama） | 2026-09-20 |
+| Q0 | P1 评测仓库用**自造迷你仓库** | 2026-09-20 |
+| Q1 | 内置工具 **5 个**：`read` / `write` / `edit` / `bash` / `grep` | 2026-09-20 |
+| Q2 | `truncate.py` 截断部分**提前到 P1**（不分页、不落盘） | 2026-09-20 |
+| Q3 | 首个被测模型 **DeepSeek `deepseek-chat`** | 2026-09-20 |
+| Q4 | `-p` 退出码：**0 = 正常结束，非 0 = harness 自身失败** | 2026-09-20 |
+| R2 | 时间预算：**8h/周全部给 sigma**（与 interview-agent 无并行关系） | 2026-09-20 |
 
 ---
 
@@ -55,7 +61,7 @@ sigma_ai      → （无内部依赖）
 | 层 | 职责 |
 | --- | --- |
 | `sigma` | 产品壳：CLI / REPL / 一次性模式 / SDK 入口 |
-| `sigma_tools` | 内置工具：read / write / edit / bash |
+| `sigma_tools` | 内置工具：read / write / edit / bash / grep |
 | `sigma_session` | 会话树 · 上下文组装 · 压缩 · 扩展装配 |
 | `sigma_agent` | agent loop · 工具注册表 · 钩子总线 · checkpoint |
 | `sigma_ai` | Provider 抽象 · 流式事件 · 用量 |
@@ -92,10 +98,10 @@ docs/           架构方案、调研笔记、计划、决策记录
 
 | 文件 | 内容 |
 | --- | --- |
-| `docs/architecture.md` | 架构方案 v1.1：六项决策、接口设计、可验证性设计、分阶段计划 |
+| `docs/architecture.md` | 架构方案 v1.3：六项决策、消息模型两层结构、接口设计、可验证性设计、分阶段计划 |
 | `docs/pi-harness研究笔记.md` | Pi Agent Harness 调研，含来源可信度分级 |
 | `docs/plans/` | 各阶段的实施计划与验收证据 |
-| `docs/decisions/` | 架构决策记录（ADR）。**D1–D6 的「判断依据」与「我接受的代价」两栏待本人填写** |
+| `docs/decisions/` | 架构决策记录（ADR）。**D1–D6 的「判断依据」与「我接受的代价」两栏待本人填写**；集中填写清单见 `docs/decisions/_待填清单.md` |
 | `AGENTS.md` | 本项目的开发约定 |
 
 ## 为什么有这些约束
