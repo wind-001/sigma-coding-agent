@@ -176,8 +176,15 @@ class OpenAICompatProvider(BaseProvider):
         text_signature: str | None = None
         usage: Usage | None = None
         stop_reason: str = "stop"
-        # index -> {id, name, arguments}
-        tool_acc: dict[int, dict[str, Any]] = {}
+        # 注意：**本层不累积 tool_calls**。
+        #
+        # 2026-09-20 删掉了一份从未被使用的累积（原 `tool_acc`）——
+        # 它每次流结束都被 `del` 掉，而真正的拼装由 agent 层用
+        # `sigma_ai.tool_calls.ToolCallAssembler` 完成。
+        #
+        # 协议层只负责把分片翻译成带 `index` 的事件：
+        # **"按 index 归属"这个信息在事件里已经带上了**，不需要在这里再存一份。
+        # 两份累积意味着两处可错的代码，而多工具 index 交错正是最容易写错的地方。
 
         try:
             async with self._client.stream(
@@ -227,22 +234,12 @@ class OpenAICompatProvider(BaseProvider):
                             )
 
                         for call in delta.get("tool_calls") or []:
-                            index = int(call.get("index", 0))
-                            slot = tool_acc.setdefault(
-                                index, {"id": None, "name": None, "arguments": ""}
-                            )
-                            if call.get("id"):
-                                slot["id"] = call["id"]
                             function = call.get("function") or {}
-                            if function.get("name"):
-                                slot["name"] = function["name"]
-                            arguments_delta = function.get("arguments") or ""
-                            slot["arguments"] += arguments_delta
                             yield ToolCallDelta(
-                                index=index,
+                                index=int(call.get("index", 0)),
                                 id=call.get("id"),
                                 name=function.get("name"),
-                                arguments_delta=arguments_delta,
+                                arguments_delta=function.get("arguments") or "",
                             )
 
                         finish = choice.get("finish_reason")
@@ -261,11 +258,6 @@ class OpenAICompatProvider(BaseProvider):
             return
 
         yield StopEvent(stop_reason=stop_reason)  # type: ignore[arg-type]
-
-        # 说明：``tool_acc`` 在此处已累积完整，但把它拼成
-        # ``AssistantMessage`` 的工作**不在这里**——那是 loop 的职责
-        # （批次 4）。本层只保证分片被正确按 index 归属。
-        del tool_acc
 
     def stream(
         self,

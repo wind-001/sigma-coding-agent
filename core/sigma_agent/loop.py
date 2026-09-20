@@ -57,27 +57,18 @@ from sigma_ai.messages import (
     ToolCallBlock,
     Usage,
 )
+from sigma_ai.tool_calls import AssembledCall, ToolCallAssembler
 
 if TYPE_CHECKING:
     from sigma_ai.base import BaseProvider
 
 
-@dataclass
-class ParsedCall:
-    """一个工具调用的解析结果。
-
-    ``call is None`` 表示**解析失败**（arguments 不是合法 JSON，或缺少 name）。
-    这时 ``failure`` 是给模型看的错误说明。
-
-    为什么不把失败也塞进 ``ToolCallBlock``（比如 arguments 放原始文本）：
-    那样错误文案会变成"缺字段 __raw__"这类误导性信息，
-    而**根因（JSON 非法）会被掩盖**。失败就是失败，不要伪装成一次合法调用。
-    """
-
-    index: int
-    call: ToolCallBlock | None
-    raw_arguments: str
-    failure: str = ""
+# `ParsedCall` 已于 2026-09-20 删除：它的字段与协议层的
+# `sigma_ai.tool_calls.AssembledCall` 几乎完全一样，
+# 而**同一个概念不该有两份定义**。
+#
+# 详规子项 C：拼装逻辑收进协议层（那是 wire protocol 的知识），
+# agent 层只负责"这个调用该不该执行、失败了怎么办"。
 
 
 @dataclass
@@ -176,16 +167,14 @@ class AgentLoop:
             # 第 7 步：逐个追加工具结果。
             # ``strict=True`` 要求数量严格相等——少一个立刻抛，不静默放过。
             for item, result in zip(calls, results, strict=True):
-                if item.call is None:
-                    # 解析失败的调用：用 index 定位，构造一条说明性结果。
-                    # 它同样要进上下文，模型才能知道"上一次调用没被接受"。
-                    produced.append(
-                        _failure_message(item, self._clock())
-                    )
+                if not item.ok:
+                    # 拼装失败的调用：构造一条说明性结果，让模型知道
+                    # **它上一次的调用没有被接受**（否则它会以为自己已经调过了）
+                    produced.append(_failure_message(item, self._clock()))
                     continue
                 produced.append(
                     ToolResultAgentMessage.from_result(
-                        item.call, result, timestamp=self._clock()
+                        item.to_block(), result, timestamp=self._clock()
                     )
                 )
 
@@ -219,7 +208,7 @@ class AgentLoop:
 
     async def _stream_model(
         self, messages: list[LlmMessage]
-    ) -> tuple[AssistantMessage, list[ParsedCall]]:
+    ) -> tuple[AssistantMessage, list[AssembledCall]]:
         """消费事件流，聚合成一条 assistant 消息与解析后的工具调用。
 
         provider 层（``sigma_ai.openai``）明确把这个聚合留给 loop：
@@ -227,7 +216,10 @@ class AgentLoop:
         """
         text_parts: list[str] = []
         text_signature: str | None = None
-        slots: dict[int, dict[str, Any]] = {}
+        # 分片累积交给协议层的装配器——**这里不再自己写一遍**。
+        # 那套逻辑（按 index 归属、跨片拼接、JSON 失败原因）是 wire protocol 的知识，
+        # 归 `sigma_ai.tool_calls` 管（详规子项 C）。
+        assembler = ToolCallAssembler()
         usage: Usage | None = None
         stop_reason: str = "stop"
         error_messages: list[str] = []
@@ -244,14 +236,7 @@ class AgentLoop:
                 if event.text_signature is not None:
                     text_signature = event.text_signature
             elif isinstance(event, ToolCallDelta):
-                slot = slots.setdefault(
-                    event.index, {"id": None, "name": None, "arguments": ""}
-                )
-                if event.id:
-                    slot["id"] = event.id
-                if event.name:
-                    slot["name"] = event.name
-                slot["arguments"] += event.arguments_delta
+                assembler.feed(event)
             elif isinstance(event, UsageEvent):
                 usage = event.usage
             elif isinstance(event, StopEvent):
@@ -259,15 +244,17 @@ class AgentLoop:
             elif isinstance(event, ErrorEvent):
                 error_messages.append(f"{event.error.code}: {event.error.message}")
 
-        calls = [_parse_call(index, slots[index]) for index in sorted(slots)]
+        calls = assembler.finish()
 
         blocks: list[ContentBlock] = []
         text = "".join(text_parts)
         if text:
             blocks.append(TextBlock(text=text, text_signature=text_signature))
         for item in calls:
-            if item.call is not None:
-                blocks.append(item.call)
+            if item.ok:
+                # 只有拼装成功的才进 assistant 消息——**失败的调用不该伪装成
+                # 一次合法调用**（理由见 AssembledCall.to_block 的 docstring）
+                blocks.append(item.to_block())
 
         assistant = AssistantMessage(
             content=blocks,
@@ -284,7 +271,7 @@ class AgentLoop:
     # 第 5、6 步：校验并执行整批
     # ------------------------------------------------------------------
 
-    async def _execute_batch(self, calls: list[ParsedCall]) -> list[ToolResult]:
+    async def _execute_batch(self, calls: list[AssembledCall]) -> list[ToolResult]:
         """执行一批工具调用。
 
         返回结果**与 ``calls`` 一一对应、顺序一致**（门槛 G27）。
@@ -300,46 +287,57 @@ class AgentLoop:
         planned: list[_Planned] = []
 
         for position, item in enumerate(calls):
-            # 解析失败：直接给模型一条说明，不执行任何工具
-            if item.call is None:
+            # 拼装失败（缺 name 或 JSON 非法）：直接给模型一条说明，不执行任何工具。
+            # 这一级校验由协议层的 ToolCallAssembler 判定（详规子项 C）。
+            if not item.ok:
                 results[position] = ToolResult(
-                    content=[TextBlock(text=item.failure)],
+                    content=[TextBlock(text=item.parse_error)],
                     details={"index": item.index, "raw_arguments": item.raw_arguments},
                     is_error=True,
                 )
                 continue
 
+            # 拼装成功时 name / arguments 必然非空（AssembledCall 的契约），
+            # 但类型上它们是 `| None`——这里**显式收窄而不是断言**，
+            # 让 mypy 继续参与检查（断言会让类型检查在这里失效）。
+            tool_name = item.name or ""
+            arguments = item.arguments or {}
+
             try:
-                tool = self._registry.get(item.call.name)
+                tool = self._registry.get(tool_name)
             except KeyError as exc:
                 results[position] = ToolResult(
                     content=[TextBlock(text=str(exc))],
-                    details={"tool_name": item.call.name},
+                    details={"tool_name": tool_name},
                     is_error=True,
                 )
                 continue
 
             # 第 5 步：schema 校验。这是**参照 Pi 补进来的一步**（详规 3.8.1）。
             try:
-                validated = tool.params.model_validate(item.call.arguments)
+                validated = tool.params.model_validate(arguments)
             except ValidationError as exc:
                 results[position] = ToolResult(
                     content=[
                         TextBlock(
                             text=(
-                                f"工具 {item.call.name} 的参数不符合 schema：\n{exc}\n"
-                                f"你给的参数是：{json.dumps(item.call.arguments, ensure_ascii=False)}"
+                                f"工具 {tool_name} 的参数不符合 schema：\n{exc}\n"
+                                f"你给的参数是：{json.dumps(arguments, ensure_ascii=False)}"
                             )
                         )
                     ],
-                    details={"tool_name": item.call.name},
+                    details={"tool_name": tool_name},
                     is_error=True,
                 )
                 continue
 
             planned.append(
                 _Planned(
-                    position=position, call=item.call, args=validated, tool=tool
+                    position=position,
+                    # to_block() 只在拼装成功时可调用——上面已确保这一点
+                    call=item.to_block(),
+                    args=validated,
+                    tool=tool,
                 )
             )
 
@@ -416,76 +414,33 @@ def _text_of(assistant: AssistantMessage) -> str:
     return "".join(parts)
 
 
-def _failure_message(item: ParsedCall, timestamp: int) -> ToolResultAgentMessage:
-    """为"解析失败的工具调用"构造一条 agent 层消息。
+def _failure_message(item: AssembledCall, timestamp: int) -> ToolResultAgentMessage:
+    """为「拼装失败的工具调用」构造一条 agent 层消息。
 
     为什么要构造消息、而不是直接丢掉：
     模型需要知道**它上一次的调用没有被接受**，否则它会以为自己已经调过了，
     于是要么重复调用，要么基于"工具没返回"继续往下走。
-    这与 G14 的"未知消息类型 warning + 丢弃"是不同场景：
+
+    这与 G14 的「未知消息类型 warning + 丢弃」是**不同场景**：
     那里丢的是**别人的**消息，这里回的是**模型自己刚发出来的**调用。
     """
     return ToolResultAgentMessage(
         tool_call_id=f"unparsed_{item.index}",
         tool_name="(unparsed)",
-        content=[TextBlock(text=item.failure)],
+        content=[TextBlock(text=item.parse_error)],
         details={"raw_arguments": item.raw_arguments},
         is_error=True,
         timestamp=timestamp,
     )
 
 
-def _parse_call(index: int, slot: dict[str, Any]) -> ParsedCall:
-    """把累积的分片拼成一次调用，或记录失败原因。
-
-    **两级失败都（JSON / 缺 name）在这里变成失败原因字符串**，
-    真正的 schema 校验在 ``_execute_batch`` 里做——那里才拿得到工具的 ``params``。
-    """
-    raw = str(slot.get("arguments") or "")
-    name = str(slot.get("name") or "")
-    call_id = str(slot.get("id") or f"call_{index}")
-
-    if not name:
-        return ParsedCall(
-            index=index,
-            call=None,
-            raw_arguments=raw,
-            failure=(
-                f"第 {index} 个工具调用没有 name 字段，无法确定要调用哪个工具。"
-                f"原始内容（前 200 字符）：{raw[:200]}"
-            ),
-        )
-
-    try:
-        parsed = json.loads(raw) if raw.strip() else {}
-    except json.JSONDecodeError as exc:
-        return ParsedCall(
-            index=index,
-            call=None,
-            raw_arguments=raw,
-            failure=(
-                f"工具 {name} 的 arguments 不是合法 JSON（{exc}）。"
-                f"原始内容（前 300 字符）：{raw[:300]}\n"
-                "请重新输出**完整且合法**的 JSON 参数。"
-            ),
-        )
-
-    if not isinstance(parsed, dict):
-        return ParsedCall(
-            index=index,
-            call=None,
-            raw_arguments=raw,
-            failure=(
-                f"工具 {name} 的 arguments 必须是 JSON 对象，实际是 "
-                f"{type(parsed).__name__}。原始内容：{raw[:300]}"
-            ),
-        )
-
-    return ParsedCall(
-        index=index,
-        call=ToolCallBlock(id=call_id, name=name, arguments=parsed),
-        raw_arguments=raw,
-    )
+# `_parse_call` 已于 2026-09-20 删除——它的职责（分片拼装 + JSON 一级校验）
+# 整体迁到了 `sigma_ai.tool_calls.ToolCallAssembler`。
+#
+# 迁移的理由不只是"把代码搬个地方"：那份逻辑原本**存在两份实现**
+# （provider 内部一份、这里一份），而**多工具 index 交错到达**
+# 恰恰是最容易写错的地方。收进协议层后只剩一份，
+# 且 provider 与 loop 共用同一个类（详规子项 C）。
 
 
 def _as_result(outcome: ToolResult | BaseException, tool_name: str) -> ToolResult:
