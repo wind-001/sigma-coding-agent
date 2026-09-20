@@ -36,20 +36,16 @@ from sigma_agent.agent_messages import (
 )
 from sigma_agent.types import TurnResult
 from sigma_ai.openai import OpenAICompatProvider
+from sigma_ai.registry import builtin_providers
 
 EXIT_OK = 0
 EXIT_HARNESS_ERROR = 2
 EXIT_INTERRUPTED = 130
 
-PRESETS: dict[str, tuple[str, str]] = {
-    # 名称: (base_url, 默认 model)
-    "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
-    "moonshot": ("https://api.moonshot.cn/v1", "moonshot-v1-8k"),
-    "zhipu": ("https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
-    "dashscope": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
-    "ollama": ("http://localhost:11434/v1", "qwen2.5:7b"),
-}
-
+# provider 列表**不在这一层**——它属于协议层（`sigma_ai.registry`）。
+# 2026-09-20 重构子项 E：此前这份列表硬编码在这里，那是分层错误——
+# 换一个入口（直接调 sdk.run_task、评测运行器）就得再抄一份。
+# 现在这里只留"默认用哪个"这一个**产品决策**。
 DEFAULT_PRESET = "deepseek"
 
 
@@ -66,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--preset",
-        choices=sorted(PRESETS),
+        choices=builtin_providers().names(),
         default=None,
         help=f"厂商预设，默认 {DEFAULT_PRESET}",
     )
@@ -103,10 +99,10 @@ def _resolve_config(
     **来源必须打出来**——否则"改了 .env 却没生效"（因为环境变量赢了）
     会变成一个纯靠猜的问题。
     """
-    preset = args.preset or DEFAULT_PRESET
-    preset_url, preset_model = PRESETS[preset]
-    base_url = args.base_url or os.environ.get("SIGMA_BASE_URL") or preset_url
-    model = args.model or os.environ.get("SIGMA_MODEL") or preset_model
+    preset_name = args.preset or DEFAULT_PRESET
+    spec = builtin_providers().resolve(preset_name)
+    base_url = args.base_url or os.environ.get("SIGMA_BASE_URL") or spec.base_url
+    model = args.model or os.environ.get("SIGMA_MODEL") or spec.default_model
     api_key, key_source = resolve_api_key(explicit=args.api_key)
     return base_url, model, api_key, key_source
 
