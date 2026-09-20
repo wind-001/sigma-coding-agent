@@ -341,6 +341,281 @@ Pi 在这一层的立场很明确：**"最小系统提示词 + 可扩展性"这�
 
 ---
 
+## 9.5 消息模型：两层结构（**一手源码，可信度：高**）
+
+> **补充说明（2026-09-20 晚）**：本节是**直接解包 npm 包读 `.d.ts` 得到的**，
+> 不是二手资料转述。包版本 `0.86.0`（源码包名见 15 节）。
+> 补充动机：原文只记了 `convertToLlm` 这个名字，**完全没有记它服务的那个两层结构**——
+> 这是本笔记此前最大的一个实质缺口，因为它是理解 Pi 消息设计的关键。
+
+### 9.5.1 核心结论：消息分两层，中间一层单向降级
+
+```
+agent 层    AgentMessage  =  Message | CustomAgentMessages[keyof CustomAgentMessages]
+                             ↑ 可以装任何东西（LLM 消息 + 应用自定义消息）
+                             │
+                             │  convertToLlm(messages): Message[]      ← 单向降级
+                             ↓
+LLM 层      Message        =  SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
+```
+
+**两个类型不是同一个东西，用途完全不同**：
+
+| 层 | 类型 | 归属 | 谁在用 | 特征 |
+| --- | --- | --- | --- | --- |
+| agent 层 | `AgentMessage` | `pi-agent-core` | agent loop、会话树、扩展 | 开放联合，可无限扩展 |
+| LLM 层 | `Message` | `pi-ai` | provider 适配层 | 封闭联合，严格对应 wire protocol |
+
+**这一点的价值**：会话里存的东西**不等于**发给模型的东西。两者之间隔着一个显式转换，
+所以"存了 UI 专属消息但模型看不见"是免费得到的，不需要额外机制。
+
+### 9.5.2 LLM 层：四个具体类型，没有基类
+
+**`Message` 不是抽象类，是四个 interface 的联合。没有基类、没有继承树。**
+
+```typescript
+export type Message = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage;
+```
+
+四个类型各自独立，靠 `role` 字段区分：`"system"` / `"user"` / `"assistant"` / `"toolResult"`。
+
+**注意 `role` 是四个值，不是三个。** 工具结果是**独立角色**（`toolResult`），
+不是塞在 assistant 消息里的一个内容块。字段：
+
+```typescript
+export type ToolResultMessage<TDetails = JsonValue> = {
+    role: "toolResult";
+    toolCallId: string;
+    toolName: string;
+    content: (TextContent | ImageContent)[];
+    details?: JsonRepresentation<TDetails>;
+    usage?: Usage;
+    isError: boolean;
+    timestamp: number;
+}
+```
+
+`details` 的泛型约束 `IsJsonCompatible<TDetails> extends true ? {...} : never`
+是一个类型体操：**详情对象不符合 JSON 约束时整个类型变成 `never`**，
+从而在编译期阻止塞入不可序列化的东西。这个约束在 Python 里要靠运行时校验补。
+
+**`SystemMessage` 承担的不只是提示词，还有工具声明**：
+
+```typescript
+export interface SystemMessage {
+    role: "system";
+    content: string | TextContent[];
+    sections?: Record<string, string | null>;   // 具名提示词段落，可增删改
+    toolsAdded?: Tool[];                        // 从这一点开始可用的工具
+    toolsRemoved?: ToolReference[];             // 从这一点开始失效的工具
+    timestamp: number;
+}
+```
+
+源码注释写得很清楚：**首条 system 消息是基线提示词，之后的 system 消息在改它**
+（`content` 追加指令，`sections` 按名替换或删除段落，`toolsAdded/Removed` 改工具集）。
+**按顺序重放所有 system 消息，就得到当前提示词与工具集。**
+
+这是"会话树 + compaction"那套设计能成立的地基：系统提示词的演进被**记录成消息**，
+而不是一个被覆盖的变量。代价是 provider 侧要处理"对话中途的 system 消息"——
+能接受的直接在原位发，不能接受的用重放状态重建首条 system 消息。
+
+### 9.5.3 内容块：四个 interface，靠 `type` 判别
+
+`AssistantMessage.content` 是 `(TextContent | ThinkingContent | ToolCall)[]`：
+
+| 块 | `type` 值 | 关键字段 |
+| --- | --- | --- |
+| `TextContent` | `"text"` | `text`、`textSignature?` |
+| `ThinkingContent` | `"thinking"` | `thinking`、`thinkingSignature?`、`redacted?` |
+| `ImageContent` | `"image"` | `data`（base64）、`mimeType` |
+| `ToolCall` | `"toolCall"` | `id`、`name`、`arguments`、`thoughtSignature?`、`namespace?` |
+
+**重点看 `ThinkingContent`**：它有 `redacted` 标记，被安全过滤器遮蔽时，
+不透明的加密载荷存在 `thinkingSignature` 里以便多轮continuity 回传。
+**这是为了兼容 Anthropic 的 thinking 块**——也说明内容块集合是跟着 wire protocol 长的，
+不是设计者凭空定的。
+
+三个 `*Signature` 字段（`textSignature` / `thinkingSignature` / `thoughtSignature`）
+是同一个模式：**provider 返回的、必须原样回传的不透明串**。
+这类字段是自研 harness 最容易漏的东西——漏了会导致多轮对话里模型行为异常，
+且症状很难定位。
+
+### 9.5.4 agent 层：四类自定义消息 + 空接口扩展机制
+
+`pi-agent-core` 定义了四个自定义消息（都是 `role` 为非 LLM 值的 interface）：
+
+| 类型 | `role` 值 | 用途 |
+| --- | --- | --- |
+| `BashExecutionMessage` | `"bashExecution"` | `!` 命令的 bash 执行记录；含 `truncated` / `fullOutputPath` / `excludeFromContext` |
+| `CompactionSummaryMessage` | `"compactionSummary"` | 压缩摘要；含 `tokensBefore` |
+| `BranchSummaryMessage` | `"branchSummary"` | 分支摘要；含 `fromId` |
+| `CustomMessage<T>` | `"custom"` | **扩展注入的任意消息**；含 `customType` / `display` / `details` |
+
+**扩展机制是这段代码最值得学的部分：**
+
+```typescript
+// 核心包里的定义——故意留空
+export interface CustomAgentMessages {}
+
+// 联合类型引用它的所有值
+export type AgentMessage = Message | CustomAgentMessages[keyof CustomAgentMessages];
+
+// 别处（扩展 / 上层包）通过 declaration merging 往里塞
+declare module "@earendil-works/pi-agent-core" {
+    interface CustomAgentMessages {
+        bashExecution: BashExecutionMessage;
+        custom: CustomMessage;
+        branchSummary: BranchSummaryMessage;
+        compactionSummary: CompactionSummaryMessage;
+    }
+}
+```
+
+**机制拆解**：
+1. 核心包定义**空接口**，所以核心代码**完全不认识**任何自定义消息类型；
+2. 联合类型写成 `Message | CustomAgentMessages[keyof CustomAgentMessages]`，
+   所以接口被填充后，**联合类型自动变大**；
+3. 填充发生在编译期（declaration merging），**运行时零开销**。
+
+**注意四个自定义消息里有两个是压缩产物**（compaction / branch summary）。
+这说明压缩摘要**不是特殊通道，而是一等公民消息**——省掉了一整套"摘要怎么存、怎么回放"的分支逻辑。
+
+### 9.5.5 `convertToLlm` 的实现与丢弃语义
+
+真实实现（`pi-agent-core/dist/harness/messages.js`）是一个 `map` + `switch`：
+
+```javascript
+function convertToLlm(messages) {
+    return messages
+        .map((m) => {
+            switch (m.role) {
+                case "bashExecution":
+                    if (m.excludeFromContext) return undefined;      // ← 显式丢弃
+                    return { role: "user", content: [{ type: "text", text: bashExecutionToText(m) }], timestamp: m.timestamp };
+                case "custom":        /* → 包成 user 消息 */ break;
+                case "branchSummary":     /* → 包成 user + 前缀后缀 */ break;
+                case "compactionSummary": /* → 包成 user + 前缀后缀 */ break;
+                case "system": case "user": case "assistant": case "toolResult":
+                    return m;                                        // ← LLM 消息原样透传
+                default:
+                    return undefined;                                // ← 认不出的丢弃
+            }
+        })
+        .filter((m) => m !== undefined);
+}
+```
+
+**四条规则，逐条都值得抄**：
+
+1. **LLM 消息原样透传**（`return m`）——不重新构造，避免字段丢失
+   （比如那三个 `*Signature`）。
+2. **自定义消息统一降级成 `user` 消息**——不是新造一个 role，而是把内容包成用户输入。
+   这是"自定义消息不污染协议"的关键。
+3. **`excludeFromContext` 显式丢弃**——`!` 前缀的命令记录进会话但不进上下文。
+4. **`default → undefined → filter`**——**认不出的角色被静默丢弃**。
+
+**第 4 条要谨慎对待**。Pi 选静默丢弃是因为它的联合类型在编译期已封闭，
+`default` 分支理论上不可达，所以运行时的静默是安全的兜底。
+**在 Python 里不能照抄这一点**：Python 没有编译期穷尽性检查，
+静默丢弃会变成"消息莫名消失"且无从排查。**应改为记录一条 warning 或直接抛错。**
+
+### 9.5.6 压缩的提示词是常量，且用标签包裹
+
+```typescript
+export const COMPACTION_SUMMARY_PREFIX =
+    "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
+export const COMPACTION_SUMMARY_SUFFIX = "\n</summary>";
+export const BRANCH_SUMMARY_PREFIX =
+    "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
+export const BRANCH_SUMMARY_SUFFIX = "</summary>";
+```
+
+三个可抄的点：
+1. **摘要用 `<summary>` 标签包裹**——模型能明确区分"这是摘要"和"这是用户说的话"。
+   分支摘要的前缀还交代了**来源**（"conversation came back from"），
+   让模型知道上下文里为什么少了一段。
+2. **前缀是常量导出**——压缩端和转换端共用同一个字符串，不会漂移。
+3. **摘要降级成 `user` 消息，不是 `system`**——这样它不占用常驻区，
+   **且不会破坏 prompt cache**。这一条与 sigma 架构方案 D4 节的规则一致。
+
+### 9.5.7 `Context` 与 `TranscriptContext`：用 brand 隔离两种上下文
+
+```typescript
+/** 请求输入。systemPrompt / tools 是首条 system 消息的简写 */
+export interface Context {
+    systemPrompt?: string;
+    messages: Message[];
+    tools?: Tool[];
+}
+
+declare const transcriptContextBrand: unique symbol;
+
+/** 归一化后的请求上下文。只有 normalizeContext() 能产出这个类型 */
+export type TranscriptContext = {
+    messages: Message[];
+    readonly [transcriptContextBrand]: true;
+};
+```
+
+源码注释的关键句：
+
+> Only `normalizeContext()` produces this type, so a raw `Context` cannot reach
+> provider code by accident.
+
+**这是"branded type"防误用的经典用法**：给类型打一个编译期的私有标记，
+使得只有经过归一化的上下文才在类型上被允许传给 provider。
+**未经归一化的裸 `Context` 在类型层面就传不进去。**
+
+这个技巧在 Python 里没有等价物（`NewType` 只做静态提示，运行时不拦）。
+**Python 侧的替代方案**：给 `TranscriptContext` 做一个私有构造器 +
+运行时断言一个 `_normalized: bool` 字段。**效果弱于 TS，但比没有强**——
+它把"忘了归一化"从静默 bug 变成启动即报错。
+
+### 9.5.8 工具定义与"工具集可变"的设计
+
+```typescript
+export interface Tool<TParameters extends TSchema = TSchema> {
+    name: string;
+    description: string;
+    parameters: TParameters;              // typebox schema
+    constrainedSampling?: false | ConstrainedSamplingConfig;
+}
+
+export interface ToolReference { name: string; }   // 仅名字，用于 toolsRemoved
+```
+
+有两个设计点：
+1. **`Tool` 里没有可执行函数**——只有元数据（名字、描述、参数 schema）。
+   执行入口在 `pi-agent-core` 的 `AgentTool` 里，是两个不同的类型。
+   **这个切分与 sigma 架构方案 4.2 节「`BaseTool` 行为 + `ToolDefinition` 元数据」两段式一致。**
+2. **`ToolReference` 只有名字**，用于 `SystemMessage.toolsRemoved`——
+   移除工具时不需要重复声明完整定义。
+3. **`constrainedSampling`** 是 provider 侧的约束采样配置（json_schema 或 grammar），
+   让工具参数在**生成时就受约束**，而不是生成后再校验失败重试。
+   这是"校验而非约束"与"约束而非校验"的区别——属高价值但 P1 不做。
+
+### 9.5.9 对 sigma 的直接结论
+
+| # | 结论 | 依据 |
+| --- | --- | --- |
+| 1 | **消息要分两层**：agent 层开放联合 + LLM 层封闭联合，中间一个单向转换函数 | 9.5.1 |
+| 2 | **LLM 层不要抽象基类**，就是四个具体模型 | 9.5.2 |
+| 3 | **`role` 要有 `toolResult` 这个独立角色** | 9.5.2 |
+| 4 | **压缩摘要是一等消息类型**，不是特殊通道 | 9.5.4 |
+| 5 | **自定义消息统一降级成 user 消息**，不新造协议 role | 9.5.5 |
+| 6 | **不要照抄静默丢弃**——Python 里改成记录 warning 或抛错 | 9.5.5 |
+| 7 | 摘要用 `<summary>` 标签包裹，且**降级成 user 而非 system** | 9.5.6 |
+| 8 | 三个 `*Signature` 类的不透明字段**必须原样回传**，别丢 | 9.5.3 |
+| 9 | `SystemMessage` 承担提示词演进 + 工具集变更的**记录**职责 | 9.5.2 |
+
+**Python 侧唯一的机制改造**：TS 用 declaration merging（编译期被动填充），
+Python 没有对应物，改为**运行时注册表**（扩展主动调用注册函数）。
+代价是失去编译期穷尽性，收益是扩展不必改核心包、且注册可以发生在运行时
+——**这一点与 sigma 架构方案 D3 节「扩展层是运行时可变状态」反而更契合。**
+
+---
+
 ## 10. 多 Provider 抽象
 
 `pi-ai` 的工作是把四套 wire protocol 归一化：OpenAI Completions、OpenAI Responses、Anthropic Messages、Google Generative AI。
@@ -507,11 +782,35 @@ Agent = Model + Tool Harness + User Harness
 
 ## 15. 来源与可信度分级
 
+### 最高（一手源码，2026-09-20 晚补充）
+
+**本节可信度高于下面所有分级。** 获取方式：从 npm 直接拉包解包读类型定义。
+
+```bash
+npm pack @earendil-works/pi-coding-agent \
+         @earendil-works/pi-agent-core \
+         @earendil-works/pi-ai
+# 版本 0.86.0；解包后读 dist/**/*.d.ts
+```
+
+| 包 | 版本 | 本次用到的文件 |
+| --- | --- | --- |
+| `@earendil-works/pi-coding-agent` | 0.86.0 | `dist/core/messages.d.ts` |
+| `@earendil-works/pi-agent-core` | 0.86.0 | `dist/types.d.ts`、`dist/harness/messages.d.ts`、`dist/harness/messages.js` |
+| `@earendil-works/pi-ai` | 0.86.0 | `dist/types.d.ts` |
+
+第 9.5 节全部内容来自这批源码。**依赖 `.d.ts` 与对应的 `.js` 实现，
+不依赖任何二手转述。** 类型定义是包对外契约，不会因内部重构而失真。
+
+**注意**：`.d.ts` 只反映公开接口。内部实现细节（如 batch 并发的具体策略）
+需要读 `.js`，本次仅在 `convertToLlm` 处读了一次实现。
+
 ### 高（官方或官方直接转载）
 
 - pi.dev 官方站点（产品主张、功能清单、四种模式、steering、AGENTS.md/SYSTEM.md/compaction/skills 机制）
 - `earendil-works/pi` 仓库文档（`agent-loop.ts`、`docs/rpc.md`、扩展 API、事件钩子）
 - 2026-08 实务指南（包名迁移、settings 两层、CLI flags、会话命令，与官方描述自洽）
+- **上述三个 npm 包的类型定义（一手，见上表）**
 
 ### 中（第三方但详实、内部自洽）
 
@@ -532,5 +831,9 @@ Agent = Model + Tool Harness + User Harness
 ### 交叉印证结论
 
 **架构分层、四个工具、系统提示词体量、刻意省略清单、会话树模型、扩展机制、steering 双队列——这七项在三处以上独立来源中一致，可以直接采信。**
+
+**消息两层结构（第 9.5 节）单独构成第八项，且证据等级最高**——它来自源码本身，
+不是三处二手资料互相印证的结果。**此前所有二手资料都没提到这一层**，
+说明这是一个仅靠转述无法获得的结论。**这也是本笔记补上 9.5 节的原因。**
 
 **所有性能与生态规模的数字，只当方向性参考，不进任何正式文档。**

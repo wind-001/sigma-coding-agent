@@ -1,6 +1,6 @@
 # sigma 架构方案
 
-> 版本：v1.1 ｜ 2026-09-20
+> 版本：v1.2 ｜ 2026-09-20
 > 参照对象：Pi Agent Harness（架构与设计理念见 `pi-harness研究笔记.md`）
 > 定位：自研 coding agent harness，目标是**可自证的设计**，不是功能数量
 >
@@ -10,6 +10,15 @@
 >   弃用 `typing.Protocol`。实体数据仍用 Pydantic `BaseModel`（4.1 / 4.2 / 4.3）。
 > - a3 **首个 Provider = OpenAI 兼容协议**：P1 只做 **1 套** wire protocol，
 >   Anthropic 推迟；2.2 节原「只做 2 套」表述已改为「先 1 后 1」（2.2 节）。
+>
+> **v1.2 变更**（2026-09-20 晚，依据 Pi 0.86.0 真实源码）：
+> - **新增 4.0 节「消息模型：两层结构」**。替换掉原 v1.0 里
+>   `Message.role` 只有三个值、且 `ContentBlock` 从未被定义的空洞。
+> - agent 层 `AgentMessage`（ABC + 注册表）与 LLM 层 `LlmMessage`（四模型，不抽象）分离，
+>   中间靠自由函数 `convert_to_llm()` 单向降级。
+> - `role` 增加 `tool_result`；内容块显式定义四个模型。
+> - 第 8 节新增四条 CI 门禁（消息层不混用 / 摘要降级位置 / 未知类型 / 不透明字段保真）。
+> - 完整调研见 `docs/pi-harness研究笔记.md` **第 9.5 节**。
 >
 > 三条均有连带修正，逐条标记在对应节内。
 
@@ -39,9 +48,15 @@
    `abc.ABC` + `@abstractmethod` 声明基类，由子类继承实现。
    **不用 `typing.Protocol`**：Protocol 是结构化类型，只做静态检查，不产生继承关系，
    与"采用继承制、后期扩展"的诉求不符（见 4.1 节的具体差异）。
-   凡只承载数据、无行为的位置——`Message` / `Usage` / `ToolCall` / `ToolResult` /
+   凡只承载数据、无行为的位置——`Message` 家族 / `Usage` / `ToolCall` / `ToolResult` /
    `ToolContext` / `StreamEvent`——用 Pydantic `BaseModel`。
    两者不冲突：**基类回答"谁是谁"，模型回答"装着什么"。**
+
+   **一处需要按层判断的例外**：`AgentMessage`（4.0.3 节）**同时继承 `BaseModel` 和 `ABC`**。
+   它属于 agent 层——既有数据（要落盘）又有行为（`to_llm()` 降级）、
+   还需要运行时分派。**LLM 层的消息则一律纯 BaseModel，不做抽象。**
+   区分标准不是"它是不是消息"，而是**"它有没有行为、要不要被统一持有"**。
+   这条判断规则来自 Pi 的两层消息设计，详见 4.0 节与调研笔记 9.5 节。
 2. **新引入的第三方依赖必须先验证它在 Python 3.12+ 上可用。**
    理由见 4.2 节：本项目依赖的第一批库（`typing_extensions`）在 3.13 上的
    stable 版本不导入可选模块，属于"装得上但用不了"的静默失败类型。
@@ -254,13 +269,15 @@ sigma/
 ├── README.md
 ├── core/
 │   ├── sigma_ai/
-│   │   ├── base.py                # BaseProvider（ABC）、Message、Usage
+│   │   ├── base.py                # BaseProvider（ABC）
+│   │   ├── messages.py            # LLM 层：四个消息模型 + 内容块（4.0.1 / 4.0.2）
 │   │   ├── events.py              # StreamEvent 判别联合
 │   │   ├── openai_compat.py       # OpenAI 兼容实现（P1 唯一的 provider）
 │   │   ├── anthropic.py           # P4 之后
 │   │   └── fake.py                # 确定性回放（见 7.2）
 │   ├── sigma_agent/
 │   │   ├── base.py                # BaseLoop / BaseTool（ABC）
+│   │   ├── agent_messages.py      # agent 层：AgentMessage（ABC）+ 注册表 + convert_to_llm（4.0.3–4.0.6）
 │   │   ├── loop.py                # AgentLoop —— BaseLoop 的唯一子类
 │   │   ├── registry.py            # 工具注册表 + 热重载
 │   │   ├── hooks.py               # 钩子总线（BaseHook ABC）
@@ -311,19 +328,271 @@ P0 实际只落地了：五个包的 `__init__.py`、一个占位 `cli.py`、
 
 以下签名是可直接实现的粒度。
 
+### 4.0 消息模型：两层结构（2026-09-20 新增）
+
+> **来源**：本节依据 **Pi 0.86.0 的真实源码**（解包 npm 读 `.d.ts` 与 `.js`），
+> 完整调研见 `docs/pi-harness研究笔记.md` 第 9.5 节。
+> **本节替换掉了原 v1.0 里 `Message.role` 只有三个值、且 `ContentBlock` 从未被定义的那个空洞。**
+
+**核心结构：消息分两层，中间一个单向降级函数。**
+
+```
+agent 层    AgentMessage        开放联合：LLM 消息 + 应用自定义消息
+                │
+                │  convert_to_llm()      ← 单向降级，唯一通道
+                ↓
+LLM 层      LlmMessage          封闭联合：system / user / assistant / tool_result
+```
+
+**这两层不是同一个东西，混为一层是本设计最容易犯的错误。**
+会话里存的东西**不等于**发给模型的东西。两者之间隔着一个显式转换，
+于是"存了 UI 专属消息但模型看不见"是免费得到的，不需要额外机制。
+
+#### 4.0.1 LLM 层：四个具体模型，没有基类
+
+**这一层不做抽象。** 它严格对应 wire protocol，字段是协议要求的样子，
+加基类只会让协议转换更难写。
+
+```python
+class SystemMessage(BaseModel):
+    role: Literal["system"] = "system"
+    content: str | list[TextBlock]
+    # 提示词段落的具名增删改。见 4.0.4
+    sections: dict[str, str | None] | None = None
+    tools_added: list[ToolMeta] | None = None
+    tools_removed: list[str] | None = None      # 仅工具名
+    timestamp: int
+
+class UserMessage(BaseModel):
+    role: Literal["user"] = "user"
+    content: str | list[ContentBlock]
+    timestamp: int
+
+class AssistantMessage(BaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: list[ContentBlock]          # TextBlock | ThinkingBlock | ToolCallBlock
+    api: str = ""
+    provider: str = ""
+    model: str = ""
+    response_id: str = ""
+    usage: Usage
+    stop_reason: StopReason
+    error_message: str = ""
+    timestamp: int
+
+class ToolResultMessage(BaseModel):
+    role: Literal["tool_result"] = "tool_result"
+    tool_call_id: str
+    tool_name: str
+    content: list[ContentBlock]
+    details: dict[str, Any] = {}         # 不进上下文（见 4.2 节）
+    is_error: bool = False
+    timestamp: int
+
+LlmMessage = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
+```
+
+**三条必须写进实现约定的点**：
+
+1. **`role` 是四个值，`tool_result` 是独立角色。**
+   工具结果**不是**塞在 assistant 消息里的内容块——它有自己的消息类型、
+   自己的 `tool_call_id`。这与 OpenAI 兼容协议一致，转换时少一层映射。
+2. **LLM 消息在降级时原样透传，不重新构造。**
+   `AssistantMessage` 里那几个 provider 私有字段（见 4.0.2 的 `*_signature`）
+   如果被重建一次就会丢，症状是多轮对话里模型行为异常且极难定位。
+3. **`details` 不进上下文**——与 4.2 节 `ToolResult` 的规则同一套。
+
+#### 4.0.2 内容块：四个模型，靠 `type` 判别
+
+```python
+class TextBlock(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+    text_signature: str | None = None    # provider 返回，必须原样回传
+
+class ThinkingBlock(BaseModel):
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    thinking_signature: str | None = None
+    redacted: bool = False               # 被安全过滤器遮蔽
+
+class ImageBlock(BaseModel):
+    type: Literal["image"] = "image"
+    data: str                            # base64
+    mime_type: str
+
+class ToolCallBlock(BaseModel):
+    type: Literal["tool_call"] = "tool_call"
+    id: str
+    name: str
+    arguments: dict[str, Any]
+    thought_signature: str | None = None
+
+ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolCallBlock
+```
+
+**三个 `*_signature` 字段是同一个模式：provider 返回的、必须原样回传的不透明串。**
+这是自研 harness 最容易漏的东西——漏了会让多轮对话里模型行为异常，
+而且**症状完全不指向根因**。P1 就要把它们放进类型，哪怕 P1 用不到。
+
+**`redacted` 字段同理**：Anthropic 的 thinking 块被安全过滤器遮蔽时，
+不透明加密载荷存在 `thinking_signature` 里，必须回传才能维持多轮连贯性。
+
+#### 4.0.3 agent 层：ABC + 运行时注册
+
+**这一层要做抽象**，理由与 LLM 层相反：它**有行为**（降级方法）、
+需要被 loop 与会话树统一持有、需要运行时分派。
+
+```python
+class AgentMessage(BaseModel, ABC):
+    """agent 层消息抽象基类。
+
+    继承 BaseModel 是为了序列化（会话树要落盘 JSONL）；
+    继承 ABC 是为了强制子类实现 to_llm()。
+    """
+
+    timestamp: int
+
+    @abstractmethod
+    def to_llm(self) -> LlmMessage | None:
+        """降级成 LLM 层消息。
+
+        返回 None 表示这条消息不进模型上下文
+        （例如 UI 专属通知、被 exclude_from_context 标记的 bash 记录）。
+        """
+        raise NotImplementedError
+```
+
+**注册表 P1 就要有**，否则 P2 加压缩摘要消息类型时要回头改核心：
+
+```python
+_MESSAGE_TYPES: dict[str, type[AgentMessage]] = {}
+
+def register_message_type(cls: type[AgentMessage], *, role: str) -> type[AgentMessage]:
+    """扩展用这个函数挂载自己的消息类型。
+
+    对应 Pi 的 `declare module`（declaration merging），
+    但 Pi 是编译期被动填充，这里是运行期主动注册。
+    代价是失去编译期穷尽性检查，收益是不用改核心包、且可在运行时注册
+    ——与 D3 节「扩展层是运行时可变状态」更契合。
+    """
+    if role in _MESSAGE_TYPES:
+        raise DuplicateMessageType(role)     # 不允许静默覆盖
+    _MESSAGE_TYPES[role] = cls
+    return cls
+```
+
+**P1 只要两个子类**：`LlmMessageWrapper`（包住四个 LLM 模型）和
+`ToolResultAgentMessage`。压缩摘要、分支摘要留到 P2——**但注册表和
+`DuplicateMessageType` 报错规则 P1 落地**。
+
+#### 4.0.4 `SystemMessage` 承担提示词演进与工具集变更
+
+这是 Pi 的一个关键设计，**直接决定了会话树 + 压缩那套能不能成立**：
+
+- **首条 system 消息是基线提示词**；之后的 system 消息在改它。
+- `content` 追加指令，`sections` 按名替换或删除段落（`None` 表示删除）。
+- `tools_added` / `tools_removed` 改变该点之后的工具集。
+- **按顺序重放所有 system 消息，就得到当前提示词与当前工具集。**
+
+**收益**：系统提示词的演进被**记录成消息**，而不是一个被覆盖的变量。
+所以"这条消息是在哪套提示词下产生的"永远可追溯——评测与 ablation 分析都需要这个。
+
+**代价**（必须写进文档，不藏）：provider 侧要处理"对话中途的 system 消息"。
+OpenAI 兼容协议接受中途 system 消息则原位发；不接受的则需按重放状态
+重建首条 system 消息。**这条转换逻辑是 P1 就要写的，不能推到后面。**
+
+**与 D4 节的张力**：D4 要求常驻区逐字节稳定。中途插入 system 消息会**破坏 prompt cache**。
+处置方式：**P1 只在会话开始处发一条 system 消息**（等价于稳态），
+中途变更提示词的能力**保留类型但不启用**，直到 P2 做压缩时一并设计缓存策略。
+
+#### 4.0.5 `convert_to_llm()`：自由函数，不是 `Context` 的方法
+
+**改为自由函数**（原 v1.0 写作 `context.to_messages()`）。理由：它有**三个调用方**
+——常规请求、压缩摘要生成、扩展自定义——做成 `Context` 方法会让后两者被迫构造一个假 Context。
+
+```python
+def convert_to_llm(messages: list[AgentMessage]) -> list[LlmMessage]:
+    """agent 层 → LLM 层。唯一通道。
+
+    四条规则（照抄 Pi 的 convertToLlm 设计）：
+    1. LLM 消息原样透传，不重新构造（避免丢 *_signature 类字段）
+    2. agent 层自定义消息统一降级成 user 消息，不新造协议 role
+    3. exclude_from_context 的消息显式丢弃（返回 None）
+    4. 认不出的类型 —— 见下面的警告
+    """
+```
+
+**第 4 条是本节最重要的一处「不照抄」**：
+
+| Pi 的做法 | sigma 的做法 |
+| --- | --- |
+| 认不出的 role 返回 `undefined`，被 `filter` 静默丢弃 | **记录 warning 并按原样透传，或直接抛错** |
+
+**理由**：Pi 的联合类型在**编译期**已封闭，`default` 分支理论上不可达，
+所以运行时的静默是安全的兜底。**Python 没有编译期穷尽性检查**——
+静默丢弃会变成"消息莫名消失"且无从排查。
+
+这与 4.4 节「不允许扩展静默覆盖内置工具」是同一条原则：
+**宁可崩，不要错。**
+
+#### 4.0.6 压缩摘要：降级成 user 消息，不是 system
+
+Pi 用常量前缀后缀把摘要包成 `<summary>` 标签：
+
+```python
+COMPACTION_SUMMARY_PREFIX = (
+    "The conversation history before this point was compacted "
+    "into the following summary:\n\n<summary>\n"
+)
+COMPACTION_SUMMARY_SUFFIX = "\n</summary>"
+BRANCH_SUMMARY_PREFIX = (
+    "The following is a summary of a branch that this conversation came back from:"
+    "\n\n<summary>\n"
+)
+BRANCH_SUMMARY_SUFFIX = "</summary>"
+```
+
+**三个要点**：
+1. **用 `<summary>` 标签包裹**，让模型明确区分"这是摘要"与"这是用户说的话"。
+   分支摘要的前缀还交代**来源**，让模型知道上下文里为什么少了一段。
+2. **前缀是常量导出**，压缩端与转换端共用同一字符串，不会漂移。
+3. **摘要降级成 `user` 消息，不是 `system`**——不占常驻区，
+   **且不会破坏 prompt cache**。这条与 D4 节规则一致，是本设计的必要前提。
+
+#### 4.0.7 本节对既有内容的修订清单
+
+| 位置 | 原文 | 修订后 |
+| --- | --- | --- |
+| 4.1 节代码块 | `Message.role: Literal["system","user","assistant"]`（三个值） | 拆分为四个 LLM 模型，加 `tool_result` |
+| 4.1 节代码块 | `content: list[ContentBlock]`（类型未定义） | `ContentBlock` 四模型判别联合，见 4.0.2 |
+| 4.1 节 | `Provider.stream(messages: list[Message], ...)` | 参数类型改为 `list[LlmMessage]`——**provider 只认 LLM 层** |
+| 4.3 节 | `messages = self.ai.to_messages(ctx)` | `messages = convert_to_llm(ctx.messages)` |
+| 4.3 节 | `session.append(EntryKind.tool_result, {...})` | 追加 `ToolResultMessage`（agent 层），降级由 4.0.5 负责 |
+| 第 8 节门禁 | 无 | 新增「消息层不混用」契约，见下 |
+
+**新增 CI 门禁**：
+
+| 门禁 | 断言内容 |
+| --- | --- |
+| 消息层不混用 | `sigma_ai` 不得 import `sigma_agent` 的 `AgentMessage`；`convert_to_llm` 是 agent 层→LLM 层的唯一引用点 |
+| 摘要降级位置 | 单测断言压缩摘要经 `convert_to_llm` 后 `role == "user"`，不是 `system` |
+| 未知消息类型 | 单测断言未知类型**不被静默丢弃**（记录 warning 或抛错） |
+
+**第一条同时是 import-linter 契约**：`sigma_ai` 已经是依赖图的最底层，
+不允许它认识 `AgentMessage`。这条契约**机器可查**，不是靠约定。
+
 ### 4.1 Provider 抽象（sigma_ai）
 
 > **2026-09-20 变更（a2）**：`Provider` 由 `Protocol` 改为 `ABC`。
 > 这是全案第一个、也是影响面最大的继承制改造点。
+> **同时按 4.0.7 节修订**：`stream` 与 `estimate_tokens` 的参数类型改为 `list[LlmMessage]`。
 
 ```python
 from abc import ABC, abstractmethod
 
 # ---- 数据载体：Pydantic BaseModel（AGENTS.md 第 3 条）----
-
-class Message(BaseModel):
-    role: Literal["system", "user", "assistant"]
-    content: list[ContentBlock]
+# 消息模型见 4.0 节。此处只列 provider 层直接依赖的部分。
 
 class Usage(BaseModel):
     prompt_tokens: int
@@ -337,12 +606,15 @@ class BaseProvider(ABC):
 
     子类必须实现 stream 与 estimate_tokens。
     抽象方法一律不得提供默认实现——默认实现会让"忘了实现"变成静默错误。
+
+    注意参数类型是 LlmMessage（4.0.1 节），不是 AgentMessage。
+    provider 层永远不认识 agent 层的消息——这条由第 8 节的 import-linter 契约强制。
     """
 
     @abstractmethod
     def stream(
         self,
-        messages: list[Message],
+        messages: list[LlmMessage],
         tools: list[dict[str, Any]],
         *,
         model: str,
@@ -352,7 +624,7 @@ class BaseProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def estimate_tokens(self, messages: list[Message]) -> int: ...
+    def estimate_tokens(self, messages: list[LlmMessage]) -> int: ...
 ```
 
 **为什么是 ABC 而不是 Protocol**（a2 的直接后果，必须能讲清）：
@@ -456,7 +728,9 @@ class AgentLoop(BaseLoop):
         while True:
             ctx = self.session.build_context(budget=self.budget)
             ctx = await self.hooks.transform_context(ctx)
-            messages = self.ai.to_messages(ctx)
+            # 4.0.5 节：自由函数，不是 Context 的方法。
+            # 会话里存的是 AgentMessage，发给模型的是 LlmMessage。
+            messages = convert_to_llm(ctx.messages)
 
             text, calls, usage = await self._stream_model(messages)
 
@@ -467,7 +741,8 @@ class AgentLoop(BaseLoop):
 
             results = await self._execute_batch(calls)      # 见下
             for call, result in results:
-                session.append(EntryKind.tool_result, {...})
+                # 存的是 agent 层消息（4.0.3 节）。降级由 convert_to_llm 负责。
+                session.append(ToolResultAgentMessage.from_result(call, result))
 
             if await self.hooks.should_stop_after_turn(session):
                 return TurnResult.stopped(...)
@@ -750,6 +1025,10 @@ tests/fixtures/transcripts/
 | 引用缓存契约 | 单测断言 `registry.get()` 在热重载后返回新实例 | CI 失败 |
 | **抽象基类契约** | 单测断言：所有 Provider / Tool 实现都继承对应基类；基类含 `@abstractmethod` 则直接实例化必须抛 `TypeError` | CI 失败 |
 | **唯一 loop 契约** | 单测断言 `BaseLoop.__subclasses__()` 恰好只有 `AgentLoop` | CI 失败 |
+| **消息层不混用** | `importlinter` 断言 `sigma_ai` 不认识 `AgentMessage`；`convert_to_llm` 是 agent→LLM 的唯一引用点 | CI 失败 |
+| **摘要降级位置** | 单测断言压缩摘要经 `convert_to_llm` 后 `role == "user"`，不是 `system`（关系 prompt cache） | CI 失败 |
+| **未知消息类型** | 单测断言未知类型**不被静默丢弃**（记录 warning 或抛错） | CI 失败 |
+| **不透明字段保真** | 单测断言 `*_signature` 类字段经 `convert_to_llm` 后逐字节不变 | CI 失败 |
 | 离线可测 | 全部单测在无 API key 下通过 | CI 失败 |
 | 依赖锁定 | 精确版本 + lockfile 校验 | CI 失败 |
 | 评测回归 | 评测报告与上一次对比，成功率下降超过阈值则报警 | 夜间任务产出报告 |
