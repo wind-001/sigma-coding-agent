@@ -586,6 +586,7 @@ BRANCH_SUMMARY_SUFFIX = "</summary>"
 | 门禁 | 断言内容 |
 | --- | --- |
 | 消息层不混用 | `sigma_ai` 不得 import `sigma_agent` 的 `AgentMessage`；`convert_to_llm` 是 agent 层→LLM 层的唯一引用点 |
+| `SystemMessage` 字段集合 | 单测断言其字段**恰好**为约定集合，新增字段即失败——防「把摘要塞进 system 消息」（4.0.6 节） |
 | 摘要降级位置 | 单测断言压缩摘要经 `convert_to_llm` 后 `role == "user"`，不是 `system` |
 | 未知消息类型 | 单测断言未知类型**不被静默丢弃**（记录 warning 或抛错） |
 
@@ -1150,6 +1151,9 @@ sigma_ai      → （无内部依赖）
 | 系统提示词 | < 1,000 token | 800，可调 | 改为用 ablation 定值 |
 | 权限 | 无内置，靠容器 | 三层软边界，无容器 | Windows 开发成本 |
 | git checkpoint | 使用者自装配 | 核心能力 | 它可量化，可成为自证项 |
+| 未知 role 处理 | 静默丢弃（`default → undefined → filter`） | **记录 warning，不静默** | Python 无编译期穷尽性检查，静默会变成「消息莫名消失」（4.0.5 节） |
+| 约束采样 | `constrainedSampling`（json_schema / grammar） | **P4 再评估，P1–P3 不做** | 「约束而非校验」价值高，但依赖 provider 侧能力；P1 只有最小闭环，投产比低 |
+| 类型安全手段 | `IsJsonCompatible<T>` 编译期体操 | 运行时校验（Pydantic） | 同一诉求的不同手段，效果相当、时机不同 |
 | 扩展范围 | harness 全部表面 | 工具 + 钩子 + slash 命令 | 边界清晰才可测 |
 | 自扩展 | agent 改自己扩展 + 热重载 | 工具级热重载 | Python 侧正确性风险 |
 | TUI | 差分渲染库 | 纯文本 REPL | 零架构信号且拖累 CI |
