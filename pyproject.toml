@@ -86,3 +86,20 @@ forbidden_modules = [
     "evals",
     "extensions",
 ]
+
+# sigma_tools 与 sigma_session 是**兄弟层**，互不依赖。
+#
+# 为什么必须单列这一条：上面的 layers 契约是线性栈，语义只有
+# 「下层不许引用上层」，**它默认放行所有向下的 import**。
+# 把 sigma_tools 排在 sigma_session 之上，等于悄悄给了
+# sigma_tools -> sigma_session 一张通行证。
+#
+# 2026-09-20 实测确认过这个洞：向 sigma_tools 注入 import sigma_session，
+# 当时两条契约都是 KEPT、退出码 0。加这条之后才拦得住。
+[[tool.importlinter.contracts]]
+name = "内置工具与会话层互不依赖"
+type = "independence"
+modules = [
+    "sigma_tools",
+    "sigma_session",
+]

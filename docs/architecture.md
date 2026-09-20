@@ -174,6 +174,10 @@ RPC / 远程 session    多实例编排          SQLite session backend
 └─────────────────────────────────────────────────────┘
 ```
 
+**这张竖排图不是依赖顺序。** `sigma_tools` 与 `sigma_session` 是**兄弟层**——
+两者都只依赖 `sigma_agent` 与 `sigma_ai`，彼此之间没有任何依赖。
+竖排只是为了排版。它们的依赖关系由第 8 节的 `independence` 契约强制，不是靠约定。
+
 **关键设计点：`sigma_tools` 与扩展工具共用同一个注册表接口。** 这样"用扩展替换内置工具"是免费的，`--no-builtin-tools` + 只加载扩展能直接演示。Pi 做到了这一点，值得照抄。
 
 **为什么 checkpoint 放在 `sigma_agent` 而不是 `sigma_tools`**：它需要感知"一个工具批次"的边界，这个边界只有 loop 知道。放在工具层会退化成"每个工具自己备份"，重复且不可控。
@@ -594,17 +598,38 @@ tests/fixtures/transcripts/
 | 评测回归 | 评测报告与上一次对比，成功率下降超过阈值则报警 | 夜间任务产出报告 |
 | 类型检查 | `mypy --strict`（至少覆盖 `core/`） | CI 失败 |
 
-**依赖方向契约的具体内容**（写进 `importlinter.toml`）：
+**依赖方向契约的具体内容**（写在 `pyproject.toml` 的 `[tool.importlinter]`）：
 
 ```
-sigma       → sigma_tools, sigma_session, sigma_agent, sigma_ai
-sigma_tools → sigma_agent, sigma_ai
+sigma         → sigma_tools, sigma_session, sigma_agent, sigma_ai
+sigma_tools   → sigma_agent, sigma_ai
 sigma_session → sigma_agent, sigma_ai
-sigma_agent → sigma_ai
-sigma_ai    → （无内部依赖）
+sigma_agent   → sigma_ai
+sigma_ai      → （无内部依赖）
 ```
 
 同时禁止：任何 `core/` 内的包 import `evals/` 或 `extensions/`。
+
+**注意 `sigma_tools` 与 `sigma_session` 是兄弟层，互不依赖。**
+第 3 节那张竖排图只是为了排版，**不是依赖顺序**——照那张图去理解会得出
+「sigma_tools 依赖 sigma_session」的错误结论。
+
+这件事必须用**三条契约**才能钉住，只写 `layers` 是不够的：
+
+| 契约 | 类型 | 作用 |
+| --- | --- | --- |
+| 分层只允许向下依赖 | `layers` | 禁止下层引用上层 |
+| 核心层不得依赖评测与扩展 | `forbidden` | 禁止 core 引用 `evals` / `extensions` |
+| 内置工具与会话层互不依赖 | `independence` | 钉住兄弟层 |
+
+**为什么 `layers` 表达不了兄弟关系**：它是线性栈，语义只有「下层不许引用上层」，
+**默认放行所有向下的 import**。把 `sigma_tools` 排在 `sigma_session` 之上，
+就等于给了 `sigma_tools → sigma_session` 一张通行证。
+
+这一点在 2026-09-20 被实测确认过：当时只配了两条契约，向 `sigma_tools`
+注入 `import sigma_session`，结果两条契约都是 KEPT、退出码 0 ——
+**配置在放行文档明令禁止的依赖**。补上 `independence` 契约后才拦得住，
+且双向都能拦。
 
 ---
 

@@ -1,0 +1,12 @@
+[tool.importlinter]
+root_package = "mypkg"
+
+[[tool.importlinter.contracts]]
+name = "fixture layers"
+type = "layers"
+layers = ["mypkg.sib_a", "mypkg.sib_b", "mypkg.lower"]
+
+[[tool.importlinter.contracts]]
+name = "fixture siblings independent"
+type = "independence"
+modules = ["mypkg.sib_a", "mypkg.sib_b"]

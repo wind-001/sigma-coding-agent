@@ -27,22 +27,40 @@ pytest -q       # 单测，不需要 API key
 
 ## 分层
 
-依赖方向严格单向，**由 CI 强制，不靠自觉**。
+依赖方向严格受限，**由 CI 强制，不靠自觉**。
 
 ```
-sigma           产品壳：CLI / REPL / 一次性模式 / SDK 入口
-  ↓
-sigma_tools     内置工具：read / write / edit / bash
-  ↓
-sigma_session   会话树 · 上下文组装 · 压缩 · 扩展装配
-  ↓
-sigma_agent     agent loop · 工具注册表 · 钩子总线 · checkpoint
-  ↓
-sigma_ai        Provider 抽象 · 流式事件 · 用量
+sigma         → sigma_tools, sigma_session, sigma_agent, sigma_ai
+sigma_tools   → sigma_agent, sigma_ai
+sigma_session → sigma_agent, sigma_ai
+sigma_agent   → sigma_ai
+sigma_ai      → （无内部依赖）
 ```
 
-五层单向依赖，外加一条「核心层不得依赖 `evals/` 与 `extensions/`」。
-两条契约都写在 `pyproject.toml` 的 `[tool.importlinter]` 里。
+| 层 | 职责 |
+| --- | --- |
+| `sigma` | 产品壳：CLI / REPL / 一次性模式 / SDK 入口 |
+| `sigma_tools` | 内置工具：read / write / edit / bash |
+| `sigma_session` | 会话树 · 上下文组装 · 压缩 · 扩展装配 |
+| `sigma_agent` | agent loop · 工具注册表 · 钩子总线 · checkpoint |
+| `sigma_ai` | Provider 抽象 · 流式事件 · 用量 |
+
+**`sigma_tools` 与 `sigma_session` 是兄弟层，互不依赖。** 两者都只依赖
+`sigma_agent` 和 `sigma_ai`。
+
+### 三条契约
+
+写在 `pyproject.toml` 的 `[tool.importlinter]` 里：
+
+| 契约 | 类型 | 作用 |
+| --- | --- | --- |
+| 分层只允许向下依赖 | `layers` | 禁止下层引用上层 |
+| 核心层不得依赖评测与扩展 | `forbidden` | 禁止 core 引用 `evals` / `extensions` |
+| 内置工具与会话层互不依赖 | `independence` | 钉住兄弟层 |
+
+为什么兄弟关系要单独一条：`layers` 是线性栈，语义只有「下层不许引用上层」,
+**它默认放行所有向下的 import**。只写 `layers` 的话，
+`sigma_tools → sigma_session` 会被静默放行。
 
 ## 目录
 
