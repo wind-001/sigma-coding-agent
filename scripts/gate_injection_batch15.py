@@ -168,7 +168,7 @@ def _inject_e11(repo: Repo) -> None:
 
     **这是本批次最该跑的一条**，因为 G11 要防的失败模式
     （"重新构造导致丢字段"）**写出来是完全合法的代码**——
-    `mypy` 与 `ruff` 都不报，批次 1 的 G2 也拦不住
+    `mypy` 不报，批次 1 的 G2 也拦不住
     （G2 测的是 Pydantic 自己的序列化，不是这段代码）。
 
     漏掉的字段是 `api` / `provider` / `model` / `response_id` /
@@ -231,11 +231,20 @@ def _inject_e13(repo: Repo) -> None:
         "from sigma_ai.messages import (\n    ContentBlock,",
         "from sigma_ai.messages import (\n    ContentBlock,\n    SystemMessage,",
     )
-    repo.patch(
-        MSG,
-        "    LlmMessage,\n    ToolResultMessage,\n    UserMessage,\n)",
-        "    LlmMessage,\n    ToolResultMessage,\n    UserMessage,\n)  # noqa: E501",
-    )
+    # 这里原本还有第三个 patch：给导入块尾部加 `# noqa: E501`。
+    #
+    # **2026-09-20 删除**，两个原因：
+    #   1. **ruff 已从项目中移除**，noqa 注释不再有任何作用——
+    #      它是"为已删除工具服务"的残留（删 ruff 时没有连带清理）；
+    #   2. 它的锚点是导入块的尾部三行，源码在加 `ToolCallBlock` 之后
+    #      锚点失配，导致**整条 E13 注入跑不起来**。
+    #
+    # 这次失效暴露了一个独立的失败模式：
+    # **注入脚本的锚点与被测源码硬耦合，源码演进会让"验证工具"本身腐化。**
+    #
+    # 症状是"注入跑不起来"而不是"注入通过"——好在 `Repo.patch` 是**抛错**
+    # 而不是静默跳过，否则就会变成一次假绿。
+    # 这条经验值得推广：**验证工具必须"响亮地失败"，不能"安静地什么都不做"。**
 
 
 def _inject_e14(repo: Repo) -> None:
