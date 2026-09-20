@@ -610,6 +610,21 @@ class Usage(BaseModel):
     completion_tokens: int
     cached_tokens: int = 0
 
+class SamplingParams(BaseModel):
+    """采样参数。"""
+    temperature: float | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+
+class StreamOptions(BaseModel):
+    """流式请求可选项。
+
+    `include_usage` 尤其关键：OpenAI 兼容协议默认不在流里返回 usage，
+    必须显式请求。没有它，用量统计只能靠估算——而估算数不能进评测报告。
+    """
+    include_usage: bool = True
+    response_format: dict[str, Any] | None = None
+
 # ---- 抽象基类：ABC（AGENTS.md 第 2 条，a2 拍板）----
 
 class BaseProvider(ABC):
@@ -630,6 +645,9 @@ class BaseProvider(ABC):
         *,
         model: str,
         signal: CancelToken,
+        sampling: SamplingParams | None = None,
+        options: StreamOptions | None = None,
+        timeout_s: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """流式产出统一事件。子类不得自行定义事件类型。"""
         raise NotImplementedError
@@ -650,6 +668,16 @@ class BaseProvider(ABC):
 
 关键区别在第 3 行：**ABC 让"忘了实现"在实例化时就暴露，Protocol 会把问题推到第一次调用。**
 对"后期扩展"这个诉求，早暴露价值远大于晚暴露——这正是 `AGENTS.md` 第 2 条要继承制的实际收益。
+
+> **2026-09-20 补记（B1.3 的产物）**：`sampling` / `options` / `timeout_s`
+> 三个参数与 `SamplingParams` / `StreamOptions` 两个类型是**后补的**。
+>
+> 原因：原先的签名只被 `FakeProvider`（回放式实现）适配过——
+> 回放不需要采样、不需要请求用量、不会超时，于是签名看起来「刚好够用」。
+> **真实协议一接进来，这五个参数一个都躲不掉。**
+>
+> 这条经验的通用形式：**一个抽象基类的签名不能只被一个实现者适配，**
+> **尤其当那个实现者是无感的回放器时。** 详见 `docs/plans/P1-批次1-详规.md` 第 7.1 节。
 
 顺序三必须写进实现约定的点：
 
