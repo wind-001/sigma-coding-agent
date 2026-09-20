@@ -1,0 +1,7 @@
+[tool.importlinter]
+root_package = "mypkg"
+
+[[tool.importlinter.contracts]]
+name = "fixture layers"
+type = "layers"
+layers = ["mypkg.layerc", "mypkg.layerb", "mypkg.layera"]

@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装
+        run: pip install -e ".[dev]"
+
+      - name: 分层依赖契约
+        run: lint-imports
+
+      - name: 类型检查
+        run: mypy core
+
+      - name: 单测（不需要 API key）
+        run: pytest -q

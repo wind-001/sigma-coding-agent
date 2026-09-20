@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigma-agent"
+version = "0.0.1"
+description = "A minimal, verifiable coding agent harness"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.10",
+    "import-linter>=2.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+sigma = "sigma.cli:main"
+
+# 五个包放在 core/ 下，靠 package-dir 把它当成包根，
+# 否则 sigma_ai / sigma_agent 等不是顶层名字，
+# lint-imports 与 mypy 会静默找不到包。详见 docs/plans/P0-骨架.md。
+[tool.setuptools]
+package-dir = { "" = "core" }
+
+[tool.setuptools.packages.find]
+where = ["core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "core"
+strict = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+# 分层依赖契约。列表自上而下 = 由高到低，
+# 低层不允许引用高层。
+[tool.importlinter]
+root_packages = [
+    "sigma_ai",
+    "sigma_agent",
+    "sigma_session",
+    "sigma_tools",
+    "sigma",
+]
+# evals / extensions 不在 root_packages 里（它们不是被安装的包），
+# 但下面第二条契约要禁止核心层引用它们，所以必须打开这个开关。
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "分层只允许向下依赖"
+type = "layers"
+layers = [
+    "sigma",
+    "sigma_tools",
+    "sigma_session",
+    "sigma_agent",
+    "sigma_ai",
+]
+
+[[tool.importlinter.contracts]]
+name = "核心层不得依赖评测与扩展"
+type = "forbidden"
+source_modules = [
+    "sigma_ai",
+    "sigma_agent",
+    "sigma_session",
+    "sigma_tools",
+    "sigma",
+]
+forbidden_modules = [
+    "evals",
+    "extensions",
+]
