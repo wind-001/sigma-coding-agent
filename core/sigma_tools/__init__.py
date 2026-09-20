@@ -10,7 +10,10 @@
     sigma_agent, sigma_ai
 
 实现状态
-    P0：仅包声明，无实现。实现计划见 docs/plans/。
+    2026-09-20：read / write / edit / bash / grep 五个工具全部实现。
+    edit 遵循三态规则（多匹配拒绝、绝不替换全部）；
+    bash 强制超时、无任何命令过滤（详规 R1）；
+    grep 返回 文件:行号:文本，跳过 .git 与非 UTF-8 文件（计数上报）。
 """
 
 from __future__ import annotations

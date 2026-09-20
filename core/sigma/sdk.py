@@ -15,8 +15,9 @@
     - 不放时间戳、会话 ID（同上）；
     - 写短不是省 token，是**把预算留给历史与工具输出**。
 
-    参考数据：真实 API 实测这个提示词 + 两个工具 schema 合计约 875 token
-    （`scripts/real_api_agent_demo.py` 的 prompt_tokens）。
+    参考数据：提示词 + 两个工具 schema 在真实 API 上实测约 875 token
+    （2026-09-20，`scripts/real_api_agent_demo.py`）。现在工具是五个，
+    该数字已过期——prompt token 以评测运行时的实测为准，旧值只作量级参考。
 """
 
 from __future__ import annotations
@@ -32,6 +33,9 @@ from sigma_agent.types import TurnResult
 from sigma_ai.base import NeverCancelled, SamplingParams
 from sigma_ai.messages import UserMessage
 from sigma_session.context import SessionContext
+from sigma_tools.bash import BashTool
+from sigma_tools.edit import EditTool
+from sigma_tools.grep import GrepTool
 from sigma_tools.read import ReadTool
 from sigma_tools.write import WriteTool
 
@@ -43,7 +47,10 @@ SYSTEM_PROMPT = """你是一个在本地工作区里干活的编程助手。
 
 可用工具：
 - read：读取文本文件，支持行范围（start_line / end_line）
-- write：写入文件，覆盖原内容
+- write：写入文件，覆盖原内容（新建文件或整体重写时用）
+- edit：精确替换文件中的一段文本（修改已有文件时优先用它）
+- bash：执行 bash 命令（列目录、建目录、运行测试等）
+- grep：按正则搜索文件内容，返回 文件:行号:文本
 
 工作方式：
 1. 先看清楚再动手——不确定文件内容时先 read，不要凭猜测写。
@@ -52,22 +59,23 @@ SYSTEM_PROMPT = """你是一个在本地工作区里干活的编程助手。
 
 注意：
 - 相对路径基于工作区根目录解析。
-- write 不会自动创建父目录，父目录不存在会报错。
+- write 不会自动创建父目录；建目录请用 bash 的 mkdir -p。
+- bash 的命令没有任何过滤，执行前确认它符合当前任务。
 """
 
 
 def default_registry() -> ToolRegistry:
-    """P1 的内置工具集。
+    """P1 的内置工具集：read / write / edit / bash / grep 全部就位。
 
-    **目前只有 read / write**：``edit`` / ``bash`` / ``grep`` 尚未实现
-    （计划见 `docs/plans/P1-批次2-4-详规.md` 3.5 节）。
-
-    工具少不是省事，是有代价的：``edit`` 缺席意味着模型改文件只能整文件重写，
-    那更容易出错也更费 token。**这件事要说出来，不能假装够用。**
+    bash 的风险要说清楚（详规 R1）：它以当前用户权限执行任意命令，
+    P1 没有任何过滤与沙箱，防线只有 CLI 启动提示与评测的临时目录。
     """
     registry = ToolRegistry()
     registry.register(ReadTool())
     registry.register(WriteTool())
+    registry.register(EditTool())
+    registry.register(BashTool())
+    registry.register(GrepTool())
     return registry
 
 
