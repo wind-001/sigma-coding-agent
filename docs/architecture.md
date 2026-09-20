@@ -751,6 +751,19 @@ class ToolContext(BaseModel):
 
 ### 4.3 Agent loop（唯一的循环实现）
 
+> **2026-09-20 再变更（P1 重构 子项 A）：`BaseLoop` 已删除。**
+>
+> 上一次变更（a2）给 loop 加基类的理由是"给换一种循环策略留出继承位"，
+> 但**同一个设计里又规定只允许一个子类**。而一个只允许有唯一子类的抽象基类，
+> **等价于给那唯一的实现加一层纯间接**——这正是本方案自己那条
+> 「不做没有需求的设计」原则**被漏用**的地方。
+>
+> 实现已删（见 `docs/plans/P1-sigma_ai重构-详规.md` 子项 A）。
+> 门槛 G30 改写为「全项目只有一个类定义 `run_turn`」——
+> **比原来更强**：新写一个不继承任何基类的 loop 也能拦住。
+>
+> 下面这个代码块**保留原样作为历史记录**，不再对应实际实现。
+
 > **2026-09-20 变更（a2）**：`AgentLoop` 改为继承 `BaseLoop`。
 > 让 loop 也有基类，是为了给"换一种循环策略"留出继承位——
 > 但**当前只允许一个子类**（`AgentLoop`），不得并行存在第二个实现。
@@ -1063,7 +1076,7 @@ tests/fixtures/transcripts/
 | 常驻区稳定性 | 单测断言会话内常驻区哈希不变 | CI 失败 |
 | 引用缓存契约 | 单测断言 `registry.get()` 在热重载后返回新实例 | CI 失败 |
 | **抽象基类契约** | 单测断言：所有 Provider / Tool 实现都继承对应基类；基类含 `@abstractmethod` 则直接实例化必须抛 `TypeError` | CI 失败 |
-| **唯一 loop 契约** | 单测断言 `BaseLoop.__subclasses__()` 恰好只有 `AgentLoop` | CI 失败 |
+| **唯一 loop 契约** | 单测断言：全项目只有 `AgentLoop` 一个类定义 `run_turn`（**2026-09-20 改写**，原为 `BaseLoop.__subclasses__()`） | CI 失败 |
 | **消息层不混用** | `importlinter` 断言 `sigma_ai` 不认识 `AgentMessage`；`convert_to_llm` 是 agent→LLM 的唯一引用点 | CI 失败 |
 | **摘要降级位置** | 单测断言压缩摘要经 `convert_to_llm` 后 `role == "user"`，不是 `system`（关系 prompt cache） | CI 失败 |
 | **未知消息类型** | 单测断言未知类型**不被静默丢弃**（记录 warning 或抛错） | CI 失败 |

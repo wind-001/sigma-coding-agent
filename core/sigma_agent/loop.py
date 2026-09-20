@@ -38,7 +38,7 @@ from sigma_agent.agent_messages import (
     ToolResultAgentMessage,
     convert_to_llm,
 )
-from sigma_agent.base import BaseLoop, BaseTool
+from sigma_agent.base import BaseTool
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult, TurnResult
 from sigma_ai.base import CancelToken, SamplingParams
@@ -90,8 +90,16 @@ class _Planned:
     tool: BaseTool
 
 
-class AgentLoop(BaseLoop):
-    """唯一的循环实现。``BaseLoop.__subclasses__()`` 必须恰好只有它（门槛 G30）。"""
+class AgentLoop:
+    """agent 循环的**唯一实现**。
+
+    2026-09-20 删除了它原来的基类 ``BaseLoop``——那是个只有 1 个子类的抽象，
+    等价于给唯一实现加一层纯间接。删除理由见 ``base.py`` 顶部注释。
+
+    门槛 G30 已改为断言「全项目只有一个类定义 ``run_turn``」，
+    比原来的 ``__subclasses__()`` 断言**更强**：新写一个不继承任何基类的
+    loop 也能拦住，而旧写法拦不住。
+    """
 
     def __init__(
         self,

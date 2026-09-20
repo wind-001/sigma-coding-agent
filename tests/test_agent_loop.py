@@ -18,7 +18,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
-from sigma_agent.base import BaseLoop, BaseTool
+from sigma_agent.base import BaseTool
 from sigma_agent.loop import AgentLoop
 from sigma_agent.registry import DuplicateToolError, ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult
@@ -460,14 +460,31 @@ async def test_transcript_exhausted_raises_loudly() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_base_loop_has_exactly_one_subclass() -> None:
-    """门槛 G30：「唯一 loop 契约」。
+def test_only_one_class_defines_run_turn() -> None:
+    """门槛 G30（2026-09-20 改写）：「唯一 loop 契约」。
 
-    留基类是为了将来能换循环策略，**但现在只允许一个子类**——
-    否则"唯一的循环实现"这个判断会被静默架空，而架空的方式还是合规的
-    （加个子类而已）。
+    **旧写法**断言 ``BaseLoop.__subclasses__() == [AgentLoop]``。
+    但那依赖一个只有 1 个子类的基类存在——**那个基类本身是纯冗余**，
+    已在同日删除（理由见 ``sigma_agent/base.py`` 顶部注释）。
+
+    **新写法更强**：扫描 ``sigma_agent.loop`` 模块，确认只有 ``AgentLoop``
+    这一个类定义了 ``run_turn``。这样即使有人新写一个**不继承任何基类**的
+    loop（旧断言拦不住的形态），也能被拦住。
+
+    写这条用例时的自查：`ParsedCall` / `_Planned` 是同模块的 dataclass，
+    `inspect.isclass` 为真，但它们没有 `run_turn` —— 所以过滤条件必须同时
+    检查"定义了 run_turn"，只看类名会把它们也算进来。
     """
-    assert BaseLoop.__subclasses__() == [AgentLoop]
+    import inspect
+
+    import sigma_agent.loop as loop_module
+
+    loop_classes = sorted(
+        name
+        for name, obj in inspect.getmembers(loop_module, inspect.isclass)
+        if obj.__module__ == loop_module.__name__ and hasattr(obj, "run_turn")
+    )
+    assert loop_classes == ["AgentLoop"]
 
 
 def test_duplicate_tool_registration_keeps_registry_intact() -> None:

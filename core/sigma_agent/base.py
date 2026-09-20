@@ -20,8 +20,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
-    from sigma_agent.agent_messages import AgentMessage
-    from sigma_agent.types import ToolContext, ToolResult, TurnResult
+    # 删掉 BaseLoop 之后这里也精简了：原先还要 `AgentMessage` 与 `TurnResult`
+    # （它们是 `BaseLoop.run_turn` 的参数与返回类型），现在只有 `BaseTool`
+    # 需要这两个类型。**未使用的 TYPE_CHECKING 导入同样是负债**——
+    # 它们会让读者以为这个模块还依赖那些类型。
+    from sigma_agent.types import ToolContext, ToolResult
 
 
 class BaseTool(ABC):
@@ -70,27 +73,29 @@ class BaseTool(ABC):
         return self.params.model_json_schema()
 
 
-class BaseLoop(ABC):
-    """agent 循环的唯一抽象。
-
-    **当前只允许一个子类**（``AgentLoop``），不得并行存在第二个实现
-    （架构方案 4.3 节）。这条张力用测试钉住：断言
-    ``BaseLoop.__subclasses__()`` 恰好只有 ``AgentLoop``（门槛 G30）。
-
-    留基类的意义：将来若要做"两阶段规划循环"或"反思循环"，不必改动公共接口。
-    **但现在不许有第二个**——否则"唯一的循环实现"这个设计判断会被悄悄架空，
-    而架空的方式还是合规的（加个子类而已）。
-    """
-
-    @abstractmethod
-    async def run_turn(self, messages: list[AgentMessage]) -> TurnResult:
-        """跑一轮：直到模型不再请求工具调用，或达到轮数上限。
-
-        参数与返回值参照 Pi 的 ``agentLoop``（调研笔记第 5 节）：
-        **消息数组进、新增消息出，循环本身不持有会话对象。**
-        "存到哪儿"是调用方的事。收益与代价见详规 3.8.1。
-        """
-        raise NotImplementedError
+# ---------------------------------------------------------------------------
+# 关于 BaseLoop 的删除（2026-09-20）
+# ---------------------------------------------------------------------------
+#
+# 这里原本有一个 `BaseLoop(ABC)`，`AgentLoop` 是它唯一的子类，
+# 并有门槛 G30 断言「`__subclasses__()` 恰好只有 `AgentLoop`」。
+#
+# **2026-09-20 删除。** 理由是它与架构 4.3 节自己的原则冲突：
+# 那一节写着「当前只允许一个子类，不得并行存在第二个实现」——
+# 而**一个只允许有唯一子类的抽象基类，等价于给那唯一的实现加一层纯间接**。
+#
+# 架构给的保留理由是「将来若要做两阶段规划循环或反思循环，不必改动公共接口」，
+# 但那个"将来"没有对应任何具体需求，而代价是**现在就存在**：
+# 多一个类型要维护、多一条门槛要跑、多一层跳转要读。
+#
+# 这与 4.3 节末「不做没有需求的设计」是同一条原则——
+# **那条原则该用在它自己身上。**
+#
+# 将来真要做第二种循环策略时，选择依据会比现在充分（有真实需求），
+# 届时用 `Protocol` 还是真基类，都能就事论事地定。
+#
+# 门槛 G30 已改写为「全项目只有一个类定义 `run_turn`」（见 tests/test_agent_loop.py）——
+# 那条断言其实**比原来更强**：即使有人新写一个不继承任何基类的 loop，也能拦住。
 
 
 class ToolDefinition(BaseModel):

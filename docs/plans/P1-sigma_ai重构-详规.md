@@ -51,6 +51,7 @@ HTTP 客户端、SSE 分帧、消息转换（LLM 层 → 请求体）、事件�
 | **A** | `BaseLoop` 是"为了继承而继承" | 只有 1 个子类，架构自己规定不许有第二个 | **设计冗余** |
 | **B** | `openai_compat.py` 534 行承担四件事 | 见 0.2 | **内聚度不足** |
 | **C** | `tool_calls` 的协议处理散在两处 | 分片归属在 `openai_compat.py`，拼装成调用在 `loop.py` | **职责边界模糊** |
+| **E** | **Provider Registry 完全缺失** | 架构第 248 行写明 `sigma_ai` 的职责含 "Provider Registry"，实现里没有；provider 列表反被硬编码在 `sigma/cli.py` 的 `PRESETS` | **实现遗漏 + 分层错误** |
 
 **下面逐项处理。每一项都单独可决策——不需要整体接受或整体否决。**
 
@@ -254,6 +255,79 @@ class AssembledCall:
 
 ---
 
+## 6.5 子项 E：补 Provider Registry（新增，2026-09-20）
+
+### 事实
+
+架构方案第 248 行的"分层职责表"写着：
+
+| 层 | 职责 |
+| --- | --- |
+| 1 | **Provider Registry · 事件流 · 消息变换** |
+
+**事件流**（`events.py`，6 类事件）与**消息变换**（`message_to_openai` /
+`convert_to_llm` / 编解码）都有了。**Provider Registry 一行都没写。**
+
+而它本该管的东西现在在哪儿：
+
+```python
+# core/sigma/cli.py —— 产品壳层
+PRESETS: dict[str, tuple[str, str]] = {
+    "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
+    "moonshot": (...), "zhipu": (...), "dashscope": (...), "ollama": (...),
+}
+```
+
+**这是分层错误**：`sigma` 是产品壳，`sigma_ai` 才是协议层。
+"有哪些 provider、它们的 base_url 与默认模型是什么"属于**协议层的知识**，
+放在壳层意味着：
+
+- 换一个入口（直接调 `sdk.run_task`、批次 5 的评测运行器）就得再抄一份列表；
+- P4 的扩展系统想注册自定义 provider 时，**没有落点**。
+
+### 方案
+
+```python
+# core/sigma_ai/registry.py
+class ProviderRegistry:
+    """provider 的按名解析。
+
+    P1 只做「名字 → 构造参数」的登记与解析，**不做热重载**（属 P4）。
+    """
+
+    def register(self, name: str, *, base_url: str, default_model: str,
+                 aliases: Sequence[str] = ()) -> None: ...
+    def resolve(self, name: str) -> ProviderSpec: ...
+    def names(self) -> list[str]: ...
+```
+
+`cli.py` 的 `PRESETS` 迁进去，CLI 改为从 registry 取。
+
+### 我自己提的反对意见
+
+> "P1 只有两个 provider（Fake / OpenAI），做 registry 是不是过度设计？"
+
+**不是**，三条理由：
+
+1. **那个分层问题现在就存在**，不是"将来会有"——`PRESETS` 已经在壳层了；
+2. registry 本身很小（约 40 行），是**纯数据登记 + 查表**，没有机制复杂度；
+3. 它是 **P4 的必需品**，现在做成本最低——等 P4 再加，得反过来改 CLI 与评测。
+
+**但要说清边界**：P1 的 registry **不做**热重载、不做 OAuth、不做成本追踪。
+那三样是 Pi 的 `pi-ai` 有、而 sigma 明确不做的（见研究笔记第 10 节）。
+
+### 与 `ToolRegistry` 的关系
+
+**不复用同一个类**。两者形态不同：
+
+- `ToolRegistry` 存的是**有行为的实例**（`BaseTool`）
+- `ProviderRegistry` 存的是**构造参数**（provider 实例由调用方按配置创建，
+  因为认证、超时、`httpx.AsyncClient` 注入都在构造期）
+
+**共用抽象会把两件不同的事硬捏成一个。**
+
+---
+
 ## 7. 决策清单
 
 **四项独立可决策。我的建议列在第三列。**
@@ -263,7 +337,8 @@ class AssembledCall:
 | **A** | 删除 `BaseLoop` | ✅ **做** | 保留一个永远只有 1 个子类的基类 |
 | **B** | 拆 `openai_compat.py` 为 `openai/` 包 | ✅ **做** | 534 行单文件继续膨胀 |
 | **C** | `tool_calls` 协议处理内聚进 `sigma_ai/tool_calls.py` | ✅ **做** | 职责边界继续模糊 |
-| **D** | **a2 修订**：`Protocol` 与 `ABC` 并用 | ⚠️ **谨慎——见下** | 见下 |
+| **D** | **a2 修订**：`Protocol` 与 `ABC` 并用 | ✅ **已确认：改成判据式**（不改现有实现） | 见下 |
+| **E** | 补 `ProviderRegistry`（架构第 248 行规划的职责） | ✅ **建议做** | provider 列表继续错放在产品壳层；P4 无落点 |
 
 ### 7.1 关于 D（a2 修订），我的具体建议
 
@@ -328,13 +403,20 @@ class AssembledCall:
 
 ## 9. 待确认项
 
-| # | 问题 | 我的建议 |
+**2026-09-20 本人答复：「R1 R2 R3 R4 同意，R5 就不换了」。**
+
+| # | 问题 | 结论 |
 | --- | --- | --- |
-| **R1** | 子项 A/B/C 是否都做？ | 都做 |
-| **R2** | a2 是否按 7.1 的判据式表述修订（**不改现有实现**）？ | 是 |
-| **R3** | 子项 C 里 `AssembledCall` 归属哪层？（4 节的边界判据） | 放 `sigma_ai`，接受它是个"非协议非消息"的产物类型 |
-| **R4** | `tokens.py` 定位（6 节） | 写明是工具，不引入抽象 |
-| **R5** | 若你坚持 `BaseTool` 改 Protocol —— 是否接受 7.2 的四项连带代价？ | 建议不换 |
+| **R1** | 子项 A/B/C 是否都做？ | ✅ **做** |
+| **R2** | a2 是否按 7.1 的判据式表述修订（**不改现有实现**）？ | ✅ **是** |
+| **R3** | 子项 C 里 `AssembledCall` 归属哪层？ | ✅ **放 `sigma_ai`**，接受它是个"非协议非消息"的产物类型 |
+| **R4** | `tokens.py` 定位 | ✅ **写明是工具，不引入抽象** |
+| **R5** | `BaseTool` 改 Protocol？ | ❌ **不换** |
+| **R6** | 子项 E（Provider Registry）是否做？ | ⬜ **本次新增，待确认** |
+
+**R5 的结论记一笔**：你选了"不换"，而代价清单（7.2 节四项）也确实不划算——
+其中 `ToolDefinition.tool` 退化成 `Any` 会打断架构 4.4 节的核心设计。
+**这不是妥协，是那笔交易本来就亏。**
 
 **R5 单独说明**：这是我唯一**倾向于反对**你原始诉求的点。
 不是因为"继承制更好"，而是因为换掉它会削弱三处**已经生效**的约束，
