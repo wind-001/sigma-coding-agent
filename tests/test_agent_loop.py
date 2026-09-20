@@ -512,6 +512,43 @@ def test_tool_schema_is_derived_from_pydantic_params() -> None:
     assert "message" in schema["required"]
 
 
+def test_base_tool_cannot_be_instantiated() -> None:
+    """门槛 G22：``BaseTool`` 直接实例化必须抛 ``TypeError``。
+
+    防的是**抽象退化**：若哪天有人为了"少写一个方法"而去掉
+    ``@abstractmethod``，``BaseTool()`` 就变成一个可实例化的普通类，
+    而"忘了实现 ``run``"会从**实例化时报错**退化成**调用时才报错**——
+    后者发生得更晚，且症状（"这个工具没反应"）离根因更远。
+
+    这条断言同时钉住 R5 的结论（``BaseTool`` **保持 ABC**），
+    防止那个决定被悄悄改掉。
+    """
+    with pytest.raises(TypeError):
+        BaseTool()  # type: ignore[abstract]
+
+
+def test_builtin_tools_are_subclasses_with_matching_name() -> None:
+    """门槛 G23：内置工具都是 ``BaseTool`` 子类，且 ``name`` 与注册名一致。
+
+    前半句（是子类）已经由注册表签名 ``register(tool: BaseTool)``
+    在类型层保证了；**后半句才是这条用例的价值**——它防的是一个具体错误：
+    工具的 ``name`` 类属性被改了却忘了同步别处，于是模型按旧名字调用、
+    注册表查不到。症状是"模型调了个不存在的工具"，不指向根因。
+    """
+    from sigma.sdk import default_registry
+    from sigma_tools.read import ReadTool
+    from sigma_tools.write import WriteTool
+
+    for tool_cls in (ReadTool, WriteTool):
+        assert issubclass(tool_cls, BaseTool)
+        assert tool_cls.name, f"{tool_cls.__name__} 没有声明 name"
+
+    registry = default_registry()
+    assert registry.names(), "注册表为空时下面的循环什么也没验证到"
+    for name in registry.names():
+        assert registry.get(name).name == name
+
+
 def test_registry_schema_order_is_stable() -> None:
     """``schemas()`` 顺序按字典序固定。
 
