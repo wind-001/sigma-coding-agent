@@ -61,11 +61,19 @@
 from __future__ import annotations
 
 import json
+import time
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
+
+if TYPE_CHECKING:
+    # 只用于注解。``from __future__ import annotations`` 让注解不参与求值，
+    # 于是本模块与 ``types`` 之间**没有运行期依赖边**（``types`` 反向引用
+    # ``AgentMessage`` 同样是 TYPE_CHECKING）。**这是解开循环导入的关键**：
+    # 两个模块互相需要对方的类型，但都只在注解里用。
+    from sigma_agent.types import ToolResult
 
 # 注意：``LlmMessage`` **必须**在运行期可求值，不能只放在 TYPE_CHECKING 里。
 #
@@ -80,6 +88,7 @@ from pydantic import BaseModel, ValidationError
 from sigma_ai.messages import (
     ContentBlock,
     LlmMessage,
+    ToolCallBlock,
     ToolResultMessage,
     UserMessage,
 )
@@ -304,6 +313,42 @@ class ToolResultAgentMessage(AgentMessage):
     is_error: bool = False
     exclude_from_context: bool = False
     exclude_reason: str = ""
+
+    @classmethod
+    def from_result(
+        cls,
+        call: ToolCallBlock,
+        result: ToolResult,
+        *,
+        exclude_from_context: bool = False,
+        exclude_reason: str = "",
+        timestamp: int | None = None,
+    ) -> ToolResultAgentMessage:
+        """由「工具调用 + 执行结果」构造一条 agent 层消息。
+
+        **本方法兑现批次 1.5 详规第 9 节的 S1 项**——当时 ``ToolResult``
+        类型还不存在（属批次 2），所以只登记、不实现。现在补上。
+
+        ``exclude_from_context`` 为什么是**关键字参数**、而不是从 ``result`` 读：
+
+        该字段是 **agent 层的语义**（wire protocol 里没有它的位置），
+        而 ``ToolResult`` 是**工具层**的返回值——
+        **工具不该知道"这条消息会不会进上下文"**，那是调用方（loop 或扩展）的决定。
+        这与批次 1.5 的 W4 是同一条判据的延伸：**不上提到基类，就地下放到需要它的地方**。
+
+        ``timestamp`` 可以显式传入，是为了让**回放测试确定**：
+        否则两次回放的消息时间戳不同，"逐字节一致"的断言永远过不了。
+        """
+        return cls(
+            tool_call_id=call.id,
+            tool_name=call.name,
+            content=result.content,
+            details=result.details,
+            is_error=result.is_error,
+            exclude_from_context=exclude_from_context,
+            exclude_reason=exclude_reason,
+            timestamp=timestamp if timestamp is not None else int(time.time()),
+        )
 
     def to_llm(self) -> LlmMessage | None:
         """规则 3：``exclude_from_context`` 的消息**显式丢弃**（返回 ``None``）。
