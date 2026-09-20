@@ -14,6 +14,6 @@
 
 
 
-![image (1)](C:\Users\刘康鑫\Desktop\image (1).png)
+![四层架构图](docs/assets/pi-layered-architecture.png)
 
 7 开始实现架构的某一个部分之前,应该先生成一个计划文档让我审阅,我来决定是否可行

@@ -1,8 +1,17 @@
 # sigma 架构方案
 
-> 版本：v1.0 ｜ 2026-09-20
+> 版本：v1.1 ｜ 2026-09-20
 > 参照对象：Pi Agent Harness（架构与设计理念见 `pi-harness研究笔记.md`）
 > 定位：自研 coding agent harness，目标是**可自证的设计**，不是功能数量
+>
+> **v1.1 变更**（依据本人 2026-09-20 的三条拍板，见 `docs/plans/P0-骨架.md` 第 6 节）：
+> - a1 **产品壳范围对齐**：确认砍掉 Slack Bot / Web UI / RPC Mode（2.3 节）。
+> - a2 **一律采用继承制（ABC）**：所有抽象接口/扩展点用 `abc.ABC`，
+>   弃用 `typing.Protocol`。实体数据仍用 Pydantic `BaseModel`（4.1 / 4.2 / 4.3）。
+> - a3 **首个 Provider = OpenAI 兼容协议**：P1 只做 **1 套** wire protocol，
+>   Anthropic 推迟；2.2 节原「只做 2 套」表述已改为「先 1 后 1」（2.2 节）。
+>
+> 三条均有连带修正，逐条标记在对应节内。
 
 ---
 
@@ -20,6 +29,22 @@
 本方案**不复制 Pi 的代码**，只继承它的架构判断。原因不是技术性的，是定位性的：这个项目的价值在于"每一个设计决定都能被追问而不塌"。抄来的代码在追问面前是负资产。
 
 因此下文凡引用 Pi 的做法，都标注为 **【参照】**，并说明我为什么改或为什么照抄。
+
+---
+
+### 0.3 两条贯穿全案的编码约定
+
+1. **抽象用 ABC，数据用 BaseModel。**（依据 `AGENTS.md` 第 2、3 条，2026-09-20 拍板 a2）
+   凡需要"多实现可替换"的位置——`Provider`、`Tool`、`Hook`、`Store`——都用
+   `abc.ABC` + `@abstractmethod` 声明基类，由子类继承实现。
+   **不用 `typing.Protocol`**：Protocol 是结构化类型，只做静态检查，不产生继承关系，
+   与"采用继承制、后期扩展"的诉求不符（见 4.1 节的具体差异）。
+   凡只承载数据、无行为的位置——`Message` / `Usage` / `ToolCall` / `ToolResult` /
+   `ToolContext` / `StreamEvent`——用 Pydantic `BaseModel`。
+   两者不冲突：**基类回答"谁是谁"，模型回答"装着什么"。**
+2. **新引入的第三方依赖必须先验证它在 Python 3.12+ 上可用。**
+   理由见 4.2 节：本项目依赖的第一批库（`typing_extensions`）在 3.13 上的
+   stable 版本不导入可选模块，属于"装得上但用不了"的静默失败类型。
 
 ---
 
@@ -121,7 +146,7 @@ Docker 在 Windows 上的开发体验和启动开销，对单人项目是纯负�
 
 | Pi 的做法 | sigma 的做法 | 理由 |
 | --- | --- | --- |
-| 归一化 4 套 wire protocol（OpenAI Completions / OpenAI Responses / Anthropic Messages / Google Generative AI） | **只做 2 套：OpenAI 兼容 + Anthropic** | OpenAI 兼容协议一次性覆盖 DeepSeek / Kimi / GLM / 通义 / vLLM / Ollama / LM Studio，是投入产出比最高的一条。Google / Bedrock / Azure 是产品化需求，不是架构需求 |
+| 归一化 4 套 wire protocol（OpenAI Completions / OpenAI Responses / Anthropic Messages / Google Generative AI） | **先做 1 套（OpenAI 兼容），后做 1 套（Anthropic）；共 2 套封顶** | OpenAI 兼容协议一次性覆盖 DeepSeek / Kimi / GLM / 通义 / vLLM / Ollama / LM Studio，是投入产出比最高的一条。**2026-09-20 拍板（a3）：P1 只做 OpenAI 兼容这一套**，Anthropic 进 P4 之后，Google / Bedrock / Azure 永久不做 |
 | 系统提示词压到 < 1,000 token | 起点定 **800 token，但作为可调参数** | Pi 的前提是"前沿模型已 RL 训练过编码任务"。你的评测集里要做系统提示词长度的 ablation，用数据定这个值，不要抄结论 |
 | 默认无权限审批 | **钩子 + 工作区根约束 + checkpoint** 三层软边界 | 没有容器隔离就必须有替代品，checkpoint 是其中最可量化的一层 |
 | `pi-tui` 差分渲染终端 UI | **纯文本 REPL + 流式打印** | TUI 是大量工作量、零架构信号，且会让 CI 极其难跑 |
@@ -133,10 +158,16 @@ Docker 在 Windows 上的开发体验和启动开销，对单人项目是纯负�
 ```
 MCP                  子代理              Plan Mode
 待办追踪             后台 bash           Web UI / 编辑器集成
-RPC / 远程 session    多实例编排          SQLite session backend
-主题系统              TUI 花哨渲染        权限弹窗 UI
-15+ Provider         云端 sandbox        差分隐私 / 数据集共享
+RPC / 远程 session    多实例编排          Slack Bot
+SQLite session backend 主题系统          TUI 花哨渲染
+权限弹窗 UI          15+ Provider        云端 sandbox
+差分隐私 / 数据集共享  Anthropic（P1 不做，见 2.2）
 ```
+
+**2026-09-20 拍板（a1）**：产品壳范围**与手绘架构图对齐**，即确认
+**Slack Bot / Web UI / RPC Mode 三项都不做**。手绘图里的这一层是目标形态，
+不是 P1–P4 的交付范围；架构留出了接口位（`core/sigma/sdk.py`），
+但不实现任何一个接入端。
 
 砍掉的每一条都要在 README 里给出"代替路径"（例如：要 MCP → 写一个扩展；要后台任务 → tmux），**照抄 Pi 的做法**。这是它最值得学的叙事方式：让"不做"看起来是设计而不是缺失。
 
@@ -182,6 +213,37 @@ RPC / 远程 session    多实例编排          SQLite session backend
 
 **为什么 checkpoint 放在 `sigma_agent` 而不是 `sigma_tools`**：它需要感知"一个工具批次"的边界，这个边界只有 loop 知道。放在工具层会退化成"每个工具自己备份"，重复且不可控。
 
+### 3.0 手绘架构图与本节的对齐关系
+
+`docs/assets/pi-layered-architecture.png` 是本人的四层草图，**参照对象是 Pi，不是 sigma**。
+图示内容（2026-09-20 逐项核对）：
+
+| 图的层 | 图内条目 | 映射到 sigma |
+| --- | --- | --- |
+| 1 | Provider Registry · 事件流 · 消息变换 | `sigma_ai` |
+| 2 pi-agent-core（循环引擎） | agentLoop · 工具执行管道 · Agent 状态管理 | `sigma_agent` |
+| 3 pi-coding-agent（产品内核） | 会话树 · Compaction · Prompt 装配 · Extension / Skill | `sigma_session`（+ `sigma_tools` 的工具侧） |
+| 4 产品壳 | CLI (TUI) · Slack Bot · Web UI · RPC Mode | `sigma` 的 CLI 与 SDK 入口；**后三项明确不做** |
+
+**三处与本节不一致，逐条给出处置**：
+
+1. **产品壳范围**：图里画了 Slack Bot / Web UI / RPC Mode，本方案 2.3 节砍掉了。
+   **2026-09-20 拍板（a1）：对齐 → 确认砍掉。**
+   两者的关系要说清：**图描述的是目标形态，2.3 节描述的是 P1–P4 的交付范围。**
+   不是同一层的东西，所以不构成冲突。
+2. **图的第 2、3 层标的是 pi 的包名**（`pi-agent-core` / `pi-coding-agent`），
+   那是参照对象的命名，不是 sigma 的。sigma 对应 `sigma_agent` / `sigma_session`。
+3. **本节的五层 ≠ 图的四层**：图把"工具"合进了第 2 层的"工具执行管道"，
+   本方案把它拆成独立的 `sigma_tools` 层。拆的理由是
+   **它要能与扩展工具共用一条注册路径，需要独立成为一层才谈得上契约**。
+
+**另有一处必须更正**：早前我把这张图概括为"四层架构图"并逐层对标，
+但**图里没有任何文字标明这四层之间的依赖方向**（只有向下箭头表示排列顺序）。
+所以拿它去论证 `sigma_tools` 与 `sigma_session` 的依赖关系是无效的——
+那张图**根本不含这个信息**。
+兄弟层这个结论来自本方案第 8 节的依赖边表，并由 `independence` 契约强制，
+不是从图里读出来的。
+
 ### 3.1 目录结构
 
 ```
@@ -192,25 +254,27 @@ sigma/
 ├── README.md
 ├── core/
 │   ├── sigma_ai/
-│   │   ├── protocol.py            # Provider 协议、Message、Usage
-│   │   ├── events.py              # 流式事件判别联合
-│   │   ├── openai_compat.py       # OpenAI 兼容实现
-│   │   ├── anthropic.py
+│   │   ├── base.py                # BaseProvider（ABC）、Message、Usage
+│   │   ├── events.py              # StreamEvent 判别联合
+│   │   ├── openai_compat.py       # OpenAI 兼容实现（P1 唯一的 provider）
+│   │   ├── anthropic.py           # P4 之后
 │   │   └── fake.py                # 确定性回放（见 7.2）
 │   ├── sigma_agent/
-│   │   ├── loop.py                # 唯一的循环实现
+│   │   ├── base.py                # BaseLoop / BaseTool（ABC）
+│   │   ├── loop.py                # AgentLoop —— BaseLoop 的唯一子类
 │   │   ├── registry.py            # 工具注册表 + 热重载
-│   │   ├── hooks.py               # 钩子总线
+│   │   ├── hooks.py               # 钩子总线（BaseHook ABC）
 │   │   ├── checkpoint.py          # 影子 git
 │   │   └── types.py               # ToolDefinition / ToolResult / ToolCall
 │   ├── sigma_session/
+│   │   ├── base.py                # BaseStore（ABC）
 │   │   ├── tree.py                # SessionTree
 │   │   ├── store.py               # JSONL 追加读写
 │   │   ├── context.py             # 上下文组装 + 预算
 │   │   ├── compact.py             # 压缩
 │   │   └── resources.py           # AGENTS.md / skills 发现
 │   ├── sigma_tools/
-│   │   ├── read.py  write.py  edit.py  bash.py
+│   │   ├── read.py  write.py  edit.py  bash.py    # 各含一个 BaseTool 子类
 │   │   └── truncate.py            # 输出截断（见 5.3）
 │   └── sigma/
 │       ├── cli.py                 # 薄壳
@@ -249,7 +313,14 @@ P0 实际只落地了：五个包的 `__init__.py`、一个占位 `cli.py`、
 
 ### 4.1 Provider 抽象（sigma_ai）
 
+> **2026-09-20 变更（a2）**：`Provider` 由 `Protocol` 改为 `ABC`。
+> 这是全案第一个、也是影响面最大的继承制改造点。
+
 ```python
+from abc import ABC, abstractmethod
+
+# ---- 数据载体：Pydantic BaseModel（AGENTS.md 第 3 条）----
+
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: list[ContentBlock]
@@ -259,20 +330,45 @@ class Usage(BaseModel):
     completion_tokens: int
     cached_tokens: int = 0
 
-class Provider(Protocol):
-    async def stream(
+# ---- 抽象基类：ABC（AGENTS.md 第 2 条，a2 拍板）----
+
+class BaseProvider(ABC):
+    """所有 Provider 的抽象基类。
+
+    子类必须实现 stream 与 estimate_tokens。
+    抽象方法一律不得提供默认实现——默认实现会让"忘了实现"变成静默错误。
+    """
+
+    @abstractmethod
+    def stream(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]],
         *,
         model: str,
         signal: CancelToken,
-    ) -> AsyncIterator[StreamEvent]: ...
+    ) -> AsyncIterator[StreamEvent]:
+        """流式产出统一事件。子类不得自行定义事件类型。"""
+        raise NotImplementedError
 
+    @abstractmethod
     def estimate_tokens(self, messages: list[Message]) -> int: ...
 ```
 
-三个必须写进实现约定的点：
+**为什么是 ABC 而不是 Protocol**（a2 的直接后果，必须能讲清）：
+
+| 维度 | `typing.Protocol` | `abc.ABC`（本项目选用） |
+| --- | --- | --- |
+| 类型关系 | 结构化：只要方法签名对得上就算"实现"，**不产生继承关系** | 名义化：必须显式继承 |
+| 忘实现方法 | 静态检查器报错，运行期直接拿到 `AttributeError` 或静默走错分支 | **实例化即抛 `TypeError`**，无法带着缺失实现跑起来 |
+| 新增方法时的扩散 | 所有"碰巧签名匹配"的类自动变成子类，改动影响面不可见 | 抽象方法未实现 → 全部子类立刻报错，改动可见 |
+| 与 `AGENTS.md` 第 2 条 | 冲突（那一条要求继承制） | 一致 |
+| 注册机制 | 无 | `BaseProvider.register(X)` 可注册非继承的第三方实现（留后门） |
+
+关键区别在第 3 行：**ABC 让"忘了实现"在实例化时就暴露，Protocol 会把问题推到第一次调用。**
+对"后期扩展"这个诉求，早暴露价值远大于晚暴露——这正是 `AGENTS.md` 第 2 条要继承制的实际收益。
+
+顺序三必须写进实现约定的点：
 
 1. **`StreamEvent` 必须是一个完整的判别联合**（文本增量 / 工具调用增量 / 用量 / 结束原因 / 错误），UI、落盘、测试**消费同一个类型**。不要在 UI 层另造一套事件。
 2. **`estimate_tokens` 只用于预算预警，不作为账本。** 真实用量以 provider 返回的 `usage` 为准，本地估算要持续用真实值做比例校准。自己实现 tokenizer 当唯一依据是错的。
@@ -280,13 +376,44 @@ class Provider(Protocol):
 
 ### 4.2 工具定义（sigma_agent）
 
+> **2026-09-20 变更（a2）**：原设计的 `ToolDefinition` 里塞 `fn: Callable`，
+> 是函数式写法，与继承制冲突。改为**「工具基类 + 轻量元数据」**两段式：
+> 行为写在 `BaseTool` 的抽象方法里，`ToolDefinition` 只留元数据。
+
 ```python
+from abc import ABC, abstractmethod
+
+# ---- 行为：ABC 基类（AGENTS.md 第 2 条）----
+
+class BaseTool(ABC):
+    """所有工具（内置 / 扩展）的抽象基类。二者走同一条注册路径。"""
+
+    name: str = ""
+    description: str = ""
+    read_only: bool = False       # 只读工具允许并发执行
+    needs_approval: bool = False
+
+    @property
+    @abstractmethod
+    def params(self) -> type[BaseModel]:
+        """参数模型。Pydantic 模型 → 自动生成 JSON Schema。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
+        """执行。单个工具失败必须返回 is_error=True 的 ToolResult，
+        不得向上抛异常——见 4.3 节第 3 点。"""
+        raise NotImplementedError
+
+# ---- 元数据：BaseModel（AGENTS.md 第 3 条）----
+
 class ToolDefinition(BaseModel):
+    """注册表里存的东西。只装元数据，不装可执行引用。"""
     name: str
     description: str
-    params: type[BaseModel]        # Pydantic 模型 → 自动生成 JSON Schema
-    fn: Callable[..., Awaitable[ToolResult]]
-    read_only: bool = False        # 只读工具允许并发执行
+    params_schema: dict[str, Any]     # 由 BaseTool.params 生成的 JSON Schema
+    tool: BaseTool                    # 指向基类实例，不是裸函数
+    read_only: bool = False
     needs_approval: bool = False
     source: str = "builtin"
 
@@ -302,14 +429,29 @@ class ToolContext(BaseModel):
     emit: Callable[[str], None]          # 流式进度回调
 ```
 
+**这个改动的连带收益**：`params` 从「实例字段」变成「属性 + 抽象方法」后，
+内置工具与扩展工具无法再通过"传不同函数"来偷懒，必须真的各写一个类。
+这让 4.4 节「扩展与内置同路径注册」这条约束有了结构化载体——
+`registry.register(tool: BaseTool)` 的签名本身就限制了能注册什么。
+
 `params` 用 Pydantic 模型而不是手写 JSON Schema，是 Python 侧相对 Pi 的**真实优势**——它同时给了你参数校验、类型提示和 schema 生成。要用足。
 
 `details` 不进上下文这一点必须严格执行：它是最容易被滥用的字段。**判定依据：如果一段内容不需要模型看到，它就应该在 `details` 里。** 这直接决定上下文预算。
 
 ### 4.3 Agent loop（唯一的循环实现）
 
+> **2026-09-20 变更（a2）**：`AgentLoop` 改为继承 `BaseLoop`。
+> 让 loop 也有基类，是为了给"换一种循环策略"留出继承位——
+> 但**当前只允许一个子类**（`AgentLoop`），不得并行存在第二个实现。
+
 ```python
-class AgentLoop:
+class BaseLoop(ABC):
+    """agent 循环的唯一抽象。当前阶段只有一个子类。"""
+
+    @abstractmethod
+    async def run_turn(self, session: SessionTree, queues: Queues) -> TurnResult: ...
+
+class AgentLoop(BaseLoop):
     async def run_turn(self, session: SessionTree, queues: Queues) -> TurnResult:
         while True:
             ctx = self.session.build_context(budget=self.budget)
@@ -330,6 +472,14 @@ class AgentLoop:
             if await self.hooks.should_stop_after_turn(session):
                 return TurnResult.stopped(...)
 ```
+
+**为什么 loop 也要基类、却又明确禁止第二个实现**：这是 `AGENTS.md` 第 2 条
+（"采用继承制，后期扩展"）与架构方案第 4.3 节（"唯一的循环实现"）之间的一处张力。
+处理方式是把这两句话都写进代码约束：
+
+- 留基类 → 未来若要做"两阶段规划循环"或"反思循环"，不必动公共接口。
+- 只允许一个子类 → 用测试断言 `BaseLoop.__subclasses__()` 恰好只有 `AgentLoop`。
+  这条断言在 P1 落地，防止中途冒出"另一套简化 loop"。
 
 `_execute_batch` 是必须写对的三个点：
 
@@ -367,8 +517,13 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         self._source_of: dict[str, str] = {}
 
-    def get(self, name: str) -> ToolDefinition:
-        return self._tools[name]      # 每次查表，不返回缓存引用
+    def register(self, tool: BaseTool, *, source: str = "builtin") -> None:
+        """签名接受 BaseTool 而不是裸 Callable——
+        这一条让"扩展工具与内置工具同路径"成为类型层面的约束，不是约定。"""
+        ...
+
+    def get(self, name: str) -> BaseTool:
+        return self._tools[name].tool   # 每次查表，不返回缓存引用
 
     def reload_source(self, source: str) -> ReloadReport:
         ...
@@ -593,10 +748,18 @@ tests/fixtures/transcripts/
 | 分层契约 | `importlinter` 强制 5 层单向依赖，禁止反向 import | CI 失败 |
 | 常驻区稳定性 | 单测断言会话内常驻区哈希不变 | CI 失败 |
 | 引用缓存契约 | 单测断言 `registry.get()` 在热重载后返回新实例 | CI 失败 |
+| **抽象基类契约** | 单测断言：所有 Provider / Tool 实现都继承对应基类；基类含 `@abstractmethod` 则直接实例化必须抛 `TypeError` | CI 失败 |
+| **唯一 loop 契约** | 单测断言 `BaseLoop.__subclasses__()` 恰好只有 `AgentLoop` | CI 失败 |
 | 离线可测 | 全部单测在无 API key 下通过 | CI 失败 |
 | 依赖锁定 | 精确版本 + lockfile 校验 | CI 失败 |
 | 评测回归 | 评测报告与上一次对比，成功率下降超过阈值则报警 | 夜间任务产出报告 |
 | 类型检查 | `mypy --strict`（至少覆盖 `core/`） | CI 失败 |
+
+**中间两条是 2026-09-20 拍板 a2（一律继承制）之后新增的。**
+原因：`AGENTS.md` 第 2 条是一个**风格要求**，而风格要求默认会随时间腐化——
+半年后往代码里塞一个签名匹配的鸭子类型对象，没有任何东西会拦。
+把它变成两条可执行的断言，才是让"继承制"真正落地的唯一办法。
+这与 4.4 节那条教训同源：**能跑绿的配置不等于生效的约束，约束必须能被单独证伪。**
 
 **依赖方向契约的具体内容**（写在 `pyproject.toml` 的 `[tool.importlinter]`）：
 
@@ -640,7 +803,7 @@ sigma_ai      → （无内部依赖）
 | Phase | 内容 | 硬性验收门 |
 | --- | --- | --- |
 | **P0** 决策与骨架 | 拍板 D1–D6；pyproject；目录；CI；importlinter 契约 | CI 全绿；契约能拦住一个故意写错的反向 import（要有这个测试） |
-| **P1** 最小闭环 | `sigma_ai`（1 个 provider）+ `sigma_agent` loop + 4 工具 + 线性会话 + 一次性模式 + FakeProvider | 在真实小仓库上端到端修复一个单文件 bug；agent loop 单测全部走回放、离线通过；**10 条评测任务跑出第一份报告** |
+| **P1** 最小闭环 | `sigma_ai`（**OpenAI 兼容 1 套**）+ `sigma_agent` loop + 4 工具 + 线性会话 + 一次性模式 + FakeProvider | 在真实小仓库上端到端修复一个单文件 bug；agent loop 单测全部走回放、离线通过；**10 条评测任务跑出第一份报告，且含 B1 vs B2 对照** |
 | **P2** 会话树与上下文 | SessionTree + `path_to` + 压缩 + `AGENTS.md` + 预算断言 + 输出截断 | 分支 / 回滚可用；常驻区稳定性断言生效；压缩前后成功率下降 ≤ 5% |
 | **P3** 钩子与边界 | HookManager + before/afterToolCall + 路径约束 + 影子 git checkpoint + steering/follow-up | 对抗集拦截率 ≥ 90% 且误拦率 ≤ 5%；checkpoint 回滚成功率 100%（含删除文件场景） |
 | **P4** 扩展系统 | 扩展加载 + 热重载 + 按名解析契约 + 扩展与内置同路径注册 | 改扩展文件后**当轮生效**，有自动化测试；三个失败场景（导入异常 / 空注册 / 重名）各有单测 |
@@ -691,7 +854,8 @@ sigma_ai      → （无内部依赖）
 | 维度 | Pi | sigma | 差异理由 |
 | --- | --- | --- | --- |
 | 语言 | TypeScript | Python | 复用既有能力；代价是失去 jiti |
-| Provider 协议 | 4 套归一化 | 2 套（OpenAI 兼容 + Anthropic） | OpenAI 兼容已覆盖国内主流 |
+| Provider 协议 | 4 套归一化 | 先 1 套（OpenAI 兼容），共 2 套封顶 | a3 拍板：P1 只要 OpenAI 兼容，已覆盖国内主流 |
+| 抽象风格 | TypeScript interface / type | **`abc.ABC` + `@abstractmethod`** | a2 拍板（`AGENTS.md` 第 2 条）：继承制，且忘实现能在实例化时暴露 |
 | 内置工具 | 4（+3 可选） | 4（+3 可选） | 照抄 |
 | 会话存储 | JSONL 树 | JSONL 树 | 照抄 |
 | 系统提示词 | < 1,000 token | 800，可调 | 改为用 ablation 定值 |
