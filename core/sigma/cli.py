@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from sigma import __version__
+from sigma.dotenv import ENV_VAR_NAME, USER_CONFIG_DIR, resolve_api_key
 from sigma.sdk import default_registry, run_task
 from sigma_agent.agent_messages import (
     AgentMessage,
@@ -89,14 +90,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _resolve_config(
     args: argparse.Namespace,
-) -> tuple[str, str, str | None]:
-    """按 命令行 > 环境变量 > preset 默认 的优先级解析配置。"""
+) -> tuple[str, str, str | None, str]:
+    """解析配置。
+
+    优先级（高 → 低）：``--api-key`` > 环境变量 ``SIGMA_API_KEY``
+    > ``~/.sigma/.env`` > ``./.env``
+
+    "环境变量高于文件"是有意的：临时换 key 时 ``export`` 一句就该生效，
+    不必去改文件。
+
+    返回 ``(base_url, model, api_key, key 来源说明)``。
+    **来源必须打出来**——否则"改了 .env 却没生效"（因为环境变量赢了）
+    会变成一个纯靠猜的问题。
+    """
     preset = args.preset or DEFAULT_PRESET
     preset_url, preset_model = PRESETS[preset]
     base_url = args.base_url or os.environ.get("SIGMA_BASE_URL") or preset_url
     model = args.model or os.environ.get("SIGMA_MODEL") or preset_model
-    api_key = args.api_key or os.environ.get("SIGMA_API_KEY")
-    return base_url, model, api_key
+    api_key, key_source = resolve_api_key(explicit=args.api_key)
+    return base_url, model, api_key, key_source
 
 
 def _render(message: AgentMessage, index: int) -> str:
@@ -188,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         print('提示：一次性模式用法 —— sigma -p "把 foo.py 里的 off-by-one 修掉"')
         return EXIT_HARNESS_ERROR
 
-    base_url, model, api_key = _resolve_config(args)
+    base_url, model, api_key, key_source = _resolve_config(args)
     workspace = Path(args.workspace).expanduser()
 
     # 以下都是"harness 自己跑不起来"，属 Q4 里的非 0 ——与任务成败无关
@@ -196,17 +208,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[harness 错误] 工作区不存在或不是目录：{workspace}", file=sys.stderr)
         return EXIT_HARNESS_ERROR
     if not api_key:
-        print("[harness 错误] 缺少 API key。", file=sys.stderr)
+        print("[harness 错误] 缺少 API key。三种设置方式，任选一种：", file=sys.stderr)
         print(
-            "  二选一：export SIGMA_API_KEY=sk-xxx   或   --api-key sk-xxx",
+            f"  1) 写进 {USER_CONFIG_DIR / '.env'}（推荐，在项目目录之外，不会被误提交）",
             file=sys.stderr,
         )
+        print(f"     内容一行即可：{ENV_VAR_NAME}=sk-xxx", file=sys.stderr)
+        print(f"  2) 临时用：export {ENV_VAR_NAME}=sk-xxx", file=sys.stderr)
+        print("  3) 只用一次：--api-key sk-xxx", file=sys.stderr)
         return EXIT_HARNESS_ERROR
 
     print(f"sigma {__version__}")
     print(f"  工作区  {workspace.resolve()}")
     print(f"  模型    {model} @ {base_url}")
     print(f"  工具    {default_registry().names()}")
+    print(f"  密钥    已加载（来源：{key_source}）")
     print()
     print("  ⚠ 安全提示：P1 的工具没有任何边界约束（D5 的三层软边界尚未实现）。")
     print("     read 可读任意路径、write 可写任意路径，请只在受控目录内使用。")
