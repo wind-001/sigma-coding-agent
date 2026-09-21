@@ -1,0 +1,13 @@
+# Windows 批处理与 PowerShell 脚本的行尾必须固定。
+#
+# *.bat 为什么必须是 CRLF
+#     cmd.exe 对 LF 结尾的批处理处理不可靠——多行括号块（if/else 那种）
+#     会在 LF 下被拼错或吞掉一行。**症状随机且只在部分机器上出现**，
+#     属于最难排查的一类问题。所以这里强制 CRLF，而不是交给 autocrlf 猜。
+#
+# *.ps1 一并按 Windows 惯例设为 CRLF（PowerShell 两种都能读，保持一致更省心）。
+#
+# 其余文件不做规定：Python / Markdown / TOML 用 LF 即可。
+
+*.bat text eol=crlf
+*.ps1 text eol=crlf
