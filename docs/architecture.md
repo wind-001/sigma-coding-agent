@@ -1,6 +1,6 @@
 # sigma 架构方案
 
-> 版本：v1.3 ｜ 2026-09-20
+> 版本：v1.4 ｜ 2026-09-21
 > 参照对象：Pi Agent Harness（架构与设计理念见 `pi-harness研究笔记.md`）
 > 定位：自研 coding agent harness，目标是**可自证的设计**，不是功能数量
 >
@@ -31,6 +31,15 @@
 > - P1 评测仓库定为**自造迷你仓库**（Q0）；首个被测模型 DeepSeek `deepseek-chat`（Q3）。
 > 
 > 三条均有连带修正，逐条标记在对应节内。
+>
+> **v1.4 变更**（2026-09-21，批次 7）：
+> - **新增一个可选内置工具 `web_search`**（联网搜索，Tavily）：只在解析到 `TAVILY_API_KEY`
+>   时注册，可由 `--no-web-search` 关闭。免费额度 1000 credits/月，用尽即自动禁用
+>   （账本与校准见 `core/sigma_tools/_tavily_quota.py`）。
+> - 它**不属于核心 5 工具**：工具 schema 进常驻区，没配 key 的机器不该为它付 token。
+>   因此落在 5.1 节「工具 schema（+3 可选）」那一栏，2.1 节保留清单追加一行，
+>   附录 A 内置工具对照同步更新。
+> - 完整详规与门槛（G37–G41）：`docs/plans/P1-批次7-联网搜索工具-详规.md`。
 
 ---
 
@@ -155,6 +164,7 @@ Docker 在 Windows 上的开发体验和启动开销，对单人项目是纯负�
 | --- | --- |
 | 薄 agent loop（4 阶段循环） | 全部价值的地基 |
 | 5 个内置工具 read / write / edit / bash / grep | 构成最小闭环；`edit` 必须是**精确字符串替换 + 输出 unified diff**，不是整文件重写。**`grep` 为 2026-09-20 新增**（原 4 个覆盖不了「先跨文件搜索定位再改」的任务形态） |
+| **可选工具 `web_search`**（2026-09-21 新增） | 联网搜索：查本地工作区里没有的信息（库的最新用法 / 报错原因 / 版本变更 / 事实核对）。**不属于核心 5 工具**——工具 schema 进常驻区，所以只在配了 `TAVILY_API_KEY` 时注册，`--no-web-search` 可关。免费额度 1000 credits/月，超额自动禁用 |
 | 会话树 JSONL（`id` + `parentId`） | 性价比最高的单项设计，成本极低、收益极大 |
 | `beforeToolCall` / `afterToolCall` 钩子 | 有它才能把审批、路径保护、审计、结果改写全部外置 |
 | 工具返回值两段式 `content` / `details` | 给模型的和给程序的分开 |
@@ -895,12 +905,18 @@ def _import_fresh(path: str) -> ModuleType:
 | --- | --- | --- | --- |
 | 系统提示词 | ≤ 800 | 启动时固定 | 会话内不可变 |
 | 工具 schema（5 个） | ~820 | 启动时固定 | 会话内不可变 |
-| 工具 schema（+3 可选） | +~450 | 启动时按 flag | 会话内不可变 |
+| 工具 schema（+3 可选，`web_search` 占其一） | +~450 | 启动时按 flag | 会话内不可变 |
 | `AGENTS.md` | ≤ 1,500 | 启动时注入，硬截断 | 会话内不可变 |
 | 技能索引（name + description） | ≤ 600 | 启动时固定 | 会话内不可变 |
 | checkpoint / 摘要 | ≤ 1,000 | 压缩产出 | 随压缩更新 |
 | **常驻小计** | **≤ 3,500** | | **逐字节稳定** |
 | 会话历史 + 工具输出 | 剩余 | 动态 | append only |
+
+> **2026-09-21 追加**：可选栏已经有第一个实例——`web_search`（联网搜索）。
+> 一个工具 schema 约 +150 token、系统提示词多一行约 +60 token，
+> 开关是 `--no-web-search`。**「联网搜索值不值这约 210 token 常驻成本」
+> 正好是 7.6 节那条工具 ablation 要回答的问题**（工具 8 → 5 那一行）。
+> 注意口径：免费档是 1000 **credits**/月，不是 1000 次——advanced 档每次 2 credits。
 
 ### 5.2 两条硬规则
 
@@ -1191,7 +1207,7 @@ sigma_ai      → （无内部依赖）
 | 语言 | TypeScript | Python | 复用既有能力；代价是失去 jiti |
 | Provider 协议 | 4 套归一化 | 先 1 套（OpenAI 兼容），共 2 套封顶 | a3 拍板：P1 只要 OpenAI 兼容，已覆盖国内主流 |
 | 抽象风格 | TypeScript interface / type | **`abc.ABC` + `@abstractmethod`** | a2 拍板（`AGENTS.md` 第 2 条）：继承制，且忘实现能在实例化时暴露 |
-| 内置工具 | 4（+3 可选） | **5**（+3 可选） | 比 Pi 多 `grep`：4 个覆盖不了跨文件搜索定位 |
+| 内置工具 | 4（+3 可选） | **5 + 1 可选**（`web_search`） | 比 Pi 多 `grep`：4 个覆盖不了跨文件搜索定位；`web_search` 是可选的第 6 个（有 key 才注册），Pi 的同类能力走 MCP 扩展 |
 | 会话存储 | JSONL 树 | JSONL 树 | 照抄 |
 | 系统提示词 | < 1,000 token | 800，可调 | 改为用 ablation 定值 |
 | 权限 | 无内置，靠容器 | 三层软边界，无容器 | Windows 开发成本 |

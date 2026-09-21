@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 ENV_VAR_NAME = "SIGMA_API_KEY"
 
+#: 联网搜索（Tavily）的密钥变量。与 SIGMA_API_KEY 共用同一套解析优先级。
+TAVILY_ENV_VAR = "TAVILY_API_KEY"
+
 # 用户级配置目录：**在 git 仓库之外**，所以它不会被误提交。
 # 项目根的 .env 也可用（已加进 .gitignore），但仓库外的那个更安全。
 USER_CONFIG_DIR = Path.home() / ".sigma"
@@ -65,6 +68,7 @@ def resolve_api_key(
     *,
     explicit: str | None = None,
     candidates: Sequence[Path] | None = None,
+    var_name: str = ENV_VAR_NAME,
 ) -> tuple[str | None, str]:
     """按优先级找 API key。
 
@@ -82,13 +86,29 @@ def resolve_api_key(
 
     import os
 
-    from_env = os.environ.get(ENV_VAR_NAME)
+    from_env = os.environ.get(var_name)
     if from_env:
-        return from_env, f"环境变量 {ENV_VAR_NAME}"
+        return from_env, f"环境变量 {var_name}"
 
     for path in candidates if candidates is not None else CANDIDATE_FILES:
-        found = load_env_file(path).get(ENV_VAR_NAME)
+        found = load_env_file(path).get(var_name)
         if found:
             return found, f"配置文件 {path}"
 
     return None, "未找到"
+
+
+def resolve_tavily_api_key(
+    *,
+    explicit: str | None = None,
+    candidates: Sequence[Path] | None = None,
+) -> tuple[str | None, str]:
+    """联网搜索的密钥。
+
+    独立一个函数而不是在调用处传 var_name：**"用哪个变量名"是这里的事**，
+    调用方只该问"有没有联网搜索的 key"。这与本模块的分界一致——
+    它管"读什么变量"，不管"从哪个目录优先读"（那是 cli 的事）。
+    """
+    return resolve_api_key(
+        explicit=explicit, candidates=candidates, var_name=TAVILY_ENV_VAR
+    )

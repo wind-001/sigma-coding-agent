@@ -39,6 +39,7 @@
 | Q3 | 首个被测模型 **DeepSeek `deepseek-chat`** | 2026-09-20 |
 | Q4 | `-p` 退出码：**0 = 正常结束，非 0 = harness 自身失败** | 2026-09-20 |
 | R2 | 时间预算：**8h/周全部给 sigma**（与 interview-agent 无并行关系） | 2026-09-20 |
+| Q5 | 联网搜索做成**可选第 6 个工具** `web_search`（Tavily）：有 key 才注册、`--no-web-search` 可关；免费额度 1000 credits/月，超额自动禁用 | 2026-09-21 |
 
 ---
 
@@ -139,8 +140,9 @@ SIGMA_API_KEY=sk-你的key
 > `write` 可写任意路径。**只在受控目录内使用。**
 > 不知道边界在哪比边界不存在更危险——所以 CLI 每次启动都会打印这条。
 
-> 📌 **当前工具集只有 `read` / `write`**——`edit` / `bash` / `grep` 尚未实现。
-> 所以模型改文件只能整文件重写，那更费 token、也更容易出错。
+> 📌 **工具集的当前边界**：核心五工具 `read` / `write` / `edit` / `bash` / `grep` 已全部就位；
+> 另有**可选第六个 `web_search`**（联网搜索，Tavily）——只在解析到 `TAVILY_API_KEY` 时注册。
+> 免费额度 1000 **credits**/月（basic 档每次 1、advanced 档 2），用尽后工具自动禁用。
 > **这一点写出来，不假装够用。**
 
 > 🧪 **REPL 是简版**：交互模式**不支持中途打断 / 消息注入**（那需要 P3 的
@@ -216,7 +218,7 @@ sigma_ai      → （无内部依赖）
 | 层 | 职责 |
 | --- | --- |
 | `sigma` | 产品壳：CLI / REPL / 一次性模式 / SDK 入口 |
-| `sigma_tools` | 内置工具：read / write / edit / bash / grep |
+| `sigma_tools` | 内置工具：read / write / edit / bash / grep（+ 可选 web_search） |
 | `sigma_session` | 会话树 · 上下文组装 · 压缩 · 扩展装配 |
 | `sigma_agent` | agent loop · 工具注册表 · 钩子总线 · checkpoint |
 | `sigma_ai` | Provider 抽象 · 流式事件 · 用量 |

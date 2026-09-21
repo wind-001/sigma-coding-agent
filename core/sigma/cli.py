@@ -34,9 +34,22 @@ import sys
 from pathlib import Path
 
 from sigma import __version__
-from sigma.dotenv import ENV_VAR_NAME, USER_CONFIG_DIR, resolve_api_key
+from sigma.dotenv import (
+    ENV_VAR_NAME,
+    TAVILY_ENV_VAR,
+    USER_CONFIG_DIR,
+    resolve_api_key,
+    resolve_tavily_api_key,
+)
 from sigma.repl import run_repl
-from sigma.sdk import InteractiveSession, default_registry, run_task
+from sigma.sdk import (
+    InteractiveSession,
+    build_system_prompt,
+    default_registry,
+    run_task,
+)
+from sigma_agent.registry import ToolRegistry
+from sigma_tools.web_search import WebSearchTool
 from sigma.render import TerminalRenderer
 from sigma_agent.agent_messages import (
     AgentMessage,
@@ -104,6 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--trace",
         action="store_true",
         help="流式输出之外，结束再打印一遍完整消息序列（调试 / 评测用）",
+    )
+    parser.add_argument(
+        "--no-web-search",
+        action="store_true",
+        help=(
+            "禁用联网搜索工具 web_search。"
+            "默认：解析到 TAVILY_API_KEY 就启用（额度 1000 credits/月，超额自动禁用）"
+        ),
     )
     parser.add_argument("--version", action="version", version=f"sigma {__version__}")
     return parser
@@ -265,6 +286,9 @@ async def _run_once(
     base_url: str,
     model: str,
     api_key: str,
+    *,
+    registry: ToolRegistry,
+    system_prompt: str,
 ) -> TurnResult:
     """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -276,6 +300,8 @@ async def _run_once(
             model=model,
             max_rounds=args.max_rounds,
             temperature=args.temperature,
+            registry=registry,
+            system_prompt=system_prompt,
             observer=TerminalRenderer(),
         )
     finally:
@@ -288,6 +314,9 @@ async def _run_interactive(
     base_url: str,
     model: str,
     api_key: str,
+    *,
+    registry: ToolRegistry,
+    system_prompt: str,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -297,6 +326,8 @@ async def _run_interactive(
         model=model,
         max_rounds=args.max_rounds,
         temperature=args.temperature,
+        registry=registry,
+        system_prompt=system_prompt,
         observer=TerminalRenderer(),
     )
     try:
@@ -340,12 +371,36 @@ def main(argv: list[str] | None = None) -> int:
         print("  3) 只用一次：--api-key sk-xxx", file=sys.stderr)
         return EXIT_HARNESS_ERROR
 
+    # 联网搜索是可选工具：**有 key 才注册**。工具 schema 进常驻区，
+    # 没配 key 的机器不该为它付 token（批次 7 详规 Q1）。
+    # 提示词与注册表同源：关掉时不出现"有个工具叫 web_search"这句话。
+    tavily_key, tavily_source = resolve_tavily_api_key()
+    web_search_on = not args.no_web_search and bool(tavily_key)
+    registry = default_registry(web_search=web_search_on, tavily_api_key=tavily_key)
+    system_prompt = build_system_prompt(web_search=web_search_on)
+
     mode = "一次性" if args.prompt else "交互"
     print(f"sigma {__version__}（{mode}模式）")
     print(f"  工作区  {workspace.resolve()}")
     print(f"  模型    {model} @ {base_url}")
-    print(f"  工具    {default_registry().names()}")
+    print(f"  工具    {registry.names()}")
     print(f"  密钥    已加载（来源：{key_source}）")
+    if web_search_on:
+        tool = registry.get("web_search")
+        if isinstance(tool, WebSearchTool):
+            usage = tool.quota.snapshot()
+            print(
+                f"  联网    已启用（{tavily_source}）"
+                f"｜剩余 {usage.remaining}/{usage.cycle_limit} credits"
+            )
+            # 账本写不下去时必须**说出来**：静默失败的后果是
+            # "额度计数每次都从 0 开始"，而用户只会觉得"额度怎么用不完"。
+            if usage.last_error:
+                print(f"          ⚠ 额度账本异常：{usage.last_error}")
+    elif args.no_web_search:
+        print("  联网    已按 --no-web-search 禁用")
+    else:
+        print(f"  联网    未启用（未找到 {TAVILY_ENV_VAR}）")
     print()
     print("  ⚠ 安全提示：P1 的工具没有任何边界约束（D5 的三层软边界尚未实现）。")
     print("     read 可读任意路径、write/edit 可写任意路径，")
@@ -354,12 +409,32 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.prompt:
-            result = asyncio.run(_run_once(args, workspace, base_url, model, api_key))
+            result = asyncio.run(
+                _run_once(
+                    args,
+                    workspace,
+                    base_url,
+                    model,
+                    api_key,
+                    registry=registry,
+                    system_prompt=system_prompt,
+                )
+            )
             if args.trace:
                 _report(result)
             # Q4：任务成没成，退出码都是 0
             return EXIT_OK
-        return asyncio.run(_run_interactive(args, workspace, base_url, model, api_key))
+        return asyncio.run(
+            _run_interactive(
+                args,
+                workspace,
+                base_url,
+                model,
+                api_key,
+                registry=registry,
+                system_prompt=system_prompt,
+            )
+        )
     except KeyboardInterrupt:
         print("\n已中断。", file=sys.stderr)
         return EXIT_INTERRUPTED

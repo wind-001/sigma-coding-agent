@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from sigma import dotenv
 from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
 from sigma_agent.loop import AgentLoop
 from sigma_agent.observe import LoopObserver
@@ -38,7 +39,9 @@ from sigma_tools.bash import BashTool
 from sigma_tools.edit import EditTool
 from sigma_tools.grep import GrepTool
 from sigma_tools.read import ReadTool
+from sigma_tools.web_search import WebSearchTool
 from sigma_tools.write import WriteTool
+from sigma_tools._tavily_quota import TavilyQuota
 
 if TYPE_CHECKING:
     from sigma_ai.base import BaseProvider
@@ -65,11 +68,61 @@ SYSTEM_PROMPT = """你是一个在本地工作区里干活的编程助手。
 """
 
 
-def default_registry() -> ToolRegistry:
-    """P1 的内置工具集：read / write / edit / bash / grep 全部就位。
+#: 联网搜索那一行工具说明。**只在启用时拼进系统提示词**——
+#: 它进常驻区，所以"关掉时提示词逐字节不变"是有意义的性质（D4）。
+WEB_SEARCH_PROMPT_LINE = (
+    "- web_search：联网搜索（Tavily）。查库的最新用法、报错原因、版本变更等本地没有的信息。\n"
+    "  每次调用消耗 1 credit（advanced 档 2 credits），免费额度 1000 credits/月，用尽即禁用；\n"
+    "  只在本地信息确实不够时用。\n"
+)
+
+
+def build_system_prompt(*, web_search: bool = False) -> str:
+    """按启用的工具集生成系统提示词。
+
+    为什么不是"提示词自己写死六个工具"：那样关掉 web_search 后提示词仍会告诉模型
+    有一个并不存在的工具，模型会去调它，然后拿到 "未注册的工具" 错误。
+    提示词与注册表必须同源。
+
+    **只在会话开始时算一次**：它在常驻区里，会话内不能变（SessionContext 会算指纹并断言）。
+    """
+    if not web_search:
+        return SYSTEM_PROMPT
+    marker = "\n工作方式："
+    head, sep, tail = SYSTEM_PROMPT.partition(marker)
+    return f"{head}\n{WEB_SEARCH_PROMPT_LINE}{sep}{tail}"
+
+
+#: 联网搜索的额度账本落点。**在用户级配置目录**（仓库外）：
+#: 配额是"这个 key 用了多少"，与具体工作区无关——放进工作区会让换个目录就重置计数，
+#: 那正是"本地计数"最危险的一种失效方式。
+DEFAULT_WEB_SEARCH_STATE = dotenv.USER_CONFIG_DIR / "tavily_usage.json"
+
+
+def web_search_tool(*, api_key: str, state_path: Path | None = None) -> WebSearchTool:
+    """造一个联网搜索工具（连同它的额度账本）。
+
+    单独一个工厂：测试要能直接拿到账本断言记账口径，不必先搭一个注册表。
+    """
+    quota = TavilyQuota(
+        api_key=api_key, state_path=state_path or DEFAULT_WEB_SEARCH_STATE
+    )
+    return WebSearchTool(api_key=api_key, quota=quota)
+
+
+def default_registry(
+    *, web_search: bool = False, tavily_api_key: str | None = None
+) -> ToolRegistry:
+    """内置工具集：read / write / edit / bash / grep 全部就位。
 
     bash 的风险要说清楚（详规 R1）：它以当前用户权限执行任意命令，
     P1 没有任何过滤与沙箱，防线只有 CLI 启动提示与评测的临时目录。
+
+    web_search **默认关**（批次 7 详规 Q1）：工具 schema 是常驻成本，
+    没配 key 的机器不该为它付那约 150 token。开不开由调用方决定
+    （sigma.cli：解析到 TAVILY_API_KEY 且没有 --no-web-search）——
+    这样 default_registry() 的返回值与加这个能力之前**逐字节一致**，
+    既有用例不受环境影响。
     """
     registry = ToolRegistry()
     registry.register(ReadTool())
@@ -77,6 +130,13 @@ def default_registry() -> ToolRegistry:
     registry.register(EditTool())
     registry.register(BashTool())
     registry.register(GrepTool())
+    if web_search:
+        if not tavily_api_key:
+            raise ValueError(
+                "web_search=True 但没有 tavily_api_key。密钥应由调用方解析后传入"
+                "（sigma.dotenv.resolve_tavily_api_key），本层不自己去猜路径。"
+            )
+        registry.register(web_search_tool(api_key=tavily_api_key))
     return registry
 
 

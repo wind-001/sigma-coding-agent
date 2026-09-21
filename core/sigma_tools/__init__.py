@@ -9,6 +9,11 @@
 允许依赖
     sigma_agent, sigma_ai
 
+可选工具
+    web_search（联网搜索，Tavily）不是核心五工具之一：它进常驻区（工具 schema），
+    所以只在配了 TAVILY_API_KEY 时注册，可由 --no-web-search 关闭。
+    实现见 web_search.py，额度账本见 _tavily_quota.py。
+
 实现状态
     2026-09-20：read / write / edit / bash / grep 五个工具全部实现。
     edit 遵循三态规则（多匹配拒绝、绝不替换全部）；
