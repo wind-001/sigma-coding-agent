@@ -7,9 +7,10 @@
 
 > 当前状态（截至本次提交，README 与代码同一提交）：**P1 批次 0 / 1 / 1.5 已完成；
 > 批次 2–4 的 agent loop 已跑通**（`sigma -p "任务"` 可用），**G22–G31 十条门槛
-> 已全部做到能被单独证伪**（其中五条此前连测试都没有，已补齐）。
-> 当前盘上 `226 个单测全绿`、三道门禁全绿、注入实验 **27/27** 证伪成功
-> （批次 1 的 7 条 + 批次 1.5 的 10 条 + 批次 2–4 的 10 条）。
+> 已全部做到能被单独证伪**（其中五条此前连测试都没有，已补齐）；
+> 批次 6 完成**流式渲染 + 交互模式 + 启动入口**（G32–G36 五条新门槛）。
+> 当前盘上 `239 个单测全绿`、三道门禁全绿、注入实验 **33/33** 证伪成功
+> （批次 1 的 7 条 + 批次 1.5 的 10 条 + 批次 2–4 的 10 条 + 批次 6 的 6 条）。
 >
 > **真实 API 已跑通两层**：Provider 层冒烟 5/5（`scripts/real_api_smoke.py`）、
 > **agent loop 端到端**（`scripts/real_api_agent_demo.py` 与 CLI 实测均通过）；
@@ -43,11 +44,43 @@
 
 ## 跑一个真实任务
 
-密钥只需配置一次（见下方「密钥放哪儿」），之后直接跑：
+### 四种启动方式（逻辑只有一处）
 
 ```bash
-sigma -p "读取 input.txt 里的数字，加 5 后写入 result.txt" --workspace ./demo
+sigma -p "任务"              # venv 里的 console script
+python -m sigma -p "任务"    # 通用；console script 不在也能跑
+sigma.bat -p "任务"          # Windows cmd，也可双击
+.\sigma.ps1 -p "任务"        # PowerShell，也可右键“使用 PowerShell 运行”
 ```
+
+`sigma.bat` / `sigma.ps1` 在项目根目录，**双击进交互模式**，不用先 activate venv。
+四种入口都通向同一个 `sigma.cli:main`——入口可以有多个，组装只能有一个。
+
+### 交互模式（连续聊，跨轮记得上下文）
+
+```bash
+sigma -i          # 或双击 sigma.bat
+```
+
+> ⚠ **Git Bash / mintty 里必须显式加 `-i`**。那些环境 stdin 不是 Windows 控制台句柄，
+> 判不出"有人在敲键盘"。这不是偷懒：Windows 上 `isatty()` 对 NUL 设备**也返回 True**，
+> 靠它判断会让 CI / 脚本里调用 `sigma` 静默进 REPL 卡住（实测复现过）。
+> 取舍是：**宁可让人多打两个字符，也不要让 CI 挂住。**
+
+### 输出是流式的
+
+边跑边打印，不等任务结束。下面这段是真实跑出来的（DeepSeek `deepseek-chat`，2026-09-21）：
+
+```
+I'll search for OLD_VALUE in config.py.
+⏺ grep({"pattern": "OLD_VALUE", "path": "config.py"})
+  ✓ grep: 共 1 个匹配（1 个文件）： config.py:2:value = OLD_VALUE
+`OLD_VALUE` 出现在 config.py 的第 2 行，该行完整内容为 `value = OLD_VALUE`。
+[completed · 2 轮 · prompt 1629 / completion 40]
+```
+
+失败的工具画 `✗` 并**把失败原因写出来**——只画一个 ✗ 等于什么都没说，
+而"模型看得到失败原因"是纠错能力的前提（详规 3.6）。
 
 想先建一个能马上试的工作区：
 
@@ -55,19 +88,10 @@ sigma -p "读取 input.txt 里的数字，加 5 后写入 result.txt" --workspac
 python scripts/make_demo_workspace.py    # 在项目下建 demo/，含示例文件与可试任务
 ```
 
-输出会逐条列出模型说了什么、调了哪个工具、工具返回了什么：
-
-```
-[1] 模型: 说 "I'll start by reading the input file."；调用 read({'path': 'input.txt'})
-[2] 结果 <- read: '1\t7'
-[3] 模型: 说 'The input is `7`. Adding 5 gives 12.'；调用 write({'path': 'result.txt', 'content': '12'})
-[4] 结果 <- write: '新建 ...result.txt，现在 2 字节'
-[5] 模型: 说 '读取 input.txt 得到数字 7，加 5 后为 12，已写入 result.txt。'
-```
-
 | 参数 | 说明 |
 | --- | --- |
-| `-p, --prompt` | 任务描述。不传则只打印帮助 |
+| `-p, --prompt` | 一次性模式的任务描述（与 `-i` 互斥） |
+| `-i, --interactive` | 交互模式。**Git Bash / 管道里必须显式加它** |
 | `--workspace` | 工作区根目录（相对路径的基准）。**不是安全边界** |
 | `--preset` | `deepseek`（默认）/ `moonshot` / `zhipu` / `dashscope` / `ollama` |
 | `--model` / `--base-url` / `--api-key` | 覆盖预设；key 也可走 `SIGMA_API_KEY` |
@@ -119,8 +143,9 @@ SIGMA_API_KEY=sk-你的key
 > 所以模型改文件只能整文件重写，那更费 token、也更容易出错。
 > **这一点写出来，不假装够用。**
 
-> 🧪 **不开 REPL**：交互模式需要 steering / follow-up 双队列（属 P3），
-> 现在做只能做一个"读了输入但没人处理"的假货。
+> 🧪 **REPL 是简版**：交互模式**不支持中途打断 / 消息注入**（那需要 P3 的
+> steering / follow-up 双队列）。一条任务跑完整轮才能输入下一条，
+> 这一点写进启动横幅，不假装支持。
 
 ## 快速验证
 

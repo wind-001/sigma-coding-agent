@@ -39,6 +39,15 @@ from sigma_agent.agent_messages import (
     convert_to_llm,
 )
 from sigma_agent.base import BaseTool
+from sigma_agent.observe import (
+    LoopEvent,
+    LoopObserver,
+    TextChunk,
+    ThinkingChunk,
+    ToolEnd,
+    ToolStart,
+    TurnEnd,
+)
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult, TurnResult
 from sigma_ai.base import CancelToken, SamplingParams
@@ -46,6 +55,7 @@ from sigma_ai.events import (
     ErrorEvent,
     StopEvent,
     TextDelta,
+    ThinkingDelta,
     ToolCallDelta,
     UsageEvent,
 )
@@ -105,6 +115,7 @@ class AgentLoop:
         signal: CancelToken | None = None,
         clock: Callable[[], int] | None = None,
         emit: Callable[[str], None] | None = None,
+        observer: LoopObserver | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -118,6 +129,14 @@ class AgentLoop:
         # 而真实时钟每次不同——不注入就永远无法满足那条断言。
         self._clock: Callable[[], int] = clock or (lambda: int(time.time()))
         self._emit = emit
+        # 观测是**旁听**：为 None 时 loop 的行为与加观测之前完全一致
+        # （门槛 G33：226 个既有用例就是这条的证据）。
+        self._observer = observer
+
+    def _notify(self, event: LoopEvent) -> None:
+        """向观察者发一个事件。没有观察者时这是一次空调用。"""
+        if self._observer is not None:
+            self._observer.on_event(event)
 
     # ------------------------------------------------------------------
     # 主循环
@@ -153,13 +172,15 @@ class AgentLoop:
             total_usage = assistant.usage
 
             if not calls:  # 第 8 步：模型不再要工具 → 完成
-                return TurnResult(
+                finished = TurnResult(
                     status="completed",
                     messages=produced,
                     text=last_text,
                     rounds=round_index,
                     usage=total_usage,
                 )
+                self._notify(_turn_end(finished))
+                return finished
 
             # 第 5、6 步：校验参数并执行完整批次
             results = await self._execute_batch(calls)
@@ -170,8 +191,23 @@ class AgentLoop:
                 if not item.ok:
                     # 拼装失败的调用：构造一条说明性结果，让模型知道
                     # **它上一次的调用没有被接受**（否则它会以为自己已经调过了）
+                    # 观测上也要发一条失败——否则终端在这一步什么都不会显示
+                    self._notify(
+                        ToolEnd(
+                            name="(unparsed)",
+                            ok=False,
+                            preview=_preview(item.parse_error),
+                        )
+                    )
                     produced.append(_failure_message(item, self._clock()))
                     continue
+                self._notify(
+                    ToolEnd(
+                        name=item.name or "?",
+                        ok=not result.is_error,
+                        preview=_preview(_first_text(result)),
+                    )
+                )
                 produced.append(
                     ToolResultAgentMessage.from_result(
                         item.to_block(), result, timestamp=self._clock()
@@ -179,7 +215,7 @@ class AgentLoop:
                 )
 
         # 轮数耗尽：不是错误，但要显式告诉调用方和用户
-        return TurnResult(
+        stopped = TurnResult(
             status="stopped",
             messages=produced,
             text=last_text,
@@ -187,6 +223,8 @@ class AgentLoop:
             usage=total_usage,
             reason=f"达到 max_rounds={self._max_rounds}",
         )
+        self._notify(_turn_end(stopped))
+        return stopped
 
     # ------------------------------------------------------------------
     # 第 3 步：agent 层 → LLM 层
@@ -233,8 +271,12 @@ class AgentLoop:
         ):
             if isinstance(event, TextDelta):
                 text_parts.append(event.text)
+                # **逐块透传**：聚合后再发就没有"流式"了（observe.TextChunk 的说明）
+                self._notify(TextChunk(text=event.text))
                 if event.text_signature is not None:
                     text_signature = event.text_signature
+            elif isinstance(event, ThinkingDelta):
+                self._notify(ThinkingChunk(text=event.thinking))
             elif isinstance(event, ToolCallDelta):
                 assembler.feed(event)
             elif isinstance(event, UsageEvent):
@@ -341,6 +383,17 @@ class AgentLoop:
                 )
             )
 
+        # 观测：工具**即将**执行。集中在这里发，保证每个 ToolStart 都早于任何
+        # ToolEnd——顺序错了，终端上就会显示"先出结果后出调用"。
+        for plan in planned:
+            self._notify(
+                ToolStart(
+                    name=plan.tool.name,
+                    arguments=plan.call.arguments,
+                    call_id=plan.call.id,
+                )
+            )
+
         # 规则①：只读并发、写工具严格顺序。
         # 写工具并发是不确定性的来源，而"确定性回放"是整个评测的地基。
         readonly = [p for p in planned if p.tool.read_only]
@@ -412,6 +465,41 @@ def _text_of(assistant: AssistantMessage) -> str:
     """抽出 assistant 消息里的纯文本（用于 TurnResult.text）。"""
     parts = [b.text for b in assistant.content if isinstance(b, TextBlock)]
     return "".join(parts)
+
+
+TOOL_PREVIEW_CHARS = 200
+"""终端 / 观测里展示的工具结果预览长度。
+
+工具结果本体可以很大（截断上限 8 KB），把它整段 echo 到终端等于
+**把上下文预算花在 UI 上**。预览只服务于"人想知道发生了什么"。
+"""
+
+
+def _first_text(result: ToolResult) -> str:
+    """取结果里第一段文本，用于预览。"""
+    for block in result.content:
+        if isinstance(block, TextBlock):
+            return block.text
+    return ""
+
+
+def _preview(text: str) -> str:
+    """把工具结果压成一行预览：换行折叠成空格，超长截断。"""
+    flat = " ".join(text.split())
+    if len(flat) <= TOOL_PREVIEW_CHARS:
+        return flat
+    return flat[:TOOL_PREVIEW_CHARS] + " …"
+
+
+def _turn_end(result: TurnResult) -> TurnEnd:
+    """把 ``TurnResult`` 转成观测事件。带 usage 是为了让终端提示上下文压力（R1）。"""
+    usage = result.usage
+    return TurnEnd(
+        status=result.status,
+        rounds=result.rounds,
+        prompt_tokens=usage.prompt_tokens if usage else 0,
+        completion_tokens=usage.completion_tokens if usage else 0,
+    )
 
 
 def _failure_message(item: AssembledCall, timestamp: int) -> ToolResultAgentMessage:

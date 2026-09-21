@@ -1,9 +1,15 @@
 """sigma 的命令行入口。
 
-P1 形态：**一次性模式**（``sigma -p "任务"``）。
+两种形态（2026-09-21 起）
 
-REPL 属后续批次——它需要 steering / follow-up 双队列（P3）才有意义，
-现在做只能做一个假的：读了输入但没人处理。
+1. **一次性模式** ``sigma -p "任务"``：跑完退出，退出码见下；
+2. **交互模式** 不带 ``-p`` 且 stdin 是 TTY：逐条输入任务、跨轮累积历史。
+
+两种模式**共用**渲染器与会话组装（``sigma.render`` / ``sigma.sdk``），
+不各写一套——理由见 ``sdk.py``：两份组装会各自漂移。
+
+**交互模式不支持中途打断**（P3 的 steering 未做）：一条任务跑完整轮
+才能输入下一条。这是明确边界，写进启动横幅，不假装支持。
 
 退出码（Q4 已拍板）
     ``0``   正常结束——**任务成没成都不影响退出码**
@@ -29,7 +35,9 @@ from pathlib import Path
 
 from sigma import __version__
 from sigma.dotenv import ENV_VAR_NAME, USER_CONFIG_DIR, resolve_api_key
-from sigma.sdk import default_registry, run_task
+from sigma.repl import run_repl
+from sigma.sdk import InteractiveSession, default_registry, run_task
+from sigma.render import TerminalRenderer
 from sigma_agent.agent_messages import (
     AgentMessage,
     LlmMessageWrapper,
@@ -56,10 +64,21 @@ def build_parser() -> argparse.ArgumentParser:
         prog="sigma",
         description="sigma —— 一个自研的 coding agent harness",
     )
-    parser.add_argument(
+    # -p 与 -i 互斥：一个是"跑一条就走"，一个是"进去聊"，同时给没有意义
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "-p",
         "--prompt",
-        help="一次性模式：要执行的任务描述。不传则只打印帮助。",
+        help="一次性模式：要执行的任务描述。",
+    )
+    mode_group.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=(
+            "强制交互模式。**Git Bash / mintty / 管道里必须用这个**——"
+            "那些环境判断不出 stdin 是不是控制台（见 stdin_is_interactive 的说明）。"
+        ),
     )
     parser.add_argument(
         "--preset",
@@ -81,8 +100,77 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-rounds", type=int, default=20, help="最大轮数，默认 20")
     parser.add_argument("--temperature", type=float, default=0.0, help="采样温度，默认 0")
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="流式输出之外，结束再打印一遍完整消息序列（调试 / 评测用）",
+    )
     parser.add_argument("--version", action="version", version=f"sigma {__version__}")
     return parser
+
+
+def stdin_is_interactive() -> bool:
+    """stdin 是不是一个**真控制台**。
+
+    Windows 上不能只信 ``sys.stdin.isatty()``
+        NUL 设备（``subprocess.DEVNULL``、``< /dev/null``）在 MSVCRT 里
+        **也算字符设备，``isatty`` 返回 True**。于是 CI、脚本、CI hook 里
+        调用 ``sigma``（不带 ``-p``）会进 REPL 等输入——症状是"莫名卡住"，
+        既不报错也不退出，排查成本极高。**这不是假想，是实测出来的。**
+
+        能区分二者的是 ``GetConsoleMode``：它只对**真实控制台句柄**成功，
+        对 NUL 失败。所以 Windows 分支用它。
+
+    代价（写清楚，不藏）
+        mintty（Git Bash）与管道的 stdin 不是控制台句柄，本函数会返回 False。
+        这些环境里想交互**必须显式加 ``-i``**。
+
+        这是有意取舍：**宁可让人多打两个字符，也不要让 CI 静默挂住**——
+        后者的代价是别人的一整晚排查，前者是一次鼠标提醒。
+    """
+    if sys.platform != "win32":
+        return bool(sys.stdin.isatty())
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        STD_INPUT_HANDLE = -10
+        INVALID_HANDLE_VALUE = -1
+        handle = ctypes.windll.kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if not handle or handle == INVALID_HANDLE_VALUE:
+            return False
+        mode = wintypes.DWORD()
+        ok = ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        return bool(ok)
+    except Exception:
+        # 探测不了就当非交互：猜错了最多是退到帮助页，不会挂住
+        return False
+
+
+def _configure_console() -> None:
+    """Windows 下把控制台输出设成 UTF-8（W13）。
+
+    ``cmd.exe`` 默认用 936（GBK），直接打印 ``⏺`` / ``✓`` 会乱码或抛
+    ``UnicodeEncodeError``——**输出崩掉意味着整轮对话都看不到**。
+
+    ``errors="replace"`` 是必要的：宁可显示一个替换字符，也不要因为
+    一个生僻字让整次输出失败。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        # Windows Terminal 下本就是 UTF-8，调用失败不影响功能
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            # reconfigure 不在 typing.TextIO 的协议里（它是 TextIOWrapper 的方法）
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
 
 
 def _resolve_config(
@@ -161,18 +249,25 @@ def _report(result: TurnResult) -> None:
         print("     用 --max-rounds 调大后可重试。")
 
 
-async def _run(
+def _make_provider(
+    args: argparse.Namespace, base_url: str, api_key: str
+) -> OpenAICompatProvider:
+    return OpenAICompatProvider(
+        base_url=base_url,
+        api_key=api_key,
+        provider_name=args.preset or DEFAULT_PRESET,
+    )
+
+
+async def _run_once(
     args: argparse.Namespace,
     workspace: Path,
     base_url: str,
     model: str,
     api_key: str,
 ) -> TurnResult:
-    provider = OpenAICompatProvider(
-        base_url=base_url,
-        api_key=api_key,
-        provider_name=args.preset or DEFAULT_PRESET,
-    )
+    """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。"""
+    provider = _make_provider(args, base_url, api_key)
     try:
         return await run_task(
             args.prompt,
@@ -181,20 +276,50 @@ async def _run(
             model=model,
             max_rounds=args.max_rounds,
             temperature=args.temperature,
+            observer=TerminalRenderer(),
         )
+    finally:
+        await provider.aclose()
+
+
+async def _run_interactive(
+    args: argparse.Namespace,
+    workspace: Path,
+    base_url: str,
+    model: str,
+    api_key: str,
+) -> int:
+    """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。"""
+    provider = _make_provider(args, base_url, api_key)
+    session = InteractiveSession(
+        provider=provider,
+        workspace_root=workspace,
+        model=model,
+        max_rounds=args.max_rounds,
+        temperature=args.temperature,
+        observer=TerminalRenderer(),
+    )
+    try:
+        return await run_repl(session)
     finally:
         await provider.aclose()
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。返回进程退出码。"""
+    _configure_console()  # 必须在任何 print 之前：中文与 ⏺ 靠它才不乱码
+
     parser = build_parser()
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
-    if not args.prompt:
+    # W11：既没有 -p 又没有 -i，且 stdin 不是真控制台 → **绝不能进 REPL**。
+    # 否则脚本 / CI / 管道里调用 sigma 会挂住等输入，
+    # 症状是"卡住"而不是报错。
+    if not args.prompt and not args.interactive and not stdin_is_interactive():
         parser.print_help()
         print()
         print('提示：一次性模式用法 —— sigma -p "把 foo.py 里的 off-by-one 修掉"')
+        print("      想进交互模式：sigma -i（或在真实控制台里直接敲 sigma）")
         return EXIT_HARNESS_ERROR
 
     base_url, model, api_key, key_source = _resolve_config(args)
@@ -215,7 +340,8 @@ def main(argv: list[str] | None = None) -> int:
         print("  3) 只用一次：--api-key sk-xxx", file=sys.stderr)
         return EXIT_HARNESS_ERROR
 
-    print(f"sigma {__version__}")
+    mode = "一次性" if args.prompt else "交互"
+    print(f"sigma {__version__}（{mode}模式）")
     print(f"  工作区  {workspace.resolve()}")
     print(f"  模型    {model} @ {base_url}")
     print(f"  工具    {default_registry().names()}")
@@ -227,17 +353,19 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     try:
-        result = asyncio.run(_run(args, workspace, base_url, model, api_key))
+        if args.prompt:
+            result = asyncio.run(_run_once(args, workspace, base_url, model, api_key))
+            if args.trace:
+                _report(result)
+            # Q4：任务成没成，退出码都是 0
+            return EXIT_OK
+        return asyncio.run(_run_interactive(args, workspace, base_url, model, api_key))
     except KeyboardInterrupt:
         print("\n已中断。", file=sys.stderr)
         return EXIT_INTERRUPTED
     except Exception as exc:  # harness 级故障：报告并给非 0 退出码
         print(f"[harness 错误] {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_HARNESS_ERROR
-
-    _report(result)
-    # Q4：任务成没成，退出码都是 0
-    return EXIT_OK
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Callable
 
 from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
 from sigma_agent.loop import AgentLoop
+from sigma_agent.observe import LoopObserver
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import TurnResult
 from sigma_ai.base import NeverCancelled, SamplingParams
@@ -79,6 +80,89 @@ def default_registry() -> ToolRegistry:
     return registry
 
 
+def _real_clock() -> int:
+    """当前时间戳。
+
+    用 ``def`` 而不是 ``lambda``：**mypy strict 下 lambda 无法标注类型**，
+    于是每次 ``clock()`` 调用都会报 ``no-untyped-call``。
+    这是个容易忽略的约束——写 lambda 时不会想到它会被"调用类型检查"追上。
+    """
+    return int(time.time())
+
+
+class InteractiveSession:
+    """交互式会话：**跨轮复用同一个 ``SessionContext``**（门槛 G35）。
+
+    为什么要有这个类，而不是让 CLI 自己拼
+        ``-p`` 一次性模式与交互模式需要**同一套组装**（provider + 注册表 +
+        上下文 + loop）。各写一遍的结果是两份会各自漂移的初始化代码，
+        症状是"一次性模式跑通了但交互模式跑不通"——排查方向完全错。
+
+    它**不做**什么
+        不做中途打断 / 消息注入（P3 的 steering）。一条任务跑完整轮
+        才能输入下一条，这是 P1 的明确边界，启动横幅里会写出来。
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: BaseProvider,
+        workspace_root: Path,
+        model: str,
+        registry: ToolRegistry | None = None,
+        system_prompt: str = SYSTEM_PROMPT,
+        max_rounds: int = 20,
+        temperature: float = 0.0,
+        observer: LoopObserver | None = None,
+        emit: Callable[[str], None] | None = None,
+        session_id: str = "sigma-session",
+    ) -> None:
+        self._registry = registry if registry is not None else default_registry()
+        self._clock = _real_clock
+        self._context = SessionContext(
+            system_prompt=system_prompt,
+            tools_schema=self._registry.schemas(),
+            clock=self._clock,
+            session_id=session_id,
+        )
+        self._loop = AgentLoop(
+            provider=provider,
+            registry=self._registry,
+            model=model,
+            session_id=session_id,
+            workspace_root=workspace_root,
+            max_rounds=max_rounds,
+            sampling=SamplingParams(temperature=temperature),
+            signal=NeverCancelled(),
+            clock=self._clock,
+            emit=emit,
+            observer=observer,
+        )
+
+    async def send(self, task: str) -> TurnResult:
+        """发一条任务，跑完整轮，把产出追加回历史。
+
+        追加这一步**必须在这里**——loop 参照 Pi 的形状不持有会话对象
+        （详规 3.8.1），历史归调用方管。
+        """
+        now = self._clock()
+        self._context.append(
+            LlmMessageWrapper(
+                timestamp=now, message=UserMessage(content=task, timestamp=now)
+            )
+        )
+        result = await self._loop.run_turn(self._context.build_messages())
+        self._context.append(*result.messages)
+        return result
+
+    def history(self) -> list[AgentMessage]:
+        """历史消息（副本）。**跨轮累积**是这个类存在的意义（门槛 G35）。
+
+        返回副本而不是内部列表：调用方拿去改不会污染会话状态。
+        """
+        return self._context.history()
+
+
 async def run_task(
     task: str,
     *,
@@ -90,9 +174,10 @@ async def run_task(
     system_prompt: str = SYSTEM_PROMPT,
     temperature: float = 0.0,
     emit: Callable[[str], None] | None = None,
+    observer: LoopObserver | None = None,
     session_id: str = "sigma-session",
 ) -> TurnResult:
-    """跑一个任务，返回结果。
+    """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
     ``workspace_root`` 决定工具里相对路径的基准——**它同时是 CLI 的 ``--workspace``**。
     注意它**不是安全边界**（D5 的三层软边界在 P1 全未落地，见详规 0.1 代价第 3 条）。
@@ -100,48 +185,19 @@ async def run_task(
     时间戳用真实时钟。若要让执行**确定**（回放测试要求两次逐字节一致），
     调用方应自行构造 ``AgentLoop`` 并注入固定 ``clock`` ——
     ``run_task`` 面向"真跑"，不为可复现性妥协。
+
+    它复用 :class:`InteractiveSession` 的组装——**只有一处组装，不会漂移**。
     """
-    registry = registry if registry is not None else default_registry()
-
-    def clock() -> int:
-        """当前时间戳。
-
-        用 ``def`` 而不是 ``lambda``：**mypy strict 下 lambda 无法标注类型**，
-        于是每次 ``clock()`` 调用都会报 ``no-untyped-call``。
-        这是个容易忽略的约束——写 lambda 时不会想到它会被"调用类型检查"追上。
-        """
-        return int(time.time())
-
-    context = SessionContext(
-        system_prompt=system_prompt,
-        tools_schema=registry.schemas(),
-        clock=clock,
-        session_id=session_id,
-    )
-    context.append(
-        LlmMessageWrapper(
-            timestamp=clock(),
-            message=UserMessage(content=task, timestamp=clock()),
-        )
-    )
-
-    loop = AgentLoop(
+    session = InteractiveSession(
         provider=provider,
-        registry=registry,
-        model=model,
-        session_id=session_id,
         workspace_root=workspace_root,
+        model=model,
+        registry=registry,
+        system_prompt=system_prompt,
         max_rounds=max_rounds,
-        sampling=SamplingParams(temperature=temperature),
-        signal=NeverCancelled(),
-        clock=clock,
+        temperature=temperature,
+        observer=observer,
         emit=emit,
+        session_id=session_id,
     )
-
-    # 组装与消费在同一步完成：``run_turn`` 接收历史、返回新增消息，
-    # 追加回上下文由这里负责（loop 不持有会话对象，详规 3.8.1）。
-    result = await loop.run_turn(context.build_messages())
-
-    produced: list[AgentMessage] = list(result.messages)
-    context.append(*produced)
-    return result
+    return await session.send(task)
