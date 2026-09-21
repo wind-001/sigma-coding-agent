@@ -46,6 +46,10 @@ where = ["core"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# 注意：这里**不写** `pythonpath = [...]`。
+# 那个选项来自 `pytest-pythonpath` 插件，本项目**没装**（装了也不生效，
+# 而症状是"配置写了但没用"——正是"名义门槛"）。
+# 路径注入统一由 `tests/conftest.py` 用 stdlib 做，见该文件顶部说明。
 
 [tool.mypy]
 python_version = "3.12"

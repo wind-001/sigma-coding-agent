@@ -37,6 +37,9 @@ ENV_VAR_NAME = "SIGMA_API_KEY"
 #: 联网搜索（Tavily）的密钥变量。与 SIGMA_API_KEY 共用同一套解析优先级。
 TAVILY_ENV_VAR = "TAVILY_API_KEY"
 
+#: 网页精读（Firecrawl）的密钥变量。同上。
+FIRECRAWL_ENV_VAR = "FIRECRAWL_API_KEY"
+
 # 用户级配置目录：**在 git 仓库之外**，所以它不会被误提交。
 # 项目根的 .env 也可用（已加进 .gitignore），但仓库外的那个更安全。
 USER_CONFIG_DIR = Path.home() / ".sigma"
@@ -111,4 +114,20 @@ def resolve_tavily_api_key(
     """
     return resolve_api_key(
         explicit=explicit, candidates=candidates, var_name=TAVILY_ENV_VAR
+    )
+
+
+def resolve_firecrawl_api_key(
+    *,
+    explicit: str | None = None,
+    candidates: Sequence[Path] | None = None,
+) -> tuple[str | None, str]:
+    """网页精读的密钥（批次 8）。
+
+    与 :func:`resolve_tavily_api_key` 同形：**一个"能力"对应一个密钥变量**。
+    两个工具各自独立启用（只配一个也能用），所以这里必须能单独解析——
+    少了它，cli 就得自己拼变量名，而那正是本模块要收走的判断。
+    """
+    return resolve_api_key(
+        explicit=explicit, candidates=candidates, var_name=FIRECRAWL_ENV_VAR
     )

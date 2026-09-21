@@ -42,9 +42,23 @@ def _text(text: str) -> list[dict[str, Any]]:
 
 @pytest.mark.asyncio
 async def test_history_survives_across_turns(tmp_path: Path) -> None:
-    """门槛 G35：第一轮的工具结果**同一实例**在第二轮之后仍在历史里。
+    """门槛 G35：第一轮的工具结果在第二轮之后**仍在历史里**。
 
-    用 ``is`` 而不是 ``==``：要证明的是"没有丢"，不是"内容恰好一样"。
+    **2026-09-21 改判据：``is`` → ``==``。**
+
+    P2-3 把历史改由 ``SessionTree`` 承载，而树对每条消息做
+    "``message_to_dict`` → ``message_from_dict``"的往返
+    （即使纯内存模式也这么做——这样**内存路径与落盘路径走同一份代码**，
+    某个消息类型读不回来会立刻暴露，而不是等到开了落盘才发现）。
+
+    往返的代价是**对象同一性丢了**，值仍然逐字段相等
+    （``model_dump()`` 全等，已实测）。
+
+    这条断言原本的真意是"**没有丢**，不是内容恰好一样"——这个真意没变，
+    所以判据换成 ``==`` 依然能钉住它；用 ``is`` 则会因为
+    "重建了但内容全对"而误报。
+
+    注意**不能**把它弱化成"历史条数对"：那会放过"第一条被换成另一条"的情况。
     """
     root = tmp_path
     (root / "a.txt").write_text("hello\n", encoding="utf-8")
@@ -66,5 +80,5 @@ async def test_history_survives_across_turns(tmp_path: Path) -> None:
     await session.send("刚才读到的是什么？")
 
     assert any(
-        m is tool_msg for m in session.history()
+        m == tool_msg for m in session.history()
     ), "第一轮的工具结果不在历史里——会话每轮都在重建，交互模式失去意义"

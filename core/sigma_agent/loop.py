@@ -159,6 +159,16 @@ class AgentLoop:
         """
         produced: list[AgentMessage] = []
         last_text = ""
+        # ⚠️ 这里**累加**，不是"赋最后一轮的值"（2026-09-21 修）。
+        #
+        # 原写法是 `total_usage = assistant.usage`——变量名叫 total，
+        # 装的却是**最后一轮**的数字。它不报错、类型也对，所以一直没被看见；
+        # 直到 `evals/runner.py` 拿它当"每任务 token"时才暴露：
+        # 一个 6 轮的任务，报告里显示的 prompt token 只是第 6 轮的。
+        #
+        # 为什么必须累加：`evals/README.md` 把「每任务 token」列为指标，
+        # 而 `TurnResult.usage` 是它**唯一**的数据来源。
+        # 口径写成"最后一轮"会让"多轮任务更贵"这个基本事实在报告里消失。
         total_usage: Usage | None = None
 
         for round_index in range(1, self._max_rounds + 1):
@@ -169,7 +179,7 @@ class AgentLoop:
             assistant, calls = await self._stream_model(llm_messages)  # 第 4 步
             produced.append(_wrap(assistant))
             last_text = _text_of(assistant)
-            total_usage = assistant.usage
+            total_usage = _add_usage(total_usage, assistant.usage)
 
             if not calls:  # 第 8 步：模型不再要工具 → 完成
                 finished = TurnResult(
@@ -459,6 +469,22 @@ class AgentLoop:
 def _wrap(assistant: AssistantMessage) -> AgentMessage:
     """把 LLM 层消息包成 agent 层消息。"""
     return LlmMessageWrapper(timestamp=assistant.timestamp, message=assistant)
+
+
+def _add_usage(acc: Usage | None, delta: Usage) -> Usage:
+    """把一轮的用量累加到总计上。``acc`` 为 None 时表示这是第一轮。
+
+    **三个字段都要加，不能只加 prompt/completion**：
+    ``cached_tokens`` 是 D4 的核心指标（prompt cache 命中率的分母/分子），
+    漏掉它会让"常驻区稳定"这条主张在报告里失去数据支撑。
+    """
+    if acc is None:
+        return delta
+    return Usage(
+        prompt_tokens=acc.prompt_tokens + delta.prompt_tokens,
+        completion_tokens=acc.completion_tokens + delta.completion_tokens,
+        cached_tokens=acc.cached_tokens + delta.cached_tokens,
+    )
 
 
 def _text_of(assistant: AssistantMessage) -> str:

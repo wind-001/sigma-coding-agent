@@ -10,9 +10,12 @@
     sigma_agent, sigma_ai
 
 可选工具
-    web_search（联网搜索，Tavily）不是核心五工具之一：它进常驻区（工具 schema），
-    所以只在配了 TAVILY_API_KEY 时注册，可由 --no-web-search 关闭。
-    实现见 web_search.py，额度账本见 _tavily_quota.py。
+    web_search（联网搜索，Tavily）与 web_fetch（网页精读，Firecrawl）不是核心五工具之一：
+    它们进常驻区（工具 schema），所以只在配了对应密钥（TAVILY_API_KEY / FIRECRAWL_API_KEY）
+    时注册，可由 --no-web-search 整体关闭。
+    实现见 web_search.py / web_fetch.py；额度账本见 _credit_ledger.py（公共基类）、
+    _tavily_quota.py / _firecrawl_quota.py（两个子类）；
+    来源硬规则（黑名单 + 时间预过滤）见 _source_policy.py。
 
 实现状态
     2026-09-20：read / write / edit / bash / grep 五个工具全部实现。

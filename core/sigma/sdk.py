@@ -15,9 +15,21 @@
     - 不放时间戳、会话 ID（同上）；
     - 写短不是省 token，是**把预算留给历史与工具输出**。
 
-    参考数据：提示词 + 两个工具 schema 在真实 API 上实测约 875 token
-    （2026-09-20，`scripts/real_api_agent_demo.py`）。现在工具是五个，
-    该数字已过期——prompt token 以评测运行时的实测为准，旧值只作量级参考。
+    参考数据（2026-09-21 实测常驻区，口径 = ``estimate_text`` 粗估）：
+
+    ==================== ===========
+    组成                  token
+    ==================== ===========
+    系统提示词（核心五工具）    131
+    系统提示词（+两席联网）     286
+    工具 schema（5 个核心）  1 018
+    工具 schema（+两席）      1 729
+    ``AGENTS.md`` 上限         800
+    ==================== ===========
+
+    即"两个联网工具全开 + 满额 AGENTS.md"约 **2 815**，在 D4 的 3 500 之内；
+    余量留给 P4 的技能索引（≤600）。**实测数字与架构 5.1 表的估算有出入**
+    （表里 schema 记 ~820，实测 1 018），已在 5.1 就地更正。
 """
 
 from __future__ import annotations
@@ -35,12 +47,19 @@ from sigma_agent.types import TurnResult
 from sigma_ai.base import NeverCancelled, SamplingParams
 from sigma_ai.messages import UserMessage
 from sigma_session.context import SessionContext
+from sigma_session.resources import (
+    AGENTS_MD_FILENAME,
+    ProjectInstructions,
+    load_project_instructions,
+)
 from sigma_tools.bash import BashTool
 from sigma_tools.edit import EditTool
 from sigma_tools.grep import GrepTool
 from sigma_tools.read import ReadTool
+from sigma_tools.web_fetch import WebFetchTool
 from sigma_tools.web_search import WebSearchTool
 from sigma_tools.write import WriteTool
+from sigma_tools._firecrawl_quota import FirecrawlQuota
 from sigma_tools._tavily_quota import TavilyQuota
 
 if TYPE_CHECKING:
@@ -68,35 +87,73 @@ SYSTEM_PROMPT = """你是一个在本地工作区里干活的编程助手。
 """
 
 
-#: 联网搜索那一行工具说明。**只在启用时拼进系统提示词**——
-#: 它进常驻区，所以"关掉时提示词逐字节不变"是有意义的性质（D4）。
-WEB_SEARCH_PROMPT_LINE = (
+#: 联网工具的工具行。**只在启用时拼进系统提示词**——它进常驻区，
+#: 所以"关掉时提示词逐字节不变"是有意义的性质（D4）。
+#:
+#: **工具行与注册表必须同源**（批次 7 的教训）：关掉 web_search 后若提示词仍写着它，
+#: 模型会去调一个不存在的工具，然后拿到"未注册的工具"错误——那一轮的预算就白花了。
+WEB_SEARCH_TOOL_LINE = (
     "- web_search：联网搜索（Tavily）。查库的最新用法、报错原因、版本变更等本地没有的信息。\n"
-    "  每次调用消耗 1 credit（advanced 档 2 credits），免费额度 1000 credits/月，用尽即禁用；\n"
-    "  只在本地信息确实不够时用。\n"
+    "  返回标题 + URL + 摘要 + 可识别的发布时间。每次 1 credit（advanced 档 2），免费额度 1000/月。\n"
+)
+WEB_FETCH_TOOL_LINE = (
+    "- web_fetch：精读指定 URL 的正文（Firecrawl）。**每次最多 2 条 URL**，每条 1 credit。\n"
+    "  低质量来源与超过 2 年的旧结果会被代码层过滤，过滤条数会写在结果里。\n"
+)
+
+#: 调研纪律（批次 8）。它是 **Guide**（pi 笔记 13.2：前馈控制），
+#: 与代码里那四道硬闸（Sensor）是一对——只用其中任何一个都会坏掉。
+#:
+#: 刻意拆成"通用"与"依赖精读"两段：第 3 条只在 web_fetch 启用时拼进去，
+#: 否则提示词会指向一个不存在的工具（同上面那条纪律）。
+RESEARCH_RULES: tuple[str, ...] = (
+    "先说清要查什么再搜；具体查询优于宽泛查询，一次搜不到就换个说法，不要原地重试。",
+    "只采信返回的结果条目本身；**不要**采用搜索服务生成的\"直接答案\"类内容。",
+    "引用任何事实都要带 URL 与文档时间；新旧来源冲突时**采信更新的那条**。",
+    "只找到旧资料时**直接说明**\"目前只有 X 年前的资料\"，不要把它当成现状。",
+)
+RESEARCH_FETCH_RULE = (
+    "摘要够用就不要精读；只在\"关键结论依赖正文\"且\"摘要无法确认\"时才用 web_fetch。"
 )
 
 
-def build_system_prompt(*, web_search: bool = False) -> str:
+def build_system_prompt(*, web_search: bool = False, web_fetch: bool = False) -> str:
     """按启用的工具集生成系统提示词。
 
-    为什么不是"提示词自己写死六个工具"：那样关掉 web_search 后提示词仍会告诉模型
+    为什么不是"提示词自己写死六个工具"：那样关掉某一个后提示词仍会告诉模型
     有一个并不存在的工具，模型会去调它，然后拿到 "未注册的工具" 错误。
     提示词与注册表必须同源。
 
     **只在会话开始时算一次**：它在常驻区里，会话内不能变（SessionContext 会算指纹并断言）。
     """
-    if not web_search:
+    lines: list[str] = []
+    if web_search:
+        lines.append(WEB_SEARCH_TOOL_LINE)
+    if web_fetch:
+        lines.append(WEB_FETCH_TOOL_LINE)
+    if not lines:
         return SYSTEM_PROMPT
+
+    rules = list(RESEARCH_RULES)
+    if web_fetch:
+        # 插在"只采信结果条目"与"引用要带时间"之间：先说能不能信，再说要不要深挖
+        rules.insert(2, RESEARCH_FETCH_RULE)
+    numbered = "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, start=1))
+    block = "".join(lines) + "\n调研纪律（联网时按这个顺序做）：\n" + numbered + "\n"
+
     marker = "\n工作方式："
     head, sep, tail = SYSTEM_PROMPT.partition(marker)
-    return f"{head}\n{WEB_SEARCH_PROMPT_LINE}{sep}{tail}"
+    return f"{head}\n{block}{sep}{tail}"
 
 
 #: 联网搜索的额度账本落点。**在用户级配置目录**（仓库外）：
 #: 配额是"这个 key 用了多少"，与具体工作区无关——放进工作区会让换个目录就重置计数，
 #: 那正是"本地计数"最危险的一种失效方式。
 DEFAULT_WEB_SEARCH_STATE = dotenv.USER_CONFIG_DIR / "tavily_usage.json"
+
+#: 网页精读的额度账本落点。同上，且**必须与搜索分开**：
+#: 两家是不同的服务、不同的额度池，合成一个文件就会 A 家花掉 B 家的额度。
+DEFAULT_WEB_FETCH_STATE = dotenv.USER_CONFIG_DIR / "firecrawl_usage.json"
 
 
 def web_search_tool(*, api_key: str, state_path: Path | None = None) -> WebSearchTool:
@@ -110,19 +167,34 @@ def web_search_tool(*, api_key: str, state_path: Path | None = None) -> WebSearc
     return WebSearchTool(api_key=api_key, quota=quota)
 
 
+def web_fetch_tool(*, api_key: str, state_path: Path | None = None) -> WebFetchTool:
+    """造一个网页精读工具（连同它的额度账本）。理由同 :func:`web_search_tool`。"""
+    quota = FirecrawlQuota(
+        api_key=api_key, state_path=state_path or DEFAULT_WEB_FETCH_STATE
+    )
+    return WebFetchTool(api_key=api_key, quota=quota)
+
+
 def default_registry(
-    *, web_search: bool = False, tavily_api_key: str | None = None
+    *,
+    web_search: bool = False,
+    tavily_api_key: str | None = None,
+    web_fetch: bool = False,
+    firecrawl_api_key: str | None = None,
 ) -> ToolRegistry:
     """内置工具集：read / write / edit / bash / grep 全部就位。
 
     bash 的风险要说清楚（详规 R1）：它以当前用户权限执行任意命令，
     P1 没有任何过滤与沙箱，防线只有 CLI 启动提示与评测的临时目录。
 
-    web_search **默认关**（批次 7 详规 Q1）：工具 schema 是常驻成本，
-    没配 key 的机器不该为它付那约 150 token。开不开由调用方决定
-    （sigma.cli：解析到 TAVILY_API_KEY 且没有 --no-web-search）——
-    这样 default_registry() 的返回值与加这个能力之前**逐字节一致**，
+    **两个联网工具都默认关**（批次 7 详规 Q1，批次 8 沿用）：工具 schema 是常驻成本，
+    没配 key 的机器不该为它们付那约 300 token。开不开由调用方决定
+    （sigma.cli：解析到对应的 key 且没有 --no-web-search）——
+    这样 default_registry() 的返回值与加这些能力之前**逐字节一致**，
     既有用例不受环境影响。
+
+    两个开关**各自独立**：只配了 Tavily 的机器也能用搜索（只注册 web_search），
+    反之亦然。合成一个开关的后果是"配了一个 key 却报另一个 key 缺失"。
     """
     registry = ToolRegistry()
     registry.register(ReadTool())
@@ -137,6 +209,13 @@ def default_registry(
                 "（sigma.dotenv.resolve_tavily_api_key），本层不自己去猜路径。"
             )
         registry.register(web_search_tool(api_key=tavily_api_key))
+    if web_fetch:
+        if not firecrawl_api_key:
+            raise ValueError(
+                "web_fetch=True 但没有 firecrawl_api_key。密钥应由调用方解析后传入"
+                "（sigma.dotenv.resolve_firecrawl_api_key），本层不自己去猜路径。"
+            )
+        registry.register(web_fetch_tool(api_key=firecrawl_api_key))
     return registry
 
 
@@ -176,14 +255,30 @@ class InteractiveSession:
         observer: LoopObserver | None = None,
         emit: Callable[[str], None] | None = None,
         session_id: str = "sigma-session",
+        project_instructions: str | None = None,
     ) -> None:
         self._registry = registry if registry is not None else default_registry()
         self._clock = _real_clock
+        # 项目说明（``AGENTS.md``）：
+        #   None → **自动**从 ``workspace_root/AGENTS.md`` 读（默认行为）
+        #   ""   → 明确不要（调用方关掉它）
+        #   其他 → 直接用调用方给的文本
+        #
+        # "None 与空串语义不同"是有意的：前者是"你替我找"，
+        # 后者是"我不要"。把它们合成一个值，会让"想关掉"的人只能传一个
+        # 恰好不存在的路径——那是靠约定维持的正确性，会漏。
+        if project_instructions is None:
+            self._instructions = load_project_instructions(
+                workspace_root / AGENTS_MD_FILENAME
+            )
+        else:
+            self._instructions = ProjectInstructions(text=project_instructions)
         self._context = SessionContext(
             system_prompt=system_prompt,
             tools_schema=self._registry.schemas(),
             clock=self._clock,
             session_id=session_id,
+            project_instructions=self._instructions.text,
         )
         self._loop = AgentLoop(
             provider=provider,
@@ -219,8 +314,27 @@ class InteractiveSession:
         """历史消息（副本）。**跨轮累积**是这个类存在的意义（门槛 G35）。
 
         返回副本而不是内部列表：调用方拿去改不会污染会话状态。
+
+        注意：历史经树往返（``message_to_dict`` → ``message_from_dict``），
+        所以拿到的**不是**喂进去时的那些对象实例——值逐字段相等，
+        同一性不保证（P2-3 起，见 ``SessionTree`` 的说明）。
         """
         return self._context.history()
+
+    @property
+    def project_instructions(self) -> ProjectInstructions:
+        """已加载的项目说明（含是否被截断）。
+
+        暴露它是为了让 CLI 能把"已加载 AGENTS.md（N token）"或
+        "已截断，丢弃 N token"打给用户——**截断必须可见**，
+        否则用户以为自己的约定全部生效了。
+        """
+        return self._instructions
+
+    @property
+    def context(self) -> SessionContext:
+        """底层上下文。给需要读指纹 / 预算 / 会话树的地方用（CLI、评测、测试）。"""
+        return self._context
 
 
 async def run_task(
@@ -236,6 +350,7 @@ async def run_task(
     emit: Callable[[str], None] | None = None,
     observer: LoopObserver | None = None,
     session_id: str = "sigma-session",
+    project_instructions: str | None = None,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -259,5 +374,6 @@ async def run_task(
         observer=observer,
         emit=emit,
         session_id=session_id,
+        project_instructions=project_instructions,
     )
     return await session.send(task)

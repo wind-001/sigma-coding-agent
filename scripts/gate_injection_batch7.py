@@ -26,7 +26,10 @@ import sys
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
 WEB_SEARCH = "core/sigma_tools/web_search.py"
-QUOTA = "core/sigma_tools/_tavily_quota.py"
+# 批次 8 起，账本的公共逻辑上移到了 `_credit_ledger.py`，
+# E37 的锚（`async with self._lock: ...`）也跟着搬了过去——元纪律②：
+# 换代码必须同步换锚点，否则注入实验会"响亮地失败"（那是设计好的失败方式）。
+QUOTA = "core/sigma_tools/_credit_ledger.py"
 SDK = "core/sigma/sdk.py"
 
 WS_TESTS = "tests/test_tools_web_search.py"

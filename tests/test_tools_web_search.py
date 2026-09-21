@@ -25,6 +25,7 @@ from sigma_tools._tavily_quota import FREE_MONTHLY_CREDITS, TavilyQuota
 from sigma_tools.web_search import MAX_SNIPPET_CHARS, WebSearchTool
 
 NOW = 1000.0
+TODAY = "2026-09-21"
 
 
 def _ctx(root: Path) -> ToolContext:
@@ -119,6 +120,7 @@ def _tool(
     calls: list[str],
     *,
     state_path: Path | None = None,
+    today: str = TODAY,
     **handler_kwargs: Any,
 ) -> WebSearchTool:
     transport = httpx.MockTransport(_handler(calls, **handler_kwargs))
@@ -128,7 +130,13 @@ def _tool(
         transport=transport,
         clock=lambda: NOW,
     )
-    return WebSearchTool(api_key="tvly-test", quota=quota, transport=transport)
+    # "今天"注入固定值：否则"2019 年的结果被丢掉"会随真实日期漂移（今天红明天绿）。
+    return WebSearchTool(
+        api_key="tvly-test",
+        quota=quota,
+        transport=transport,
+        today=lambda: __import__("datetime").date.fromisoformat(today),
+    )
 
 
 async def _run(tool: WebSearchTool, ctx: ToolContext, **kwargs: Any) -> Any:
@@ -477,3 +485,130 @@ def test_system_prompt_is_byte_identical_when_disabled() -> None:
     assert build_system_prompt(web_search=True) != SYSTEM_PROMPT
     assert "web_search" in build_system_prompt(web_search=True)
     assert "web_search" not in SYSTEM_PROMPT
+
+
+# ----------------------------------------------------------------------
+# 批次 8：来源硬规则（黑名单 / 时间预过滤）与政策第 1 条
+# ----------------------------------------------------------------------
+
+
+def _result(**over: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "title": "A post",
+        "url": "https://docs.example.com/a",
+        "content": "Some content.",
+        "score": 0.9,
+    }
+    item.update(over)
+    return item
+
+
+@pytest.mark.asyncio
+async def test_stale_result_is_dropped_and_reported(tmp_path: Path) -> None:
+    """G44：摘要里能识别出、且超过 2 年的结果被丢弃，且**丢弃必须可见**。
+
+    看不见丢弃的后果：模型以为"网上的资料就这么少"，
+    然后拿一条旧资料当现状用——而它没有任何线索去怀疑这个结论。
+    """
+    calls: list[str] = []
+    payload = _payload(
+        results=[
+            _result(url="https://a.example/new", content="最后更新：2026-05-05"),
+            _result(url="https://b.example/old", content="最后更新：2019-05-05"),
+        ]
+    )
+    tool = _tool(tmp_path, calls, payload=payload)
+
+    result = await _run(tool, _ctx(tmp_path))
+
+    text = result.content[0].text
+    assert "https://a.example/new" in text
+    assert "https://b.example/old" not in text, "过期结果混进了上下文"
+    assert result.details["filtered"] == {"blocked": 0, "stale": 1}
+    assert "硬规则已过滤" in text, "丢弃必须回到模型眼前"
+    assert "include_old" in text, "文案要给出路：确需旧资料时知道怎么放开"
+
+
+@pytest.mark.asyncio
+async def test_undatable_result_is_kept_not_guessed(tmp_path: Path) -> None:
+    """认不出日期 → 保留。"无法判断"不等于"老旧"，宁可放过，不可错杀。"""
+    calls: list[str] = []
+    tool = _tool(
+        tmp_path, calls, payload=_payload(results=[_result(content="no dates here")])
+    )
+
+    result = await _run(tool, _ctx(tmp_path))
+
+    assert not result.is_error
+    assert result.details["filtered"] == {"blocked": 0, "stale": 0}
+    assert "发布时间：未识别" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_include_old_keeps_stale_but_not_blocked(tmp_path: Path) -> None:
+    """`include_old` 只放开时间、不放开黑名单——查原理/历史时旧文章是对的，
+    但内容农场仍然是内容农场。"""
+    calls: list[str] = []
+    payload = _payload(
+        results=[
+            _result(url="https://b.example/old", content="最后更新：2019-05-05"),
+            _result(url="https://blog.csdn.net/x", content="最后更新：2019-05-05"),
+        ]
+    )
+    tool = _tool(tmp_path, calls, payload=payload)
+
+    result = await _run(tool, _ctx(tmp_path), include_old=True)
+
+    text = result.content[0].text
+    assert "https://b.example/old" in text
+    assert "https://blog.csdn.net/x" not in text
+    assert result.details["filtered"] == {"blocked": 1, "stale": 0}
+
+
+@pytest.mark.asyncio
+async def test_blocked_domain_is_dropped_before_the_model_sees_it(tmp_path: Path) -> None:
+    """G43：黑名单结果不进上下文，只留一条计数（Keep Quality Left）。"""
+    calls: list[str] = []
+    payload = _payload(
+        results=[
+            _result(url="https://www.geeksforgeeks.org/lists/"),
+            _result(url="https://docs.python.org/3/library/datetime.html"),
+        ]
+    )
+    tool = _tool(tmp_path, calls, payload=payload)
+
+    result = await _run(tool, _ctx(tmp_path))
+
+    text = result.content[0].text
+    assert "geeksforgeeks" not in text
+    assert "docs.python.org" in text
+    assert result.details["filtered"]["blocked"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tavily_answer_is_never_surfaced(tmp_path: Path) -> None:
+    """政策第 1 条：**不采信 Tavily answer**——即便服务端返回了也不进上下文。
+
+    做法是删掉开关而不是"默认关"：留着它，模型迟早会打开。
+    """
+    calls: list[str] = []
+    payload = _payload(answer="Tavily 生成的直接答案：1000 credits。")
+    tool = _tool(tmp_path, calls, payload=payload)
+
+    result = await _run(tool, _ctx(tmp_path))
+
+    assert "直接答案" not in result.content[0].text
+    assert "Tavily 生成的直接答案" not in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_each_result_carries_detectable_publish_time(tmp_path: Path) -> None:
+    """政策第 10 条：每条结果带 URL + 文档时间（引用要用）。"""
+    calls: list[str] = []
+    payload = _payload(results=[_result(content="最后更新：2026-05-05")])
+    tool = _tool(tmp_path, calls, payload=payload)
+
+    result = await _run(tool, _ctx(tmp_path))
+
+    assert "发布时间：2026-05-05" in result.content[0].text
+    assert result.details["results"][0]["published"] == "2026-05-05"

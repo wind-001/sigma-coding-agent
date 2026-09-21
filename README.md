@@ -8,9 +8,20 @@
 > 当前状态（截至本次提交，README 与代码同一提交）：**P1 批次 0 / 1 / 1.5 已完成；
 > 批次 2–4 的 agent loop 已跑通**（`sigma -p "任务"` 可用），**G22–G31 十条门槛
 > 已全部做到能被单独证伪**（其中五条此前连测试都没有，已补齐）；
-> 批次 6 完成**流式渲染 + 交互模式 + 启动入口**（G32–G36 五条新门槛）。
-> 当前盘上 `239 个单测全绿`、三道门禁全绿、注入实验 **33/33** 证伪成功
-> （批次 1 的 7 条 + 批次 1.5 的 10 条 + 批次 2–4 的 10 条 + 批次 6 的 6 条）。
+> 批次 6 完成**流式渲染 + 交互模式 + 启动入口**（G32–G36 五条新门槛）；
+> 批次 7 完成 **web_search 联网搜索**（Tavily，G37–G41）；
+> 批次 8 完成**调研纪律 + web_fetch 精读**（Firecrawl，G42–G47）；
+> P2-1 完成**回放场景 + 最小评测运行器**（G55–G56、G58，见 `evals/`）；
+> P2-2 完成**会话树与存储**（`sigma_session/tree.py` + `store.py`，G48/G49/G53）；
+> P2-3 完成**上下文接树 + `AGENTS.md` 注入**（`resources.py`，常驻区预算 G59）。
+> 当前盘上 `374 个单测全绿`、三道门禁全绿（mypy strict 47 files / 契约 3 kept）、
+> 注入实验 **56/56** 证伪成功
+> （批次 1 的 7 条 + 批次 1.5 的 10 条 + 批次 2–4 的 10 条 + 批次 6 的 6 条
+> + 批次 7 的 5 条 + 批次 8 的 7 条 + P2-1 的 4 条 + P2-2 的 3 条 + P2-3 的 4 条）。
+> **注意**：这些数字只对应当前工作区状态；换代码或换环境后**必须重跑**——
+> 注入锚点与源码硬耦合，数字会随未提交代码漂移（详见下方「门槛注入实验」）。
+> 另注：P2-1 曾试图加一条「回放工作区隔离」门槛（G57），
+> **实测证伪不了，故未注册**——宁可少一条门槛，不要一条名义门槛。
 >
 > **真实 API 已跑通两层**：Provider 层冒烟 5/5（`scripts/real_api_smoke.py`）、
 > **agent loop 端到端**（`scripts/real_api_agent_demo.py` 与 CLI 实测均通过）；
@@ -19,7 +30,8 @@
 > 未验证项见 `docs/plans/P1-批次1-详规.md` 第 9 节（§9.1 复核结果、
 > §9.2 一处测试设计缺陷）与 `P1-批次1.5-详规.md` 第 9 节。
 >
-> **尚未落地**：`tests/fixtures/transcripts/` 六个回放场景、评测运行器（批次 5）。
+> **尚未落地**：`evals/datasets/` 的 70 条任务集（需真实 API key + 判定脚本）。
+> 回放场景与最小运行器**已落地**（`tests/fixtures/transcripts/` 六个 + `evals/runner.py`）。
 >
 > **⚠️ 计数纪律（2026-09-20 评审新增）**：本文件里任何计数（测试数 / 文件数 /
 > 契约数）都必须绑定提交号。理由：批次 1.5 的代码曾未提交就落在盘上，
@@ -40,6 +52,7 @@
 | Q4 | `-p` 退出码：**0 = 正常结束，非 0 = harness 自身失败** | 2026-09-20 |
 | R2 | 时间预算：**8h/周全部给 sigma**（与 interview-agent 无并行关系） | 2026-09-20 |
 | Q5 | 联网搜索做成**可选第 6 个工具** `web_search`（Tavily）：有 key 才注册、`--no-web-search` 可关；免费额度 1000 credits/月，超额自动禁用 | 2026-09-21 |
+| Q6 | **批次 8**：新增可选第 7 个工具 `web_fetch`（Firecrawl 精读，**单次最多 2 条 URL**）；`web_search` 加黑名单 + 时间预过滤 + 调研纪律提示词；两家额度账本抽 `CreditLedger` 基类 | 2026-09-21 |
 
 ---
 
@@ -141,8 +154,10 @@ SIGMA_API_KEY=sk-你的key
 > 不知道边界在哪比边界不存在更危险——所以 CLI 每次启动都会打印这条。
 
 > 📌 **工具集的当前边界**：核心五工具 `read` / `write` / `edit` / `bash` / `grep` 已全部就位；
-> 另有**可选第六个 `web_search`**（联网搜索，Tavily）——只在解析到 `TAVILY_API_KEY` 时注册。
-> 免费额度 1000 **credits**/月（basic 档每次 1、advanced 档 2），用尽后工具自动禁用。
+> 另有**两个可选联网工具**——`web_search`（搜索，Tavily）与 `web_fetch`（精读，Firecrawl，
+> **单次最多 2 条 URL**），只在解析到对应 key 时注册，`--no-web-search` 可整体关。
+> 免费额度各 1000 **credits**/月，用尽后对应工具自动禁用；
+> 低质量来源与超过 2 年的旧结果会在代码层被过滤，丢弃条数会写进结果里。
 > **这一点写出来，不假装够用。**
 
 > 🧪 **REPL 是简版**：交互模式**不支持中途打断 / 消息注入**（那需要 P3 的
@@ -164,12 +179,47 @@ pytest -q       # 单测，不需要 API key
 
 三道全过 = 当前阶段达标。
 
+> ⚠️ **Windows 上有一个坑：用 `python -m pytest`，不要直接调 `.venv/Scripts/pytest.exe`。**
+> 那个 `.exe` 是启动器，它从 **PATH** 解析解释器。如果 PATH 里 `python`
+> 指向别的环境（本机实测会挑到 anaconda），pytest 就会用**那套** site-packages 跑，
+> 症状是 `ModuleNotFoundError: No module named 'evals'` 这类**看起来像代码错**的报错。
+> 正确写法：`./.venv/Scripts/python.exe -m pytest -q`（本次为此多排查了一轮）。
+>
+> ⚠️ **在沙箱化环境里跑 pytest，要把临时根指进仓库**（否则 pytest 的
+> 临时目录会在系统 Temp 里越攒越多，见下）：
+>
+> ```bash
+> export TMPDIR='C:/Users/<你>/Desktop/sigma/.pytest_cache/tmp'
+> export PYTEST_DEBUG_TEMPROOT="$TMPDIR"
+> ```
+>
+> **必须用 Windows 路径**：POSIX 形式（`/c/...`）会被 Python 忽略，静默回退到
+> `AppData\Local\Temp`。另外 `--basetemp=` 没用——它自己就要删那个目录，照样被拦。
+> 普通终端（无沙箱）不需要这一步，pytest 自己会清理。
+
+**回放场景评测**（离线、免 key、不联网）：
+
+```bash
+python evals/runner.py                      # 跑全部场景，报告落 evals/reports/
+python evals/runner.py --scenario read_then_edit
+```
+
+六个回放场景在 `tests/fixtures/transcripts/*.jsonl`
+（清单与期望值在 `_scenarios.py`，**同一份清单**同时驱动门禁测试与运行器）。
+`evals/datasets/` 的 70 条任务集**尚未落地**——那些需要真实 API key 与判定脚本。
+
 **门槛注入实验**（验证"约束真的在生效"，而不只是"配置跑绿"）：
 
 ```bash
 python scripts/gate_injection_batch1.py     # 期望 7/7
 python scripts/gate_injection_batch15.py    # 期望 10/10
 python scripts/gate_injection_batch24.py    # 期望 10/10
+python scripts/gate_injection_batch6.py     # 期望 6/6
+python scripts/gate_injection_batch7.py     # 期望 5/5
+python scripts/gate_injection_batch8.py     # 期望 7/7
+python scripts/gate_injection_p21.py        # 期望 4/4
+python scripts/gate_injection_batch9.py     # 期望 3/3
+python scripts/gate_injection_batch10.py    # 期望 4/4
 ```
 
 每个脚本逐条对源码注入破坏 → 确认对应断言变红 → **还原**。
@@ -218,7 +268,7 @@ sigma_ai      → （无内部依赖）
 | 层 | 职责 |
 | --- | --- |
 | `sigma` | 产品壳：CLI / REPL / 一次性模式 / SDK 入口 |
-| `sigma_tools` | 内置工具：read / write / edit / bash / grep（+ 可选 web_search） |
+| `sigma_tools` | 内置工具：read / write / edit / bash / grep（+ 可选 web_search / web_fetch） |
 | `sigma_session` | 会话树 · 上下文组装 · 压缩 · 扩展装配 |
 | `sigma_agent` | agent loop · 工具注册表 · 钩子总线 · checkpoint |
 | `sigma_ai` | Provider 抽象 · 流式事件 · 用量 |

@@ -1,10 +1,31 @@
 # evals —— 评测
 
-> 状态：P1 起填充。此处只定义约定，尚无实现。
+> 状态（2026-09-21）：**`runner.py` 已落地**，跑 `tests/fixtures/transcripts/` 下的
+> 六个回放场景，报告落 `reports/`。
+> `datasets/` 的 70 条任务集**尚未落地**——那些需要真实 API key + 判定脚本。
 
 **不要在这里写空壳实现。** 骨架到位、实现没接，是本项目明确要避免的失败模式。
+（`datasets/*/` 三个目录除了 `.gitkeep` 是空的，**这是如实状态，不是"已完成"。**）
 
-## 数据集结构
+## 现在能跑的（离线、免 key、不联网）
+
+```bash
+python evals/runner.py                        # 全部场景
+python evals/runner.py --scenario read_then_edit
+```
+
+六个场景：`read_then_edit` · `bash_fail_then_retry` · `context_overflow` ·
+`compact_then_continue` · `tool_error_recovery` · `branch_and_resume`。
+清单与期望值在 `tests/fixtures/transcripts/_scenarios.py`——
+**门禁测试与运行器共用同一份**，不各写一份。
+
+采集字段：轮数 / 状态 / 工具调用数 / 工具失败数 / prompt+completion token /
+wall_clock / **transcript 是否被完整消费**。
+
+**`transcript 未被完整消费` 是个独立信号**：状态全绿但没消费完，
+说明 loop 在有剩余输入时自己停了——那是个真 bug，不是噪声。
+
+## 数据集结构（**尚未落地**）
 
 ```
 datasets/
@@ -27,7 +48,10 @@ datasets/
 
 ## 运行器
 
-`runner.py`（P1 实现）负责：批量跑任务、采集指标、输出报告到 `reports/`。
+`runner.py` 负责：批量跑回放场景、采集指标、输出报告到 `reports/`。
+
+**回放场景是数据集的测量仪，不是替代品。** 先有测量仪，才知道数据集跑出来的
+数字有没有意义；而且回放场景进 CI、不花钱、不联网，是数据集的前置条件。
 
 ## 指标
 

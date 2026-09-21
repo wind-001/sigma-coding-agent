@@ -32,13 +32,16 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from sigma import __version__
 from sigma.dotenv import (
     ENV_VAR_NAME,
+    FIRECRAWL_ENV_VAR,
     TAVILY_ENV_VAR,
     USER_CONFIG_DIR,
     resolve_api_key,
+    resolve_firecrawl_api_key,
     resolve_tavily_api_key,
 )
 from sigma.repl import run_repl
@@ -49,7 +52,6 @@ from sigma.sdk import (
     run_task,
 )
 from sigma_agent.registry import ToolRegistry
-from sigma_tools.web_search import WebSearchTool
 from sigma.render import TerminalRenderer
 from sigma_agent.agent_messages import (
     AgentMessage,
@@ -122,8 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-web-search",
         action="store_true",
         help=(
-            "禁用联网搜索工具 web_search。"
-            "默认：解析到 TAVILY_API_KEY 就启用（额度 1000 credits/月，超额自动禁用）"
+            "禁用整个联网工具组（web_search 搜索 / web_fetch 精读）。"
+            "默认：解析到哪个 key 就启用哪个（各 1000 credits/月，超额自动禁用）"
         ),
     )
     parser.add_argument("--version", action="version", version=f"sigma {__version__}")
@@ -336,6 +338,30 @@ async def _run_interactive(
         await provider.aclose()
 
 
+def _report_web_tool(
+    registry: ToolRegistry, name: str, label: str, source: str, env_var: str
+) -> None:
+    """打印一个联网工具的状态：是否注册、额度还剩多少、账本有没有异常。
+
+    为什么按"注册表里有没有"判断，而不是按"key 有没有"：
+        两者在同一处决定（本函数上方），但**注册表才是事实**——
+        将来多一个开关键时，这里不会静默打印出与实际不符的状态。
+    """
+    if name not in registry.names():
+        print(f"  {label}    未启用（未找到 {env_var}）")
+        return
+    tool: Any = registry.get(name)
+    usage = tool.quota.snapshot()
+    print(
+        f"  {label}    已启用（{source}）"
+        f"｜剩余 {usage.remaining}/{usage.cycle_limit} credits"
+    )
+    # 账本写不下去时必须**说出来**：静默失败的后果是
+    # "额度计数每次都从 0 开始"，而用户只会觉得"额度怎么用不完"。
+    if usage.last_error:
+        print(f"          ⚠ 额度账本异常：{usage.last_error}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。返回进程退出码。"""
     _configure_console()  # 必须在任何 print 之前：中文与 ⏺ 靠它才不乱码
@@ -371,13 +397,20 @@ def main(argv: list[str] | None = None) -> int:
         print("  3) 只用一次：--api-key sk-xxx", file=sys.stderr)
         return EXIT_HARNESS_ERROR
 
-    # 联网搜索是可选工具：**有 key 才注册**。工具 schema 进常驻区，
-    # 没配 key 的机器不该为它付 token（批次 7 详规 Q1）。
+    # 联网工具是可选工具组：**有 key 才注册**。工具 schema 进常驻区，
+    # 没配 key 的机器不该为它付 token（批次 7 详规 Q1；批次 8 从两个 key 各自判断）。
     # 提示词与注册表同源：关掉时不出现"有个工具叫 web_search"这句话。
     tavily_key, tavily_source = resolve_tavily_api_key()
+    firecrawl_key, firecrawl_source = resolve_firecrawl_api_key()
     web_search_on = not args.no_web_search and bool(tavily_key)
-    registry = default_registry(web_search=web_search_on, tavily_api_key=tavily_key)
-    system_prompt = build_system_prompt(web_search=web_search_on)
+    web_fetch_on = not args.no_web_search and bool(firecrawl_key)
+    registry = default_registry(
+        web_search=web_search_on,
+        tavily_api_key=tavily_key,
+        web_fetch=web_fetch_on,
+        firecrawl_api_key=firecrawl_key,
+    )
+    system_prompt = build_system_prompt(web_search=web_search_on, web_fetch=web_fetch_on)
 
     mode = "一次性" if args.prompt else "交互"
     print(f"sigma {__version__}（{mode}模式）")
@@ -385,22 +418,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  模型    {model} @ {base_url}")
     print(f"  工具    {registry.names()}")
     print(f"  密钥    已加载（来源：{key_source}）")
-    if web_search_on:
-        tool = registry.get("web_search")
-        if isinstance(tool, WebSearchTool):
-            usage = tool.quota.snapshot()
-            print(
-                f"  联网    已启用（{tavily_source}）"
-                f"｜剩余 {usage.remaining}/{usage.cycle_limit} credits"
-            )
-            # 账本写不下去时必须**说出来**：静默失败的后果是
-            # "额度计数每次都从 0 开始"，而用户只会觉得"额度怎么用不完"。
-            if usage.last_error:
-                print(f"          ⚠ 额度账本异常：{usage.last_error}")
-    elif args.no_web_search:
-        print("  联网    已按 --no-web-search 禁用")
+    if args.no_web_search:
+        print("  联网    已按 --no-web-search 全部禁用（web_search / web_fetch）")
     else:
-        print(f"  联网    未启用（未找到 {TAVILY_ENV_VAR}）")
+        _report_web_tool(registry, "web_search", "搜索", tavily_source, TAVILY_ENV_VAR)
+        _report_web_tool(registry, "web_fetch", "精读", firecrawl_source, FIRECRAWL_ENV_VAR)
     print()
     print("  ⚠ 安全提示：P1 的工具没有任何边界约束（D5 的三层软边界尚未实现）。")
     print("     read 可读任意路径、write/edit 可写任意路径，")

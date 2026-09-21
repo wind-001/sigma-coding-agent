@@ -233,11 +233,24 @@ def _inject_e24(repo: Repo) -> None:
 
     去掉 `verify_resident_region()` 的调用——此后"按任务动态改系统提示词"
     不再有任何东西拦着，而后果（prompt cache 全失效）是**静默**的。
+
+    **锚点于 2026-09-21（P2-3）移动过一次**，原因是在 `build_messages` 里
+    插入了预算校验（`verify_resident_budget()`）与时钟读取，
+    原来的"校验紧跟 system 构造"这个上下文不再成立。
+
+    这正是元纪律②要防的形态：**锚点与源码硬耦合，换代码必须重跑注入**。
+    当时的失败方式是**响亮地抛 `AssertionError`**（而不是静默跳过）——
+    这是设计好的失败姿态，见 `Repo.patch` 的 docstring。
+
+    现在只锚 `verify_resident_region()` 那一行（8 空格缩进的那次调用是文件内唯一一处）。
+    注意**不要**连 `verify_resident_budget()` 一起删掉：
+    那属于另一条门槛（G59），混进来会让这条实验同时测两件事，
+    红了也说不清是哪条失效。
     """
     repo.patch(
         CONTEXT,
-        "        self.verify_resident_region()\n        system: AgentMessage = LlmMessageWrapper(",
-        "        system: AgentMessage = LlmMessageWrapper(",
+        "        self.verify_resident_region()\n",
+        "",
     )
 
 

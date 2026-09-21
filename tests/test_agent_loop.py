@@ -423,6 +423,89 @@ async def test_no_tool_call_completes_in_one_round() -> None:
 
 
 @pytest.mark.asyncio
+async def test_usage_accumulates_across_rounds() -> None:
+    """``TurnResult.usage`` 必须是**整个 turn 的累计**，不是最后一轮的。
+
+    **这条测试的来历（2026-09-21）**
+
+        原实现写的是 ``total_usage = assistant.usage``——变量名叫 ``total``，
+        装的却是最后一轮的数字。它不报错、类型也对，所以整套测试都没发现它，
+        直到 ``evals/runner.py`` 拿它当"每任务 token"时，
+        报告里一个 6 轮任务的 prompt token 只等于第 6 轮的。
+
+    **为什么三个字段都要断言**
+
+        ``cached_tokens`` 容易在"累加"时被漏掉（不写它不会报错，Pydantic 有默认值 0）。
+        而它是 D4 节 prompt cache 命中率指标的分母之一——
+        漏了它，"常驻区稳定"这条主张就失去数据支撑，且症状极隐蔽。
+    """
+    rounds = [
+        [
+            {"type": "text_delta", "text": "a"},
+            {
+                "type": "usage",
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "cached_tokens": 8,
+                },
+            },
+            {"type": "stop", "stop_reason": "stop"},
+        ],
+        # 这一轮不会被跑到（上一轮没要工具就已 completed）——
+        # 用它来证明"累加"不等于"把 transcript 里所有 usage 加起来"。
+        [
+            {"type": "text_delta", "text": "b"},
+            {
+                "type": "usage",
+                "usage": {
+                    "prompt_tokens": 999,
+                    "completion_tokens": 999,
+                    "cached_tokens": 999,
+                },
+            },
+            {"type": "stop", "stop_reason": "stop"},
+        ],
+    ]
+    loop, _, _ = _make_loop(rounds)
+
+    result = await loop.run_turn(_history())
+
+    assert result.rounds == 1
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 10
+    assert result.usage.completion_tokens == 2
+    assert result.usage.cached_tokens == 8
+
+
+@pytest.mark.asyncio
+async def test_usage_is_summed_over_every_round() -> None:
+    """多轮时逐轮相加——**这是"多轮任务更贵"在报告里唯一能体现的地方**。
+
+    两轮各报 (prompt=10, completion=1, cached=5)，总计必须是 (20, 2, 10)。
+    若实现退回"取最后一轮"，这里只会看到 (10, 1, 5) 而**不会报任何错**。
+    """
+    usage_round = {
+        "type": "usage",
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "cached_tokens": 5},
+    }
+    rounds = [
+        [*_tool_call_round('{"message": "hi"}')[:-1], usage_round,
+         {"type": "stop", "stop_reason": "tool_use"}],
+        [_text_round("完成")[0], usage_round, {"type": "stop", "stop_reason": "stop"}],
+    ]
+    loop, _, _ = _make_loop(rounds, tools=[EchoTool()])
+
+    result = await loop.run_turn(_history())
+
+    assert result.rounds == 2
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 20
+    assert result.usage.completion_tokens == 2
+    assert result.usage.cached_tokens == 10
+
+
+@pytest.mark.asyncio
 async def test_determinism_two_runs_are_identical() -> None:
     """**两次执行产出逐字节一致**（架构 7.2 节的地基）。
 
