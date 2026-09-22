@@ -42,6 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from sigma_ai import stamps
 from sigma_agent.agent_messages import (
     AgentMessage,
     convert_to_llm,
@@ -321,7 +322,7 @@ async def summarize(
     model: str,
     signal: CancelToken,
     sampling: SamplingParams | None = None,
-    clock: Callable[[], int] | None = None,
+    clock: Callable[[], str] | None = None,
 ) -> tuple[str, Usage | None]:
     """调一次模型，把 ``messages`` 压成摘要文本。返回 ``(摘要, 用量)``。
 
@@ -335,7 +336,7 @@ async def summarize(
     from sigma_ai.events import ErrorEvent, StopEvent, TextDelta, UsageEvent
 
     prompt = build_summary_prompt(render_history(messages))
-    stamp = clock() if clock is not None else 0
+    stamp = clock() if clock is not None else stamps.now()
     # 显式标成 ``list[LlmMessage]``：``list`` 是不变的，
     # 写 ``list[UserMessage]`` 会被 mypy 判成与 ``stream`` 的参数不兼容。
     request: list[LlmMessage] = [UserMessage(content=prompt, timestamp=stamp)]
@@ -377,7 +378,7 @@ async def compact_history(
     model: str,
     signal: CancelToken,
     sampling: SamplingParams | None = None,
-    clock: Callable[[], int] | None = None,
+    clock: Callable[[], str] | None = None,
 ) -> CompactionOutcome | None:
     """按策略压缩。**没有可压的段时返回 ``None``**（不是空结果）。
 
@@ -405,7 +406,7 @@ async def compact_history(
     )
     return CompactionOutcome(
         summary=CompactionSummary(
-            timestamp=clock() if clock is not None else 0,
+            timestamp=clock() if clock is not None else stamps.now(),
             summary=text,
             compacted_messages=len(to_compact),
             usage=usage,

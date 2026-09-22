@@ -226,11 +226,11 @@ def _inject_g9(repo: Repo) -> None:
     """给 ``SystemMessage`` 加 ``summary``——正是 G9 要挡的那个改动。"""
     repo.patch(
         "core/sigma_ai/messages.py",
-        "    tools_removed: list[str] | None = None  # 仅工具名，对应 Pi 的 ToolReference\n    timestamp: int",
+        "    tools_removed: list[str] | None = None  # 仅工具名，对应 Pi 的 ToolReference\n    timestamp: str",
         "    tools_removed: list[str] | None = None  # 仅工具名，对应 Pi 的 ToolReference\n"
         "    # 注入：把压缩摘要塞进 system——G9 要挡的正是这个\n"
         "    summary: str | None = None\n"
-        "    timestamp: int",
+        "    timestamp: str",
     )
 
 

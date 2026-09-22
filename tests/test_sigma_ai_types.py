@@ -34,6 +34,7 @@ from sigma_ai.messages import (
 # ---------------------------------------------------------------------------
 
 
+from sigma_ai.stamps import from_epoch as ts
 @pytest.mark.parametrize("abstract_cls", [BaseProvider, CancelToken])
 def test_abstract_base_cannot_be_instantiated(abstract_cls: type) -> None:
     """G1：忘实现抽象方法时，**实例化**就报错，而不是等到首次调用。
@@ -83,7 +84,7 @@ def _build_signed_message() -> AssistantMessage:
         ],
         usage=Usage(prompt_tokens=10, completion_tokens=20, cached_tokens=5),
         stop_reason="tool_use",
-        timestamp=1_727_000_000,
+        timestamp=ts(1_727_000_000),
     )
 
 
@@ -125,7 +126,7 @@ def test_signature_fields_survive_as_none() -> None:
         content=[TextBlock(text="no signature")],
         usage=Usage(prompt_tokens=1, completion_tokens=1),
         stop_reason="stop",
-        timestamp=1,
+        timestamp=ts(1),
     )
     back = AssistantMessage.model_validate_json(message.model_dump_json())
     block = back.content[0]
@@ -151,7 +152,7 @@ def test_image_block_roundtrip() -> None:
         content=[ImageBlock(data="aGVsbG8=", mime_type="image/png")],
         usage=Usage(prompt_tokens=1, completion_tokens=1),
         stop_reason="stop",
-        timestamp=1,
+        timestamp=ts(1),
     )
     back = AssistantMessage.model_validate_json(message.model_dump_json())
     block = back.content[0]
@@ -209,7 +210,7 @@ def test_system_message_still_supports_prompt_evolution() -> None:
         sections={"persona": "be careful", "tone": None},
         tools_added=[ToolMeta(name="read", description="read a file")],
         tools_removed=["bash"],
-        timestamp=1,
+        timestamp=ts(1),
     )
     back = SystemMessage.model_validate_json(message.model_dump_json())
 
@@ -364,4 +365,4 @@ def test_assistant_message_requires_usage_and_stop_reason() -> None:
     让它们有默认值会掩盖"某条路径忘了填"，那是评测数据不可信的开始。
     """
     with pytest.raises(ValidationError):
-        AssistantMessage(content=[TextBlock(text="x")], timestamp=1)  # type: ignore[call-arg]
+        AssistantMessage(content=[TextBlock(text="x")], timestamp=ts(1))  # type: ignore[call-arg]

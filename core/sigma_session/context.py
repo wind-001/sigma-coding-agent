@@ -102,7 +102,7 @@ class SessionContext:
         *,
         system_prompt: str,
         tools_schema: list[dict[str, Any]],
-        clock: Callable[[], int],
+        clock: Callable[[], str],
         session_id: str = "sigma-session",
         project_instructions: str = "",
         tree: SessionTree | None = None,

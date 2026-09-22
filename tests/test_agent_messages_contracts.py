@@ -64,6 +64,7 @@ from sigma_ai.messages import (
     UserMessage,
 )
 
+from sigma_ai.stamps import from_epoch as ts
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def _tool_result_agent_message() -> ToolResultAgentMessage:
     """一条字段全填的工具结果消息——漏字段的往返测试等于没测。"""
     return ToolResultAgentMessage(
-        timestamp=2000,
+        timestamp=ts(2000),
         tool_call_id="call-9",
         tool_name="bash",
         content=[TextBlock(text="stdout...", text_signature="sig-tool-text")],
@@ -133,7 +134,7 @@ def test_broken_json_line_raises_with_line_number() -> None:
     那样这条测试就退化成"随便哪行坏了都会报"，**证明不了行号是对的**。
     所以第 1 行用一条真实的、能往返成功的消息。
     """
-    good = LlmMessageWrapper(timestamp=1, message=UserMessage(content="ok", timestamp=1))
+    good = LlmMessageWrapper(timestamp=ts(1), message=UserMessage(content="ok", timestamp=ts(1)))
     text = messages_to_jsonl([good]) + "\n{ 这不是 JSON"
 
     with pytest.raises(MessageDecodeError, match="第 2 行"):
@@ -154,7 +155,7 @@ def test_schema_violation_raises_decode_error_with_line_number() -> None:
     得同时 catch 本模块异常、`ValidationError`、`JSONDecodeError`。
     需要处理的异常种类多到会漏，就等于没有错误处理。
     """
-    good = LlmMessageWrapper(timestamp=1, message=UserMessage(content="ok", timestamp=1))
+    good = LlmMessageWrapper(timestamp=ts(1), message=UserMessage(content="ok", timestamp=ts(1)))
     # 第 2 行 role 已知、JSON 合法，但 message 字段结构不对
     text = messages_to_jsonl([good]) + '\n{"role": "llm", "timestamp": 1, "message": {"role": "system"}}'
 
@@ -213,9 +214,9 @@ def test_wrapper_roundtrip_preserves_signatures() -> None:
         response_id="resp-42",
         usage={"prompt_tokens": 7, "completion_tokens": 3, "cached_tokens": 5},  # type: ignore[arg-type]
         stop_reason="stop",
-        timestamp=1000,
+        timestamp=ts(1000),
     )
-    original = LlmMessageWrapper(timestamp=1000, message=inner)
+    original = LlmMessageWrapper(timestamp=ts(1000), message=inner)
 
     restored = message_from_dict(message_to_dict(original))
 
@@ -260,7 +261,7 @@ def test_role_is_written_from_instance_field() -> None:
         def to_llm(self) -> LlmMessage | None:
             return None
 
-    payload = message_to_dict(_Custom(timestamp=1, text="x"))
+    payload = message_to_dict(_Custom(timestamp=ts(1), text="x"))
 
     assert payload["role"] == "test_codec_role_source"
     # 往返后仍是同一个 role（反序列化时按它查表成功）
@@ -289,7 +290,7 @@ def test_mismatched_role_field_is_rejected_at_encode() -> None:
             return None
 
     with pytest.raises(UnknownMessageType):
-        message_to_dict(_Mismatched(timestamp=1, text="x"))
+        message_to_dict(_Mismatched(timestamp=ts(1), text="x"))
 
 
 def test_unregistered_subclass_cannot_be_encoded() -> None:
@@ -308,7 +309,7 @@ def test_unregistered_subclass_cannot_be_encoded() -> None:
             return None
 
     with pytest.raises(UnknownMessageType):
-        message_to_dict(NotRegistered(timestamp=1, text="x"))
+        message_to_dict(NotRegistered(timestamp=ts(1), text="x"))
 
 
 def test_subclass_of_registered_type_cannot_be_encoded() -> None:
@@ -326,7 +327,7 @@ def test_subclass_of_registered_type_cannot_be_encoded() -> None:
         extra: str = "父类没有的字段"
 
     with pytest.raises(UnknownMessageType):
-        message_to_dict(Derived(timestamp=1, tool_call_id="c", tool_name="t", content=[]))
+        message_to_dict(Derived(timestamp=ts(1), tool_call_id="c", tool_name="t", content=[]))
 
 
 def test_jsonl_roundtrip_and_blank_lines() -> None:
@@ -337,15 +338,15 @@ def test_jsonl_roundtrip_and_blank_lines() -> None:
     "空行不产生消息"与"三条非空行产出三条消息"。
     """
     messages: list[AgentMessage] = [
-        LlmMessageWrapper(timestamp=1, message=UserMessage(content="你好", timestamp=1)),
+        LlmMessageWrapper(timestamp=ts(1), message=UserMessage(content="你好", timestamp=ts(1))),
         _tool_result_agent_message(),
         LlmMessageWrapper(
-            timestamp=3,
+            timestamp=ts(3),
             message=ToolResultMessage(
                 tool_call_id="call-9",
                 tool_name="bash",
                 content=[TextBlock(text="ok")],
-                timestamp=3,
+                timestamp=ts(3),
             ),
         ),
     ]
@@ -369,8 +370,8 @@ def test_jsonl_each_line_is_independently_valid() -> None:
     """
     text = messages_to_jsonl(
         [
-            LlmMessageWrapper(timestamp=1, message=UserMessage(content="a", timestamp=1)),
-            LlmMessageWrapper(timestamp=2, message=UserMessage(content="b", timestamp=2)),
+            LlmMessageWrapper(timestamp=ts(1), message=UserMessage(content="a", timestamp=ts(1))),
+            LlmMessageWrapper(timestamp=ts(2), message=UserMessage(content="b", timestamp=ts(2))),
         ]
     )
 

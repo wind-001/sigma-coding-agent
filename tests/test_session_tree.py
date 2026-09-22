@@ -49,6 +49,7 @@ from sigma_session.tree import (
 # ---------------------------------------------------------------------------
 
 
+from sigma_ai.stamps import from_epoch as ts
 _COUNTER = [0]
 
 
@@ -61,7 +62,7 @@ def _msg(text: str) -> LlmMessageWrapper:
     _COUNTER[0] += 1
     stamp = _COUNTER[0]
     return LlmMessageWrapper(
-        timestamp=stamp, message=UserMessage(content=text, timestamp=stamp)
+        timestamp=ts(stamp), message=UserMessage(content=text, timestamp=ts(stamp))
     )
 
 

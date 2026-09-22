@@ -18,6 +18,7 @@ import pytest
 
 from sigma_agent.checkpoint import BUILTIN_EXCLUDES, ShadowCheckpoint
 
+from sigma_ai.stamps import from_epoch as ts
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="本机没有 git，checkpoint 用例未验证"
 )
@@ -348,15 +349,15 @@ async def test_loop_write_then_rollback_restores_workspace(tmp_path: Path) -> No
         model="fake",
         workspace_root=ws,
         signal=NeverCancelled(),
-        clock=lambda: 1_700_000_000,
+        clock=lambda: ts(1_700_000_000),
         checkpoint=cp,
     )
 
     result = await loop.run_turn(
         [
             LlmMessageWrapper(
-                timestamp=1_700_000_000,
-                message=UserMessage(content="改一下 README", timestamp=1_700_000_000),
+                timestamp=ts(1_700_000_000),
+                message=UserMessage(content="改一下 README", timestamp=ts(1_700_000_000)),
             )
         ]
     )

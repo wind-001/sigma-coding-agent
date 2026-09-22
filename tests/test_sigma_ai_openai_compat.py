@@ -62,6 +62,7 @@ from sigma_ai.openai.sse import parse_sse_line
 # ---------------------------------------------------------------------------
 
 
+from sigma_ai.stamps import from_epoch as ts
 class _NeverCancelled(CancelToken):
     def is_cancelled(self) -> bool:
         return False
@@ -141,7 +142,7 @@ def _provider(recorder: _Recorder | None = None, body: bytes | None = None) -> t
 
 
 async def _collect(provider: OpenAICompatProvider, **kwargs: Any) -> list[Any]:
-    messages = kwargs.pop("messages", [UserMessage(content="hi", timestamp=1)])
+    messages = kwargs.pop("messages", [UserMessage(content="hi", timestamp=ts(1))])
     return [
         event
         async for event in provider.stream(
@@ -158,7 +159,7 @@ async def _collect(provider: OpenAICompatProvider, **kwargs: Any) -> list[Any]:
 
 def test_system_message_converts_to_plain_string() -> None:
     """纯文本 system 消息降级成裸字符串（少一层嵌套、少几个 token）。"""
-    msg = SystemMessage(content="you are helpful", timestamp=1)
+    msg = SystemMessage(content="you are helpful", timestamp=ts(1))
     assert message_to_openai(msg) == {"role": "system", "content": "you are helpful"}
 
 
@@ -172,7 +173,7 @@ def test_user_message_with_image_converts_to_parts() -> None:
             TextBlock(text="what is this"),
             ImageBlock(data="aGVsbG8=", mime_type="image/png"),
         ],
-        timestamp=1,
+        timestamp=ts(1),
     )
     out = message_to_openai(msg)
     assert out["role"] == "user"
@@ -202,7 +203,7 @@ def test_assistant_tool_call_becomes_tool_calls_field() -> None:
         ],
         usage=Usage(prompt_tokens=1, completion_tokens=1),
         stop_reason="tool_use",
-        timestamp=1,
+        timestamp=ts(1),
     )
     out = message_to_openai(msg)
 
@@ -226,7 +227,7 @@ def test_assistant_text_and_tool_call_coexist() -> None:
         ],
         usage=Usage(prompt_tokens=1, completion_tokens=1),
         stop_reason="tool_use",
-        timestamp=1,
+        timestamp=ts(1),
     )
     out = message_to_openai(msg)
     assert out["content"] == "let me look"
@@ -247,7 +248,7 @@ def test_thinking_block_is_not_sent_but_survives_locally() -> None:
         ],
         usage=Usage(prompt_tokens=1, completion_tokens=1),
         stop_reason="stop",
-        timestamp=1,
+        timestamp=ts(1),
     )
     out = message_to_openai(msg)
     assert out["content"] == "answer"  # 只剩文本，且降级成字符串
@@ -264,7 +265,7 @@ def test_tool_result_becomes_its_own_role() -> None:
         tool_call_id="call_1",
         tool_name="read",
         content=[TextBlock(text="file contents")],
-        timestamp=1,
+        timestamp=ts(1),
     )
     out = message_to_openai(msg)
     assert out == {
@@ -284,7 +285,7 @@ def test_tool_result_rejects_multimodal_content() -> None:
         tool_call_id="c1",
         tool_name="screenshot",
         content=[ImageBlock(data="aGk=", mime_type="image/png")],
-        timestamp=1,
+        timestamp=ts(1),
     )
     with pytest.raises(TypeError, match="多模态"):
         message_to_openai(msg)
@@ -657,7 +658,7 @@ async def test_stream_is_async_iterable_not_coroutine() -> None:
     """
     provider, _ = _provider()
     stream = provider.stream(
-        [UserMessage(content="hi", timestamp=1)],
+        [UserMessage(content="hi", timestamp=ts(1))],
         [],
         model="m",
         signal=_NeverCancelled(),

@@ -24,7 +24,8 @@ from sigma_agent.agent_messages import ToolResultAgentMessage
 from sigma_agent.types import ToolResult
 from sigma_ai.messages import TextBlock, ToolCallBlock
 
-FIXED_TS = 1_700_000_000
+from sigma_ai.stamps import from_epoch as ts
+FIXED_TS = ts(1_700_000_000)
 
 
 def _call(**kwargs: object) -> ToolCallBlock:
@@ -105,7 +106,9 @@ def test_timestamp_defaults_when_omitted() -> None:
     message = ToolResultAgentMessage.from_result(
         _call(), ToolResult(content=[TextBlock(text="x")])
     )
-    assert message.timestamp > 0
+    # 时间戳现在是可读字符串（sigma_ai.stamps），**不能再比大小**。
+    # 要验的是"它被填上了"，用非空即可；格式本身由 stamps 的用例钉。
+    assert isinstance(message.timestamp, str) and message.timestamp
 
 
 @pytest.mark.parametrize("missing", ["details", "is_error"])

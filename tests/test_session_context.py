@@ -13,7 +13,8 @@ import pytest
 
 from sigma_session.context import ResidentRegionChanged, SessionContext
 
-CLOCK = lambda: 1_700_000_000  # noqa: E731 - 固定时钟，保证可复现
+from sigma_ai.stamps import from_epoch as ts
+CLOCK = lambda: ts(1_700_000_000)  # noqa: E731 - 固定时钟，保证可复现
 
 
 def test_resident_region_change_raises() -> None:

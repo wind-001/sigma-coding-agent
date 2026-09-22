@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-22 18:01:39",
+  "generated_at": "2026-09-22 19:44:50",
   "scenarios": [
     {
       "name": "read_then_edit",
@@ -11,7 +11,7 @@
       "tool_errors": 0,
       "prompt_tokens": 3740,
       "completion_tokens": 203,
-      "wall_clock_ms": 695,
+      "wall_clock_ms": 218,
       "text_preview": "完成。`demo/greeting.py` 的拼写错误已修复，运行验证输出 `Hello, 世界!`。",
       "transcript_fully_consumed": true,
       "mismatches": []
@@ -26,7 +26,7 @@
       "tool_errors": 1,
       "prompt_tokens": 6150,
       "completion_tokens": 261,
-      "wall_clock_ms": 1445,
+      "wall_clock_ms": 166,
       "text_preview": "完成。整个过程：先踩了一次命令失败（目录不存在），看到错误后换命令成功，随后读文件、改文件、验证改动，最终确认落盘。",
       "transcript_fully_consumed": true,
       "mismatches": []
@@ -41,7 +41,7 @@
       "tool_errors": 0,
       "prompt_tokens": 18600,
       "completion_tokens": 245,
-      "wall_clock_ms": 1782,
+      "wall_clock_ms": 181,
       "text_preview": "结论已落到 config/NOTES.md。请对会话执行压缩：保留上面这份结论与文件路径，其余中间读取内容可以丢弃。",
       "transcript_fully_consumed": true,
       "mismatches": []
@@ -56,7 +56,7 @@
       "tool_errors": 0,
       "prompt_tokens": 9200,
       "completion_tokens": 152,
-      "wall_clock_ms": 7,
+      "wall_clock_ms": 5,
       "text_preview": "第四章：压缩已经完成，继续处理剩余工作。",
       "transcript_fully_consumed": true,
       "mismatches": []
@@ -71,7 +71,7 @@
       "tool_errors": 1,
       "prompt_tokens": 5000,
       "completion_tokens": 202,
-      "wall_clock_ms": 1009,
+      "wall_clock_ms": 265,
       "text_preview": "跑通了。刚才那次失败说明了一件事：工具失败会作为结果回给我、而不是中断循环，所以我可以用它来纠错。",
       "transcript_fully_consumed": true,
       "mismatches": []
@@ -86,7 +86,7 @@
       "tool_errors": 0,
       "prompt_tokens": 4800,
       "completion_tokens": 100,
-      "wall_clock_ms": 5,
+      "wall_clock_ms": 2,
       "text_preview": "引用只有一处。分支 B 到此结束——注意 loop 完全不知道这些历史来自树上哪个节点。",
       "transcript_fully_consumed": true,
       "mismatches": []

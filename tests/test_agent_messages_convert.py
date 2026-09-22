@@ -65,6 +65,7 @@ from sigma_ai.messages import (
 # ---------------------------------------------------------------------------
 
 
+from sigma_ai.stamps import from_epoch as ts
 def _assistant_with_all_signatures() -> AssistantMessage:
     """一条"把所有可选字段都填满"的 assistant 消息。
 
@@ -95,12 +96,12 @@ def _assistant_with_all_signatures() -> AssistantMessage:
         usage={"prompt_tokens": 7, "completion_tokens": 3, "cached_tokens": 5},  # type: ignore[arg-type]
         stop_reason="tool_use",
         error_message="",
-        timestamp=1000,
+        timestamp=ts(1000),
     )
 
 
 def _wrapped(message: LlmMessage) -> LlmMessageWrapper:
-    return LlmMessageWrapper(timestamp=1000, message=message)
+    return LlmMessageWrapper(timestamp=ts(1000), message=message)
 
 
 # ---------------------------------------------------------------------------
@@ -183,13 +184,13 @@ def test_provider_metadata_survives_downgrade() -> None:
 @pytest.mark.parametrize(
     "message",
     [
-        SystemMessage(content="系统提示词", timestamp=1),
-        UserMessage(content="用户输入", timestamp=1),
+        SystemMessage(content="系统提示词", timestamp=ts(1)),
+        UserMessage(content="用户输入", timestamp=ts(1)),
         ToolResultMessage(
             tool_call_id="call-1",
             tool_name="read_file",
             content=[TextBlock(text="文件内容")],
-            timestamp=1,
+            timestamp=ts(1),
         ),
     ],
     ids=["system", "user", "tool_result"],
@@ -217,7 +218,7 @@ def _tool_result(
     *, exclude: bool, reason: str = "", is_error: bool = False
 ) -> ToolResultAgentMessage:
     return ToolResultAgentMessage(
-        timestamp=2000,
+        timestamp=ts(2000),
         tool_call_id="call-9",
         tool_name="bash",
         content=[TextBlock(text="stdout...")],
@@ -253,8 +254,8 @@ def test_excluded_message_does_not_displace_neighbours() -> None:
     "遇到 exclude 就 `break`"（丢弃后面全部）而不是 `continue`。
     这条用"前后各一条"把顺序与数量都钉住。
     """
-    before = UserMessage(content="前一条", timestamp=1)
-    after = UserMessage(content="后一条", timestamp=3)
+    before = UserMessage(content="前一条", timestamp=ts(1))
+    after = UserMessage(content="后一条", timestamp=ts(3))
 
     result = convert_to_llm(
         [
@@ -334,7 +335,7 @@ def test_custom_message_degrades_to_user_not_system() -> None:
 
     注入 E13 会把它改成造 `SystemMessage`，本断言会红。
     """
-    result = convert_to_llm([_NoteMessage(timestamp=3000, text="压缩摘要正文")])
+    result = convert_to_llm([_NoteMessage(timestamp=ts(3000), text="压缩摘要正文")])
 
     assert len(result) == 1
     assert isinstance(result[0], UserMessage), (
@@ -354,7 +355,7 @@ def test_custom_message_body_is_readable_json() -> None:
     """
     import json
 
-    result = convert_to_llm([_NoteMessage(timestamp=3000, text="压缩摘要正文")])
+    result = convert_to_llm([_NoteMessage(timestamp=ts(3000), text="压缩摘要正文")])
 
     assert len(result) == 1
     payload = result[0]
@@ -363,7 +364,7 @@ def test_custom_message_body_is_readable_json() -> None:
 
     parsed = json.loads(payload.content)
     assert parsed["text"] == "压缩摘要正文"
-    assert parsed["timestamp"] == 3000
+    assert parsed["timestamp"] == ts(3000)
 
 
 def test_custom_message_can_decline_to_enter_context() -> None:
@@ -387,7 +388,7 @@ def test_custom_message_can_decline_to_enter_context() -> None:
         def to_llm(self) -> LlmMessage | None:
             return None  # 明确表态：不进上下文
 
-    result = convert_to_llm([_Ephemeral(timestamp=4000)])
+    result = convert_to_llm([_Ephemeral(timestamp=ts(4000))])
 
     assert result == [], (
         "自定义类型通过返回 None 表达「不进上下文」，"
@@ -418,10 +419,10 @@ def test_unknown_message_type_warns() -> None:
         text: str = ""
 
         def to_llm(self) -> LlmMessage | None:
-            return UserMessage(content="不应到达这里", timestamp=1)
+            return UserMessage(content="不应到达这里", timestamp=ts(1))
 
     with pytest.warns(UnconvertibleMessageWarning):
-        result = convert_to_llm([Unknown(timestamp=5000, text="孤儿消息")])
+        result = convert_to_llm([Unknown(timestamp=ts(5000), text="孤儿消息")])
 
     assert result == []
 
@@ -443,7 +444,7 @@ def test_warning_carries_type_and_role() -> None:
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")  # 默认只报一次，测试里必须改成 always
-        convert_to_llm([Orphan(timestamp=6000, text="x")])
+        convert_to_llm([Orphan(timestamp=ts(6000), text="x")])
 
     assert len(caught) == 1
     record = caught[0]
@@ -462,7 +463,7 @@ def test_warning_does_not_displace_other_messages() -> None:
     （详规 2.4 方案丙的理由）。
     若实现改成抛错，这条会红——那时它提醒的是"设计已经被改掉了"。
     """
-    good = UserMessage(content="正常消息", timestamp=1)
+    good = UserMessage(content="正常消息", timestamp=ts(1))
 
     class Orphan(AgentMessage):
         role: str = "test_convert_orphan_2"
@@ -471,7 +472,7 @@ def test_warning_does_not_displace_other_messages() -> None:
             return None
 
     with pytest.warns(UnconvertibleMessageWarning):
-        result = convert_to_llm([_wrapped(good), Orphan(timestamp=6000)])
+        result = convert_to_llm([_wrapped(good), Orphan(timestamp=ts(6000))])
 
     assert len(result) == 1
     assert result[0] is good
@@ -499,7 +500,7 @@ def test_registered_subclass_instance_still_converts() -> None:
     替子类做了丢弃决定，于是：
 
         class Sub(LlmMessageWrapper): pass
-        s = Sub(timestamp=1, message=UserMessage(...))
+        s = Sub(timestamp=ts(1), message=UserMessage(...))
         s.to_llm()          -> UserMessage(...)   # 有合法返回
         convert_to_llm([s]) -> []                 # 却被丢弃
 
@@ -514,8 +515,8 @@ def test_registered_subclass_instance_still_converts() -> None:
 
     注入 E19 会把它改回 `is not type(...)`，本断言会红。
     """
-    original = UserMessage(content="子类实例的内容", timestamp=7000)
-    subclass_instance = _SubclassedWrapper(timestamp=7000, message=original)
+    original = UserMessage(content="子类实例的内容", timestamp=ts(7000))
+    subclass_instance = _SubclassedWrapper(timestamp=ts(7000), message=original)
 
     result = convert_to_llm([subclass_instance])
 
@@ -539,7 +540,7 @@ def test_subclass_instance_does_not_warn() -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         convert_to_llm(
-            [_SubclassedWrapper(timestamp=7000, message=UserMessage(content="x", timestamp=1))]
+            [_SubclassedWrapper(timestamp=ts(7000), message=UserMessage(content="x", timestamp=ts(1)))]
         )
 
     noisy = [w for w in caught if issubclass(w.category, UnconvertibleMessageWarning)]
@@ -558,7 +559,7 @@ def test_subclass_explicit_none_is_still_respected() -> None:
         def to_llm(self) -> LlmMessage | None:
             return None
 
-    result = convert_to_llm([_DecliningWrapper(timestamp=8000, message=UserMessage(content="x", timestamp=1))])
+    result = convert_to_llm([_DecliningWrapper(timestamp=ts(8000), message=UserMessage(content="x", timestamp=ts(1)))])
 
     assert result == [], "子类显式返回 None 表示不进上下文，必须被尊重"
 
@@ -577,7 +578,7 @@ def test_encode_stays_strict_for_subclass() -> None:
 
     with pytest.raises(UnknownMessageType):
         message_to_dict(
-            _SubclassedWrapper(timestamp=7000, message=UserMessage(content="x", timestamp=1))
+            _SubclassedWrapper(timestamp=ts(7000), message=UserMessage(content="x", timestamp=ts(1)))
         )
 
 
@@ -611,15 +612,15 @@ def test_mixed_batch_preserves_order() -> None:
     顺序是 agent loop 的硬约束：工具结果的顺序错位会让
     `tool_call_id` 与模型请求对不上。
     """
-    first = UserMessage(content="第一条", timestamp=1)
-    second = UserMessage(content="第二条", timestamp=2)
-    third = UserMessage(content="第三条", timestamp=3)
+    first = UserMessage(content="第一条", timestamp=ts(1))
+    second = UserMessage(content="第二条", timestamp=ts(2))
+    third = UserMessage(content="第三条", timestamp=ts(3))
 
     result = convert_to_llm(
         [
             _wrapped(first),
             _tool_result(exclude=True, reason="丢弃项"),
-            _NoteMessage(timestamp=3000, text="自定义"),
+            _NoteMessage(timestamp=ts(3000), text="自定义"),
             _wrapped(second),
             _wrapped(third),
         ]

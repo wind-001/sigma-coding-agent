@@ -407,12 +407,12 @@ class SystemMessage(BaseModel):
     sections: dict[str, str | None] | None = None
     tools_added: list[ToolMeta] | None = None
     tools_removed: list[str] | None = None      # 仅工具名
-    timestamp: int
+    timestamp: str      # 可读本地时间，精确到毫秒（见下）
 
 class UserMessage(BaseModel):
     role: Literal["user"] = "user"
     content: str | list[ContentBlock]
-    timestamp: int
+    timestamp: str      # 可读本地时间，精确到毫秒（见下）
 
 class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
@@ -424,7 +424,7 @@ class AssistantMessage(BaseModel):
     usage: Usage
     stop_reason: StopReason
     error_message: str = ""
-    timestamp: int
+    timestamp: str      # 可读本地时间，精确到毫秒（见下）
 
 class ToolResultMessage(BaseModel):
     role: Literal["tool_result"] = "tool_result"
@@ -433,9 +433,24 @@ class ToolResultMessage(BaseModel):
     content: list[ContentBlock]
     details: dict[str, Any] = {}         # 不进上下文（见 4.2 节）
     is_error: bool = False
-    timestamp: int
+    timestamp: str      # 可读本地时间，精确到毫秒（见下）
 
 LlmMessage = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
+
+**时间戳的格式（2026-09-22 定）**
+
+``timestamp`` 是 ``str``，形如 ``2026-09-22T19:58:06.433``——**本地时间，精确到毫秒**，
+不是 Unix 整数。理由与边界都写在 ``sigma_ai/stamps.py`` 的模块 docstring 里，要点：
+
+- **为什么改**：会话文件（``~/.sigma/sessions/*.jsonl``）是要被人打开看的，
+  ``1790068491`` 读不出时刻。这是星辰明确要求的，且他确认**旧记录不用管**。
+- **本地时间、不带时区偏移**：本机开发工具，读的就是自己的钟面。
+  代价是同一个文件在两台不同时区的机器上读出的时刻不同。
+- **不向后兼容**：旧文件里的整数会让 ``message_from_dict`` 报错。
+  要读旧会话得先转格式——本项目**没有**写这个迁移（明确不做，不是忘了）。
+- **毫秒只在 ``stamps.split`` 里算**：可读串与紧凑串（会话 id 用）都从它派生，
+  否则"截断还是四舍五入"的差异会在某一处悄悄出现。
+
 ```
 
 **三条必须写进实现约定的点**：
@@ -497,7 +512,7 @@ class AgentMessage(BaseModel, ABC):
     继承 ABC 是为了强制子类实现 to_llm()。
     """
 
-    timestamp: int
+    timestamp: str      # 可读本地时间，精确到毫秒（见下）
 
     @abstractmethod
     def to_llm(self) -> LlmMessage | None:

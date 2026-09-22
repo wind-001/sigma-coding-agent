@@ -152,7 +152,7 @@ class SystemMessage(BaseModel):
     sections: dict[str, str | None] | None = None
     tools_added: list[ToolMeta] | None = None
     tools_removed: list[str] | None = None  # 仅工具名，对应 Pi 的 ToolReference
-    timestamp: int
+    timestamp: str
 
 
 class UserMessage(BaseModel):
@@ -164,7 +164,7 @@ class UserMessage(BaseModel):
 
     role: Literal["user"] = "user"
     content: str | list[ContentBlock]
-    timestamp: int
+    timestamp: str
 
 
 class AssistantMessage(BaseModel):
@@ -183,7 +183,7 @@ class AssistantMessage(BaseModel):
     usage: Usage
     stop_reason: StopReason
     error_message: str = ""
-    timestamp: int
+    timestamp: str
 
 
 class ToolResultMessage(BaseModel):
@@ -196,7 +196,7 @@ class ToolResultMessage(BaseModel):
     # 不进上下文，只给 UI / 审计 / 评测。判据：不需要模型看到的内容都放这里。
     details: dict[str, Any] = {}
     is_error: bool = False
-    timestamp: int
+    timestamp: str
 
 
 LlmMessage = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage

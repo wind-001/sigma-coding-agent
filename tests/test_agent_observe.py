@@ -29,7 +29,8 @@ from sigma_ai.messages import TextBlock
 from sigma_agent.base import BaseTool
 from pydantic import BaseModel, Field
 
-FIXED_TIME = 1_700_000_000
+from sigma_ai.stamps import from_epoch as ts
+FIXED_TIME = ts(1_700_000_000)
 
 
 class _EchoParams(BaseModel):

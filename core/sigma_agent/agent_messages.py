@@ -61,7 +61,6 @@
 from __future__ import annotations
 
 import json
-import time
 import warnings
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
@@ -85,6 +84,7 @@ if TYPE_CHECKING:
 # 运行期可求值是硬要求。（这与批次 1 踩过的
 # 「签名不能只被一个实现者适配」是同一类问题：约束的成立条件
 # 由**框架**决定，不由写代码的人的直觉决定。）
+from sigma_ai import stamps
 from sigma_ai.messages import (
     ContentBlock,
     LlmMessage,
@@ -240,7 +240,7 @@ class AgentMessage(BaseModel, ABC):
     由单测（门槛 G15）断言。
     """
 
-    timestamp: int
+    timestamp: str
 
     @abstractmethod
     def to_llm(self) -> LlmMessage | None:
@@ -322,7 +322,7 @@ class ToolResultAgentMessage(AgentMessage):
         *,
         exclude_from_context: bool = False,
         exclude_reason: str = "",
-        timestamp: int | None = None,
+        timestamp: str | None = None,
     ) -> ToolResultAgentMessage:
         """由「工具调用 + 执行结果」构造一条 agent 层消息。
 
@@ -347,7 +347,7 @@ class ToolResultAgentMessage(AgentMessage):
             is_error=result.is_error,
             exclude_from_context=exclude_from_context,
             exclude_reason=exclude_reason,
-            timestamp=timestamp if timestamp is not None else int(time.time()),
+            timestamp=timestamp if timestamp is not None else stamps.now(),
         )
 
     def to_llm(self) -> LlmMessage | None:

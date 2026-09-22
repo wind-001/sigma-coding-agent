@@ -34,7 +34,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -45,6 +44,7 @@ from sigma_agent.loop import AgentLoop
 from sigma_agent.observe import LoopObserver
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import TurnResult
+from sigma_ai import stamps
 from sigma_ai.base import NeverCancelled, SamplingParams
 from sigma_ai.messages import UserMessage
 from sigma_session.compact import CompactionOutcome, CompactionPolicy
@@ -239,14 +239,14 @@ def default_registry(
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32_000
 
 
-def _real_clock() -> int:
+def _real_clock() -> str:
     """当前时间戳。
 
     用 ``def`` 而不是 ``lambda``：**mypy strict 下 lambda 无法标注类型**，
     于是每次 ``clock()`` 调用都会报 ``no-untyped-call``。
     这是个容易忽略的约束——写 lambda 时不会想到它会被"调用类型检查"追上。
     """
-    return int(time.time())
+    return stamps.now()
 
 
 class InteractiveSession:

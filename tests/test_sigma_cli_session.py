@@ -120,17 +120,23 @@ def test_cli_shadow_dir_is_next_to_session_file(tmp_path: Path) -> None:
 
 
 def test_new_session_id_is_sortable_and_unique() -> None:
-    """id 形如 ``YYYYMMDD-HHMMSS-xxxx``：**能一眼看出先后**。
+    """id 形如 ``YYYYMMDD-HHMMSS.mmm-xxxx``：**能一眼看出先后**。
 
     与节点 id 取 uuid4 的理由不同——会话 id 是给人看的
     （``--continue`` 之后用户要知道自己续的是哪个）。
+
+    **时间到毫秒**（2026-09-22 星辰要求）。末尾四位随机**仍然保留**：
+    毫秒不保证唯一（同一毫秒内开两个会话是可能的），
+    而撞了会写到同一个会话文件、两个会话的历史混在一起且不报错。
     """
     first = new_session_id(clock=lambda: 1_750_000_000)
     second = new_session_id(clock=lambda: 1_750_000_000)
 
-    assert len(first) == 8 + 1 + 6 + 1 + 4
+    # YYYYMMDD(8) - HHMMSS(6) . mmm(3) - xxxx(4)
+    assert len(first) == 8 + 1 + 6 + 1 + 3 + 1 + 4
     assert first[:8].isdigit() and first[9:15].isdigit()
-    # 同一秒内也要不撞（脚本里连着调两次是可发生的）
+    assert first[15] == "." and first[16:19].isdigit(), "毫秒位缺失"
+    # 同一毫秒内也要不撞（脚本里连着调两次是可发生的）
     assert first != second
 
 

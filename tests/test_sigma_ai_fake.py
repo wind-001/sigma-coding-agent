@@ -44,6 +44,7 @@ from sigma_ai.messages import UserMessage
 # ---------------------------------------------------------------------------
 
 
+from sigma_ai.stamps import from_epoch as ts
 class _NeverCancelled(CancelToken):
     """永不取消。回放测试的默认信号。"""
 
@@ -96,7 +97,7 @@ async def _drain(
     provider: FakeProvider, messages: list[Any] | None = None
 ) -> list[Any]:
     msgs = messages if messages is not None else [
-        UserMessage(content="hi", timestamp=1)
+        UserMessage(content="hi", timestamp=ts(1))
     ]
     return [
         event
@@ -331,7 +332,7 @@ async def test_cancel_is_actually_checked() -> None:
     collected: list[Any] = []
     with pytest.raises(KeyboardInterrupt):
         async for event in provider.stream(
-            [UserMessage(content="hi", timestamp=1)],
+            [UserMessage(content="hi", timestamp=ts(1))],
             [],
             model="fake",
             signal=_CancelledAfter(allow=2),
@@ -357,7 +358,7 @@ async def test_signature_params_are_accepted_but_ignored() -> None:
     events = [
         event
         async for event in provider.stream(
-            [UserMessage(content="hi", timestamp=1)],
+            [UserMessage(content="hi", timestamp=ts(1))],
             [],
             model="fake",
             signal=_NeverCancelled(),

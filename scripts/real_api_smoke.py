@@ -47,6 +47,7 @@ from typing import Any
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 
+from sigma_ai import stamps
 from sigma_ai.base import CancelToken, SamplingParams, StreamOptions
 from sigma_ai.events import (
     ErrorEvent,
@@ -245,7 +246,7 @@ async def probe_p1_liveness(
     head("P1 连通与流式（基本可用性）")
     turn = await run_turn(
         provider,
-        [UserMessage(content="用一句话回答：1+1 等于几？", timestamp=int(time.time()))],
+        [UserMessage(content="用一句话回答：1+1 等于几？", timestamp=stamps.now())],
         [],
         model=model,
         sampling=SamplingParams(max_tokens=64, temperature=0.0),
@@ -283,7 +284,7 @@ async def probe_p2_usage(
         [
             UserMessage(
                 content="请连续写 20 个「好」字，不要有任何其他内容。",
-                timestamp=int(time.time()),
+                timestamp=stamps.now(),
             )
         ],
         [],
@@ -335,7 +336,7 @@ async def probe_p3_finish_reason(
         [
             UserMessage(
                 content="请写一篇 500 字以上的文章，主题不限。",
-                timestamp=int(time.time()),
+                timestamp=stamps.now(),
             )
         ],
         [],
@@ -394,7 +395,7 @@ async def probe_p4_tool_call(
                     "请调用 read_file 工具读取 /tmp/sigma_demo.txt，"
                     "不要先问我，也不要解释。"
                 ),
-                timestamp=int(time.time()),
+                timestamp=stamps.now(),
             )
         ],
         [TOOL_READ],

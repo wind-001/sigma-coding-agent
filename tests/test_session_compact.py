@@ -51,7 +51,8 @@ from sigma_session.compact import (
 )
 from sigma_session.context import SessionContext
 
-CLOCK = lambda: 1_700_000_000  # noqa: E731 - 固定时钟，保证可复现
+from sigma_ai.stamps import from_epoch as ts
+CLOCK = lambda: ts(1_700_000_000)  # noqa: E731 - 固定时钟，保证可复现
 
 # ---------------------------------------------------------------------------
 # 构造消息
@@ -64,16 +65,16 @@ def _rounds(count: int) -> list[AgentMessage]:
     for index in range(1, count + 1):
         messages.append(
             LlmMessageWrapper(
-                timestamp=index * 2 - 1,
-                message=UserMessage(content=f"任务{index}", timestamp=index * 2 - 1),
+                timestamp=ts(index * 2 - 1),
+                message=UserMessage(content=f"任务{index}", timestamp=ts(index * 2 - 1)),
             )
         )
         messages.append(
             LlmMessageWrapper(
-                timestamp=index * 2,
+                timestamp=ts(index * 2),
                 message=AssistantMessage(
                     content=[TextBlock(text=f"回复{index}")],
-                    timestamp=index * 2,
+                    timestamp=ts(index * 2),
                     provider="fake",
                     model="fake",
                     usage=Usage(prompt_tokens=1, completion_tokens=1),
@@ -208,14 +209,14 @@ def test_split_counts_tool_calls_as_part_of_one_round() -> None:
     messages: list[AgentMessage] = [
         *_rounds(1),
         LlmMessageWrapper(
-            timestamp=3,
-            message=UserMessage(content="任务2", timestamp=3),
+            timestamp=ts(3),
+            message=UserMessage(content="任务2", timestamp=ts(3)),
         ),
         LlmMessageWrapper(
-            timestamp=4,
+            timestamp=ts(4),
             message=AssistantMessage(
                 content=[TextBlock(text="我读一下")],
-                timestamp=4,
+                timestamp=ts(4),
                 provider="fake",
                 model="fake",
                 usage=Usage(prompt_tokens=1, completion_tokens=1),
@@ -226,13 +227,13 @@ def test_split_counts_tool_calls_as_part_of_one_round() -> None:
             tool_call_id="c1",
             tool_name="read",
             content=[TextBlock(text="文件内容")],
-            timestamp=5,
+            timestamp=ts(5),
         ),
         LlmMessageWrapper(
-            timestamp=6,
+            timestamp=ts(6),
             message=AssistantMessage(
                 content=[TextBlock(text="读完了")],
-                timestamp=6,
+                timestamp=ts(6),
                 provider="fake",
                 model="fake",
                 usage=Usage(prompt_tokens=1, completion_tokens=1),
@@ -288,7 +289,7 @@ def test_summary_degrades_to_user_not_system() -> None:
     改成 ``system`` 的后果不是"类型不对"，而是**prompt cache 全失效**：
     系统消息属于常驻区（D4），而摘要在会话里会不断变化。
     """
-    llm = CompactionSummary(timestamp=1, summary="之前改过 a.py").to_llm()
+    llm = CompactionSummary(timestamp=ts(1), summary="之前改过 a.py").to_llm()
 
     assert isinstance(llm, UserMessage)
     assert not isinstance(llm, SystemMessage)
@@ -300,7 +301,7 @@ def test_summary_body_says_it_is_not_a_new_request() -> None:
     它渲染成 ``user`` 消息，而模型天然把最后一条 user 当成当前任务——
     若摘要读起来像一段新指令，模型会去执行一件早就做完的事。
     """
-    text = CompactionSummary(timestamp=1, summary="改过 a.py").render()
+    text = CompactionSummary(timestamp=ts(1), summary="改过 a.py").render()
 
     assert "不是新的请求" in text
     assert "改过 a.py" in text
@@ -570,7 +571,7 @@ def test_render_history_goes_through_convert_to_llm() -> None:
         tool_name="bash",
         content=[TextBlock(text="不该出现在摘要里")],
         exclude_from_context=True,
-        timestamp=9,
+        timestamp=ts(9),
     )
     text = render_history([*_rounds(1), excluded])
 

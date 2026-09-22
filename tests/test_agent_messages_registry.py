@@ -44,6 +44,7 @@ from sigma_ai.messages import LlmMessage
 # ---------------------------------------------------------------------------
 
 
+from sigma_ai.stamps import from_epoch as ts
 def test_agent_message_cannot_be_instantiated() -> None:
     """G15 本体：抽象基类直接实例化抛 `TypeError`。
 
@@ -52,7 +53,7 @@ def test_agent_message_cannot_be_instantiated() -> None:
     降级时静默失败——正是门槛存在的理由。
     """
     with pytest.raises(TypeError, match="abstract"):
-        AgentMessage(timestamp=1)  # type: ignore[abstract]
+        AgentMessage(timestamp=ts(1))  # type: ignore[abstract]
 
 
 def test_half_done_subclass_still_fails() -> None:
@@ -72,7 +73,7 @@ def test_half_done_subclass_still_fails() -> None:
         # 故意不实现 to_llm
 
     with pytest.raises(TypeError, match="abstract"):
-        HalfDone(timestamp=1)  # type: ignore[abstract]
+        HalfDone(timestamp=ts(1))  # type: ignore[abstract]
 
 
 def test_model_fields_and_abstractmethods_do_not_interfere() -> None:
@@ -106,8 +107,8 @@ def test_implementing_subclass_instantiates_fine() -> None:
         def to_llm(self) -> LlmMessage | None:
             return None
 
-    instance = Ok(timestamp=1, text="hi")
-    assert instance.timestamp == 1
+    instance = Ok(timestamp=ts(1), text="hi")
+    assert instance.timestamp == ts(1)
     assert instance.role == "test_ok"
 
 

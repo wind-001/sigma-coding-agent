@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from sigma_ai import stamps
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,21 +47,25 @@ class SessionInfo:
 
 
 def new_session_id(*, clock: object = None) -> str:
-    """生成一个新的会话 id，形如 ``20260922-091303-a1b2``。
+    """生成一个新的会话 id，形如 ``20260922-171420.123-a1b2``。
 
     **与节点 id 的取法刻意不同。** 节点 id 用纯 uuid4（``store.new_node_id``），
     因为它在多进程并发下必须不撞；而会话 id 是**给人看的**——
     ``--continue`` 之后用户会想知道"我续的是哪个会话"，
     带时间前缀的 id 既能一眼看出先后，也能直接排序。
 
-    末尾四位随机用于防撞：同一秒内开两个会话是可发生的
-    （脚本里连着调两次），而撞了就会写到同一个文件上。
+    **时间到毫秒**（2026-09-22 星辰要求）：既能读、又比"到秒"少一次歧义。
+    毫秒本身由 ``stamps.split`` 算，本函数不自己换算——
+    换算散成两份就会在某一处悄悄差 1 毫秒。
+
+    末尾四位随机**仍然保留**：毫秒并不保证唯一（脚本里连着调两次完全可能
+    落在同一毫秒内），而撞了就会写到**同一个会话文件**上——
+    两个会话的历史混在一起，且没有任何报错。
 
     ``clock`` 可注入是为了让测试确定——真实时钟会让断言无法复现。
     """
-    now = time.localtime(clock() if callable(clock) else time.time())
-    stamp = time.strftime("%Y%m%d-%H%M%S", now)
-    return f"{stamp}-{uuid.uuid4().hex[:4]}"
+    epoch = clock() if callable(clock) else time.time()
+    return f"{stamps.compact(epoch)}-{uuid.uuid4().hex[:4]}"
 
 
 def session_path(root: Path, session_id: str) -> Path:

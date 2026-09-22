@@ -50,6 +50,7 @@ from sigma_agent.loop import AgentLoop  # noqa: E402
 from sigma_agent.registry import ToolRegistry  # noqa: E402
 from sigma_ai.base import CancelToken  # noqa: E402
 from sigma_ai.fake import FakeProvider  # noqa: E402
+from sigma_ai.stamps import from_epoch as ts  # noqa: E402
 from sigma_ai.messages import UserMessage  # noqa: E402
 from sigma_tools.bash import BashTool  # noqa: E402
 from sigma_tools.edit import EditTool  # noqa: E402
@@ -152,8 +153,8 @@ async def run_scenario(scenario: Scenario, workspace: Path) -> ScenarioReport:
     # 内容刻意与 transcript 无关——见上面 docstring 里的说明。
     history = [
         LlmMessageWrapper(
-            timestamp=1,
-            message=UserMessage(content="先看看这个项目在做什么", timestamp=1),
+            timestamp=ts(1),
+            message=UserMessage(content="先看看这个项目在做什么", timestamp=ts(1)),
         ),
     ]
 
@@ -167,7 +168,7 @@ async def run_scenario(scenario: Scenario, workspace: Path) -> ScenarioReport:
         # 症状是 status="stopped"，而看起来像"transcript 不够用"。
         max_rounds=scenario.rounds + 5,
         signal=_NeverCancelled(),
-        clock=lambda: 1700000000,  # 固定时钟：报告要可复现
+        clock=lambda: ts(1700000000),  # 固定时钟：报告要可复现
     )
 
     started = time.monotonic()

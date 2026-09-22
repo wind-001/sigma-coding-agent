@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -51,6 +50,7 @@ from sigma_agent.observe import (
 )
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult, TurnResult
+from sigma_ai import stamps
 from sigma_ai.base import CancelToken, SamplingParams
 from sigma_ai.events import (
     ErrorEvent,
@@ -114,7 +114,7 @@ class AgentLoop:
         max_rounds: int = 20,
         sampling: SamplingParams | None = None,
         signal: CancelToken | None = None,
-        clock: Callable[[], int] | None = None,
+        clock: Callable[[], str] | None = None,
         emit: Callable[[str], None] | None = None,
         observer: LoopObserver | None = None,
         checkpoint: ShadowCheckpoint | None = None,
@@ -133,7 +133,7 @@ class AgentLoop:
         self._checkpoint = checkpoint
         # 时钟可注入：回放测试要求"两次执行逐字节一致"，
         # 而真实时钟每次不同——不注入就永远无法满足那条断言。
-        self._clock: Callable[[], int] = clock or (lambda: int(time.time()))
+        self._clock: Callable[[], str] = clock or stamps.now
         self._emit = emit
         # 观测是**旁听**：为 None 时 loop 的行为与加观测之前完全一致
         # （门槛 G33：226 个既有用例就是这条的证据）。
@@ -563,7 +563,7 @@ def _turn_end(result: TurnResult) -> TurnEnd:
     )
 
 
-def _failure_message(item: AssembledCall, timestamp: int) -> ToolResultAgentMessage:
+def _failure_message(item: AssembledCall, timestamp: str) -> ToolResultAgentMessage:
     """为「拼装失败的工具调用」构造一条 agent 层消息。
 
     为什么要构造消息、而不是直接丢掉：

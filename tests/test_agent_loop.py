@@ -28,7 +28,8 @@ from sigma_ai.base import CancelToken
 from sigma_ai.fake import FakeProvider, TranscriptExhausted
 from sigma_ai.messages import TextBlock, UserMessage
 
-FIXED_TIME = 1_700_000_000
+from sigma_ai.stamps import from_epoch as ts
+FIXED_TIME = ts(1_700_000_000)
 
 
 class _NeverCancelled(CancelToken):
