@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import os
 import sys
 from dataclasses import dataclass
@@ -261,9 +262,15 @@ def _configure_console() -> None:
     except Exception:
         pass
     for stream in (sys.stdout, sys.stderr):
+        # 用 isinstance 收窄，而不是 `# type: ignore[union-attr]`：
+        # 那种 ignore 只在 **Windows** 上必要（`sys.stdout` 的声明类型随平台不同），
+        # 到了 CI 的 Linux 上就变成"多余注释"，而 strict 开了 `warn_unused_ignores`
+        # → **本地绿、CI 红**。2026-09-22 第一次跑 CI 就是这么挂的。
+        # 判据：**能靠收窄类型解决的，就不要写平台相关的 ignore。**
+        if not isinstance(stream, io.TextIOWrapper):
+            continue
         try:
-            # reconfigure 不在 typing.TextIO 的协议里（它是 TextIOWrapper 的方法）
-            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+            stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
 

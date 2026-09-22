@@ -55,6 +55,17 @@ asyncio_mode = "auto"
 python_version = "3.12"
 mypy_path = "core"
 strict = true
+# **钉住目标平台 = CI 的平台**（2026-09-22 加）。
+#
+# mypy 默认按"运行它的那台机器"选平台相关的 stub，于是同一份代码
+# 在本地（Windows）与 CI（ubuntu-latest）上可能给出不同结论：
+# 第一次跑 CI 就栽在这上面——`cli.py` 里一条为 Windows 写的
+# `# type: ignore[union-attr]` 在 Linux 上成了"多余注释"，
+# strict 的 `warn_unused_ignores` 直接把它报成错误（安装与契约都过了，mypy 挂）。
+#
+# 钉住之后的性质：**本地 `mypy core` 与 CI 完全同口径**，
+# "本地绿 → 推上去红"这类差异不再出现。
+platform = "linux"
 
 # 三道门禁 = lint-imports / mypy / pytest。
 #
