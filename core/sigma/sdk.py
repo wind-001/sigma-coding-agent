@@ -46,6 +46,7 @@ from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import TurnResult
 from sigma_ai.base import NeverCancelled, SamplingParams
 from sigma_ai.messages import UserMessage
+from sigma_session.compact import CompactionOutcome, CompactionPolicy
 from sigma_session.context import SessionContext
 from sigma_session.resources import (
     AGENTS_MD_FILENAME,
@@ -219,6 +220,23 @@ def default_registry(
     return registry
 
 
+#: 压缩触发用的**上下文窗口**默认值。
+#:
+#: ⚠️ **这是一个保守下限，不是各家模型的真实窗口。** 真实窗口在
+#: ``ProviderSpec`` 里**没法放**——那个类刻意只有三个字段（"只装怎么连上它"），
+#: 而"模型能装多少"既不是连接参数、也会随模型换代而变。
+#:
+#: 取 32k 的理由是**两个方向的代价不对称**：
+#:
+#: - 猜**小**了 → 压缩提前触发，多花一次 LLM 调用。**贵，但不会坏。**
+#: - 猜**大**了 → 该压不压，直到 provider 直接拒掉请求（``context_overflow``）。
+#:   **坏，而且症状离根因很远**（表现出来像"模型突然不行了"）。
+#:
+#: 所以宁小勿大。调用方知道自己的模型时应当显式传 ``compaction_policy``
+#: 覆盖它——这也是 ``CompactionPolicy.context_window_tokens`` 没有默认值的原因。
+DEFAULT_CONTEXT_WINDOW_TOKENS = 32_000
+
+
 def _real_clock() -> int:
     """当前时间戳。
 
@@ -256,9 +274,22 @@ class InteractiveSession:
         emit: Callable[[str], None] | None = None,
         session_id: str = "sigma-session",
         project_instructions: str | None = None,
+        compaction_policy: CompactionPolicy | None = None,
     ) -> None:
+        self._provider = provider
+        self._model = model
         self._registry = registry if registry is not None else default_registry()
         self._clock = _real_clock
+        # 压缩策略：不传就用保守窗口的默认值（见 DEFAULT_CONTEXT_WINDOW_TOKENS）。
+        # **默认开**而不是默认关：压缩是长会话能不能跑下去的前提，
+        # 一个"默认关、要用得记得开"的能力等于没有——而它的症状是
+        # 长会话跑到一半突然失败（R1）。
+        self._compaction_policy = (
+            compaction_policy
+            if compaction_policy is not None
+            else CompactionPolicy(context_window_tokens=DEFAULT_CONTEXT_WINDOW_TOKENS)
+        )
+        self._last_compaction: CompactionOutcome | None = None
         # 项目说明（``AGENTS.md``）：
         #   None → **自动**从 ``workspace_root/AGENTS.md`` 读（默认行为）
         #   ""   → 明确不要（调用方关掉它）
@@ -299,7 +330,11 @@ class InteractiveSession:
 
         追加这一步**必须在这里**——loop 参照 Pi 的形状不持有会话对象
         （详规 3.8.1），历史归调用方管。
+
+        **压缩发生在追加新消息之前**：要压的是"已经攒下的历史"，
+        把这一轮的新任务也算进去没意义（它才刚来，不可能在"最旧的一段"里）。
         """
+        await self._compact_if_needed()
         now = self._clock()
         self._context.append(
             LlmMessageWrapper(
@@ -310,8 +345,47 @@ class InteractiveSession:
         self._context.append(*result.messages)
         return result
 
+    async def _compact_if_needed(self) -> CompactionOutcome | None:
+        """动态区超过策略阈值时压一次。压不了（没有可压的段）时返回 ``None``。
+
+        **失败不打断会话**：压缩是"为了跑下去"的优化，压缩本身失败
+        （provider 抖了一下 / 摘要为空）不该让用户丢掉整个会话——
+        那就本末倒置了。所以异常在这里被降级成"这一轮不压"。
+        """
+        if self._compaction_policy is None:  # pragma: no cover - 目前恒为真
+            return None
+        if not self._context.should_compact(self._compaction_policy):
+            return None
+        try:
+            outcome = await self._context.compact(
+                policy=self._compaction_policy,
+                provider=self._provider,
+                model=self._model,
+                signal=NeverCancelled(),
+            )
+        except Exception:
+            # 刻意吞掉：见上面 docstring。**但不清空 `_last_compaction`**——
+            # 上一次成功压缩的结果仍然是有效的，不该被一次失败抹掉。
+            return None
+        if outcome is not None:
+            self._last_compaction = outcome
+        return outcome
+
+    @property
+    def compaction_policy(self) -> CompactionPolicy | None:
+        return self._compaction_policy
+
+    @property
+    def last_compaction(self) -> CompactionOutcome | None:
+        """最近一次成功压缩的结果（CLI 用来告诉用户"压过了"）。"""
+        return self._last_compaction
+
     def history(self) -> list[AgentMessage]:
-        """历史消息（副本）。**跨轮累积**是这个类存在的意义（门槛 G35）。
+        """**原始**历史消息（副本）。**跨轮累积**是这个类存在的意义（门槛 G35）。
+
+        ⚠️ 这**不等于**发给模型的内容——压缩之后两者不同。
+        要后者用 ``session.context.effective_history()``。
+        分开的理由见 ``SessionContext.history``：前者是审计凭据，后者是本轮取舍。
 
         返回副本而不是内部列表：调用方拿去改不会污染会话状态。
 
@@ -351,6 +425,7 @@ async def run_task(
     observer: LoopObserver | None = None,
     session_id: str = "sigma-session",
     project_instructions: str | None = None,
+    compaction_policy: CompactionPolicy | None = None,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -375,5 +450,6 @@ async def run_task(
         emit=emit,
         session_id=session_id,
         project_instructions=project_instructions,
+        compaction_policy=compaction_policy,
     )
     return await session.send(task)

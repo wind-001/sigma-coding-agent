@@ -72,11 +72,14 @@ class TerminalRenderer(LoopObserver):
                 f"\n[{event.status} · {event.rounds} 轮 · "
                 f"prompt {event.prompt_tokens} / completion {event.completion_tokens}]\n"
             )
-            # 风险 R1：P1 没有压缩，长会话必然撞上限。提醒不是错误，不打断
+            # 风险 R1：P2-4 起有压缩了，所以撞到这条线意味着
+            # **压缩没有按预期触发**（窗口配得太大 / 策略被关掉），
+            # 而不是"P1 时代那样必然发生"。文案改成了可执行的排查方向。
             if event.prompt_tokens >= CONTEXT_WARN_TOKENS:
                 self._write(
-                    f"  ⚠ 上下文已达 {event.prompt_tokens} token，"
-                    "P1 没有压缩——继续下去长会话会失败。\n"
+                    f"  ⚠ 上下文已达 {event.prompt_tokens} token。"
+                    "若还在持续增长，说明压缩没有触发——"
+                    "检查 context window 配置（默认窗口是保守下限）。\n"
                 )
         else:
             self._write(f"  (? 未知事件 {type(event).__name__})\n")

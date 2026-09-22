@@ -41,16 +41,24 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
-from sigma_agent.agent_messages import LlmMessageWrapper
+from sigma_agent.agent_messages import LlmMessageWrapper, convert_to_llm
 from sigma_ai.messages import SystemMessage
-from sigma_ai.tokens import estimate_text
+from sigma_ai.tokens import estimate_messages, estimate_text
 
-from sigma_session.tree import SessionTree
+from sigma_session.compact import (
+    CompactionOutcome,
+    CompactionPolicy,
+    compact_history,
+    needs_compaction,
+    split_for_compaction,
+)
+from sigma_session.tree import SessionTree, TreeCorrupted, UnknownNode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sigma_agent.agent_messages import AgentMessage
+    from sigma_ai.base import BaseProvider, CancelToken, SamplingParams
 
 DEFAULT_RESIDENT_BUDGET_TOKENS = 3500
 """常驻区 token 上限（D4 / 架构 5.1 节）。
@@ -110,6 +118,9 @@ class SessionContext:
         self._resident_budget = resident_budget_tokens
         # 不传 store 的树就是纯内存的：一个实现覆盖两种用法。
         self._tree = tree if tree is not None else SessionTree()
+        # 压缩视图（见 compact.py）：什么都没压时两者都是 None。
+        self._summary: AgentMessage | None = None
+        self._keep_from: str | None = None
         # 构造时冻结——之后每次组装都比对
         self._fingerprint = self._compute_fingerprint()
 
@@ -232,8 +243,126 @@ class SessionContext:
         return last
 
     def history(self) -> list[AgentMessage]:
-        """当前分支的历史（根 → head）。"""
+        """**原始**历史（树上的完整路径，根 → head）。
+
+        ⚠️ **这不等于"发给模型的内容"** —— 压缩之后两者会不同。
+        要后者请用 :meth:`effective_history`。
+
+        把两者分开是有意的：原始历史是**审计凭据**（``store.py`` 明写
+        "会话历史是事实记录"），而有效历史是**这一轮的性能取舍**。
+        合成一个方法，就会有人拿"我看到的条数"去推断"模型看到的条数"。
+        """
         return self._tree.history()
+
+    # ------------------------------------------------------------------
+    # 压缩（视图，不改历史）
+    # ------------------------------------------------------------------
+
+    def effective_history(self) -> list[AgentMessage]:
+        """**发给模型**的历史：``[摘要?, *保留的最近 N 轮]``。
+
+        压缩是一个**派生视图**，不写回树——见 ``compact.py`` 的模块 docstring
+        （改写历史会毁掉审计链）。``keep_from`` 记的是**节点 id** 而不是下标：
+        下标会在压缩之后继续追加消息时漂移，而 id 是稳定的。
+        """
+        full = self._tree.history()
+        if self._summary is None or self._keep_from is None:
+            return full
+
+        try:
+            path = self._tree.path_to(self._keep_from)
+        except (TreeCorrupted, UnknownNode):
+            # keep_from 那条消息已经不在树上了（会话文件被换过 / 损坏）。
+            # **退回未压缩的历史**，而不是只发一条摘要：后者会让模型
+            # 以为"之前什么都没发生"，丢的信息比"多发几条消息"多得多。
+            return full
+
+        # path_to(keep_from) 返回的是根到该节点的路径，取它的**长度**就知道
+        # 要跳过前面多少条（历史与路径一一对应）。
+        skip = len(path) - 1
+        return [self._summary, *full[skip:]]
+
+    @property
+    def summary(self) -> AgentMessage | None:
+        """当前生效的压缩摘要（没有则为 ``None``）。"""
+        return self._summary
+
+    def apply_compaction(self, summary: AgentMessage, *, keep_from: str) -> None:
+        """把一次压缩的结果接到视图上。**不改树。**
+
+        ``keep_from`` 是**保留窗口的第一条消息**的节点 id。
+        由调用方在压缩前算好（它知道切分点），因为切分是按轮做的，
+        而"轮"的知识在 ``compact.split_for_compaction`` 里。
+        """
+        self._summary = summary
+        self._keep_from = keep_from
+
+    def clear_compaction(self) -> None:
+        """丢掉压缩视图，回到完整历史（诊断与测试用）。"""
+        self._summary = None
+        self._keep_from = None
+
+    # ------------------------------------------------------------------
+    # 预算
+    # ------------------------------------------------------------------
+
+    def dynamic_tokens(self) -> int:
+        """**动态区**的估算 token（有效历史部分）。
+
+        与 :attr:`resident_tokens` 分开算：两者的预算来源不同
+        （常驻区是 D4 声明的，动态区是"窗口减去常驻区"），
+        混在一起会让"该压不压"和"常驻区超了"两类问题分不清。
+        """
+        return estimate_messages(convert_to_llm(self.effective_history()))
+
+    def should_compact(self, policy: CompactionPolicy) -> bool:
+        """按策略判断是否需要压缩。**只判断，不执行**（执行要调模型，是异步的）。"""
+        return needs_compaction(
+            self.dynamic_tokens(),
+            policy=policy,
+            resident_tokens=self.resident_tokens,
+        )
+
+    async def compact(
+        self,
+        *,
+        policy: CompactionPolicy,
+        provider: BaseProvider,
+        model: str,
+        signal: CancelToken,
+        sampling: SamplingParams | None = None,
+    ) -> CompactionOutcome | None:
+        """压缩一次并接到视图上。**没有可压的段时返回 ``None``。**
+
+        切分与调用都在 ``compact`` 模块里（那里有完整的"为什么"），
+        本方法只多做一件事：**把切分点翻译成节点 id**——因为
+        ``history()`` 与 ``path_to()`` 一一对应，所以第一个被保留的
+        消息的 id 就是 ``path[len(to_compact)]``。
+        """
+        messages = self.effective_history()
+        outcome = await compact_history(
+            messages,
+            policy=policy,
+            provider=provider,
+            model=model,
+            signal=signal,
+            sampling=sampling,
+            clock=self._clock,
+        )
+        if outcome is None:
+            return None
+
+        head = self._tree.head_id
+        if head is None:  # pragma: no cover - 没有节点时不可能压出结果
+            return None
+        _, kept = split_for_compaction(
+            messages, keep_recent_rounds=policy.keep_recent_rounds
+        )
+        path = self._tree.path_to(head)
+        skip = len(messages) - len(kept)
+        keep_from = path[skip] if skip < len(path) else head
+        self.apply_compaction(outcome.summary, keep_from=keep_from)
+        return outcome
 
     @property
     def tree(self) -> SessionTree:
@@ -248,7 +377,11 @@ class SessionContext:
         """组装交给 loop 的完整消息列表。
 
         每次调用都**先校验常驻区**（指纹 + 预算）——这是这两条纪律唯一的执行点。
-        顺序：系统消息在前，历史在后。
+        顺序：系统消息在前，**有效历史**（可能被压缩）在后。
+
+        ⚠️ 这里用 ``effective_history()`` 而不是 ``history()``：
+        压缩的意义就在于"发给模型的那份更短"，用原始历史等于压缩白做。
+        而摘要排在系统消息**之后**——它是动态内容，绝不能进常驻区（G51）。
         """
         self.verify_resident_region()
         self.verify_resident_budget()
@@ -257,4 +390,4 @@ class SessionContext:
             timestamp=now,
             message=SystemMessage(content=self._resident_text(), timestamp=now),
         )
-        return [system, *self._tree.history()]
+        return [system, *self.effective_history()]
