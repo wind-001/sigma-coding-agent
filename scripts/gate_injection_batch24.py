@@ -126,9 +126,10 @@ class Repo:
     def has_pending(cls) -> bool:
         return bool(cls._pending)
 
-    def run_pytest(self, target: str) -> tuple[int, str]:
+    def run_pytest(self, target: str | list[str]) -> tuple[int, str]:
+        targets = [target] if isinstance(target, str) else list(target)
         proc = subprocess.run(
-            [str(PYTHON), "-m", "pytest", target, "-q", "-p", "no:cacheprovider"],
+            [str(PYTHON), "-m", "pytest", *targets, "-q", "-p", "no:cacheprovider"],
             cwd=REPO,
             capture_output=True,
             text=True,
@@ -218,8 +219,13 @@ def _install_restore_on_termination() -> None:
 _install_restore_on_termination()
 
 
-def experiment(gate: str, what: str, target: str, inject) -> None:
-    """跑一次注入实验：基线绿 → 注入 → 必须红 → 还原。"""
+def experiment(gate: str, what: str, target: str | list[str], inject) -> None:
+    """跑一次注入实验：基线绿 → 注入 → 必须红 → 还原。
+
+    ``target`` 可以是单个 pytest 目标，也可以是**多个**——当一条门槛由
+    多条断言共同支撑时（任一为红即算门槛生效），必须一次传进来：
+    分两次跑会让"基线绿"这个前提各自成立，却测不出注入的影响面。
+    """
     assert_no_residue()
     repo = Repo()
     try:
