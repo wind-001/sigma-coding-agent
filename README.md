@@ -1,374 +1,326 @@
 # sigma
 
-一个自研的 coding agent harness。
+**一个自研的 coding agent harness。目标不是功能数量，而是每一个设计决定都能被追问而不塌。**
 
-目标不是功能数量，而是**每一个设计决定都能被追问而不塌**。
-所以这个仓库里，约束是被 CI 强制的，指标是有基线的，边界是写明的。
+[![ci](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml)
+![python](https://img.shields.io/badge/python-3.12-blue)
+![tests](https://img.shields.io/badge/tests-459%20passed-brightgreen)
+![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-73%2F73-brightgreen)
 
-> 当前状态（截至本次提交，README 与代码同一提交）：**P1 批次 0 / 1 / 1.5 已完成；
-> 批次 2–4 的 agent loop 已跑通**（`sigma -p "任务"` 可用），**G22–G31 十条门槛
-> 已全部做到能被单独证伪**（其中五条此前连测试都没有，已补齐）；
-> 批次 6 完成**流式渲染 + 交互模式 + 启动入口**（G32–G36 五条新门槛）；
-> 批次 7 完成 **web_search 联网搜索**（Tavily，G37–G41）；
-> 批次 8 完成**调研纪律 + web_fetch 精读**（Firecrawl，G42–G47）；
-> P2-1 完成**回放场景 + 最小评测运行器**（G55–G56、G58，见 `evals/`）；
-> P2-2 完成**会话树与存储**（`sigma_session/tree.py` + `store.py`，G48/G49/G53）；
-> P2-3 完成**上下文接树 + `AGENTS.md` 注入**（`resources.py`，常驻区预算 G59）；
-> P2-4 完成**上下文压缩**（`compact.py`：视图式，不改历史；G51/G52/G60）；
-> P2-5 完成 **CLI 会话接续**（`--continue` / `--session`；G61/G62/G63）；
-> **P3-批次1 完成工具安全边界**（D5 的 L1 写路径约束 + L2 影子 git checkpoint，
-> `_paths.resolve_write_path` / `sigma_agent/checkpoint.py`，G64–G71）。
-> 当前盘上 `459 个单测全绿`、三道门禁全绿（mypy strict 50 files / 契约 3 kept）、
-> 注入实验 **73/73** 证伪成功
-> （批次 1 的 7 条 + 批次 1.5 的 10 条 + 批次 2–4 的 10 条 + 批次 6 的 6 条
-> + 批次 7 的 5 条 + 批次 8 的 7 条 + P2-1 的 4 条 + P2-2 的 3 条 + P2-3 的 4 条 + P2-4 的 4 条
-> + P2-5 的 4 条 + P3-批次1 的 9 条）。
-> **注意**：这些数字只对应当前工作区状态；换代码或换环境后**必须重跑**——
-> 注入锚点与源码硬耦合，数字会随未提交代码漂移（详见下方「门槛注入实验」）。
-> 另注：P2-1 曾试图加一条「回放工作区隔离」门槛（G57），
-> **实测证伪不了，故未注册**——宁可少一条门槛，不要一条名义门槛。
->
-> **真实 API 已跑通两层**：Provider 层冒烟 5/5（`scripts/real_api_smoke.py`）、
-> **agent loop 端到端**（`scripts/real_api_agent_demo.py` 与 CLI 实测均通过）；
-> 五工具就位后另做了一次 CLI 真实冒烟：模型用 `grep` 定位 → `read` 确认 →
-> `edit` 一次改对（2026-09-20）。
-> 未验证项见 `docs/plans/P1-批次1-详规.md` 第 9 节（§9.1 复核结果、
-> §9.2 一处测试设计缺陷）与 `P1-批次1.5-详规.md` 第 9 节。
->
-> **尚未落地**：`evals/datasets/` 的 70 条任务集（需真实 API key + 判定脚本）。
-> 回放场景与最小运行器**已落地**（`tests/fixtures/transcripts/` 六个 + `evals/runner.py`）。
->
-> ⚠️ 因此 **P2 的第 3 条验收门（压缩前后成功率下降 ≤ 5%）未验收**——
-> 它需要有真模型来判定"压完还够不够用"，离线用回放跑出来的"成功率"
-> 只是在数脚本对不对得上，与压缩质量无关。**未验收 ≠ 已通过。**
->
-> **⚠️ 计数纪律（2026-09-20 评审新增）**：本文件里任何计数（测试数 / 文件数 /
-> 契约数）都必须绑定提交号。理由：批次 1.5 的代码曾未提交就落在盘上，
-> 导致"104 个单测"这句在提交历史里已过期而无人察觉。
-> 这是「配置跑绿」的第三种形态——**数字会随未提交代码漂移**。
-
-## 已拍板的决策
-
-| 编号 | 决策 | 日期 |
-| --- | --- | --- |
-| a1 | 产品壳范围与草图对齐：**砍掉 Slack Bot / Web UI / RPC Mode** | 2026-09-20 |
-| a2 | 所有抽象接口**一律用继承制（`abc.ABC`）**，不用 `typing.Protocol`；数据载体用 Pydantic `BaseModel` | 2026-09-20 |
-| a3 | 首个 Provider 做 **OpenAI 兼容协议**（覆盖 DeepSeek / Kimi / GLM / 通义 / Ollama） | 2026-09-20 |
-| Q0 | P1 评测仓库用**自造迷你仓库** | 2026-09-20 |
-| Q1 | 内置工具 **5 个**：`read` / `write` / `edit` / `bash` / `grep` | 2026-09-20 |
-| Q2 | `truncate.py` 截断部分**提前到 P1**（不分页、不落盘） | 2026-09-20 |
-| Q3 | 首个被测模型 **DeepSeek `deepseek-chat`** | 2026-09-20 |
-| Q4 | `-p` 退出码：**0 = 正常结束，非 0 = harness 自身失败** | 2026-09-20 |
-| R2 | 时间预算：**8h/周全部给 sigma**（与 interview-agent 无并行关系） | 2026-09-20 |
-| Q5 | 联网搜索做成**可选第 6 个工具** `web_search`（Tavily）：有 key 才注册、`--no-web-search` 可关；免费额度 1000 credits/月，超额自动禁用 | 2026-09-21 |
-| Q6 | **批次 8**：新增可选第 7 个工具 `web_fetch`（Firecrawl 精读，**单次最多 2 条 URL**）；`web_search` 加黑名单 + 时间预过滤 + 调研纪律提示词；两家额度账本抽 `CreditLedger` 基类 | 2026-09-21 |
+> **现状**（数字绑提交 `e1e1dc4`；换代码必须重跑，见[计数纪律](#计数纪律)）：
+> P1 最小闭环 ✅ · P2 会话树 / 上下文 / 压缩 / 会话接续 ✅ · **P3-批次1 工具安全边界 ✅**
+> ——**459 单测全绿 · 三道门禁全绿（mypy strict 50 files / 契约 3 kept）· 73 条门槛注入全部可证伪 · 回放 6/6**。
+> 未完成的部分不藏：评测任务集 70 条、压缩质量验收门、L3 钩子规则（见[进度与未完成](#进度与未完成)）。
 
 ---
 
-## 跑一个真实任务
+## 30 秒看懂它是什么
 
-### 四种启动方式（逻辑只有一处）
+一个跑在终端里的编程助手：给它一条自然语言任务，它自己决定读哪些文件、改哪一行、跑什么命令。
 
-```bash
-sigma -p "任务"              # venv 里的 console script
-python -m sigma -p "任务"    # 通用；console script 不在也能跑
-sigma.bat -p "任务"          # Windows cmd，也可双击
-.\sigma.ps1 -p "任务"        # PowerShell，也可右键“使用 PowerShell 运行”
+```console
+$ sigma -p "把 src/calc.py 里的 off-by-one 修掉，并跑一下测试" --workspace ./demo
+sigma 0.0.1（一次性模式）
+  工作区  /home/me/demo
+  模型    deepseek-chat @ https://api.deepseek.com
+  工具    ['bash', 'edit', 'grep', 'read', 'write']
+  密钥    已加载（来源：环境变量 SIGMA_API_KEY）
+  会话    sigma-20260922-155204-7f3a（新）
+  联网    未启用（未找到 TAVILY_API_KEY）
+
+  ⚠ 安全边界（不是沙箱）：
+     L1 写路径：write/edit/bash 的 cwd 不得越出工作区（越界即拒绝）。
+     L2 可回滚：每次写操作前自动快照；必要时用 sigma --rollback 退回。
+
+⏺ grep({"pattern": "range\\(", "path": "src"})
+  ✓ grep: src/calc.py:14: for i in range(len(items) + 1):
+⏺ read({"path": "src/calc.py", "start_line": 10, "end_line": 18})
+  ✓ read: [14 行] …
+⏺ edit({"path": "src/calc.py", "old_string": "range(len(items) + 1)", "new_string": "range(len(items))"})
+  ✓ edit: 已替换 1 处（unified diff）…
+⏺ bash({"command": "python -m pytest -q"})
+  ✓ bash: [stdout] 12 passed in 0.31s
+
+修好了：src/calc.py 第 14 行多算了一个元素（+ 1），已去掉并跑通全部测试。
+[completed · 4 轮 · prompt 6150 / completion 261]
 ```
 
-`sigma.bat` / `sigma.ps1` 在项目根目录，**双击进交互模式**，不用先 activate venv。
-四种入口都通向同一个 `sigma.cli:main`——入口可以有多个，组装只能有一个。
+（终端输出节选；循环、工具、渲染都是真实实现，`./demo` 由 `scripts/make_demo_workspace.py` 生成。）
 
-### 交互模式（连续聊，跨轮记得上下文）
+## 三条差异化：它不是"又一层 LLM wrapper"
 
-```bash
-sigma -i          # 或双击 sigma.bat
-```
+**1. 约束是机器强制的，不靠自觉。**
+分层依赖不许反向 → `lint-imports` 三道契约。其中 `sigma_tools` 与 `sigma_session` 是**兄弟层**，
+线性 `layers` 契约的语义只有"下层不许引用上层"、**默认放行一切向下 import**，
+所以另配一条 `independence` 契约把兄弟关系钉死（实测过：只写 `layers` 时，
+`sigma_tools → sigma_session` 是静默通过的）。
+类型 → `mypy --strict`；行为 → 459 个单测。**CI 就这三条命令，跑不过不合。**
 
-> ⚠ **Git Bash / mintty 里必须显式加 `-i`**。那些环境 stdin 不是 Windows 控制台句柄，
-> 判不出"有人在敲键盘"。这不是偷懒：Windows 上 `isatty()` 对 NUL 设备**也返回 True**，
-> 靠它判断会让 CI / 脚本里调用 `sigma` 静默进 REPL 卡住（实测复现过）。
-> 取舍是：**宁可让人多打两个字符，也不要让 CI 挂住。**
+**2. 门槛必须是"可被证伪"的。**
+73 条门槛，每条都配一次 **破坏 → 断言变红 → 还原 → 断言变绿** 的注入实验
+（`scripts/gate_injection_*.py`）。写了断言却**没有任何注入能让它红** = 名义门槛，宁可删掉——
+本项目真删过一条（`ruff`），也真否掉过一条（G57："回放工作区隔离"，实测无法证伪，故不注册）。
 
-### 输出是流式的
+**3. 越界是"可回滚"，不是"拦得住"。**
+`bash` 不做命令黑名单：`python -c`、base64、先写脚本再执行都能绕过字符串匹配，
+那是自欺。取而代之的是 **影子 git checkpoint**——每个写批次**之前**自动打一次快照，
+用**独立的 `GIT_DIR`**（`~/.sigma/sessions/<id>.shadow.git`），**绝不碰你自己仓库的 `.git`**；
+出事就 `sigma --rollback` 整体退回，**包括删掉事后新建的文件**。
 
-边跑边打印，不等任务结束。下面这段是真实跑出来的（DeepSeek `deepseek-chat`，2026-09-21）：
+![分层架构图](docs/assets/pi-layered-architecture.png)
 
-```
-I'll search for OLD_VALUE in config.py.
-⏺ grep({"pattern": "OLD_VALUE", "path": "config.py"})
-  ✓ grep: 共 1 个匹配（1 个文件）： config.py:2:value = OLD_VALUE
-`OLD_VALUE` 出现在 config.py 的第 2 行，该行完整内容为 `value = OLD_VALUE`。
-[completed · 2 轮 · prompt 1629 / completion 40]
-```
+---
 
-失败的工具画 `✗` 并**把失败原因写出来**——只画一个 ✗ 等于什么都没说，
-而"模型看得到失败原因"是纠错能力的前提（详规 3.6）。
+## 快速开始
 
-想先建一个能马上试的工作区：
-
-```bash
-python scripts/make_demo_workspace.py    # 在项目下建 demo/，含示例文件与可试任务
-```
-
-| 参数 | 说明 |
-| --- | --- |
-| `-p, --prompt` | 一次性模式的任务描述（与 `-i` 互斥） |
-| `-i, --interactive` | 交互模式。**Git Bash / 管道里必须显式加它** |
-| `--workspace` | 工作区根目录（相对路径的基准）。**L1 的边界**：写路径与 bash 的 cwd 不得越出它；读不限制 |
-| `--preset` | `deepseek`（默认）/ `moonshot` / `zhipu` / `dashscope` / `ollama` |
-| `--model` / `--base-url` / `--api-key` | 覆盖预设；key 也可走 `SIGMA_API_KEY` |
-| `--max-rounds` | 轮数上限，默认 20 |
-| `--temperature` | 采样温度，默认 0 |
-
-## 密钥放哪儿
-
-**优先级（高 → 低）**，第一个命中的胜出：
-
-| 顺序 | 位置 | 适合 |
-| --- | --- | --- |
-| 1 | `--api-key sk-xxx` | 只用一次 |
-| 2 | 环境变量 `SIGMA_API_KEY` | 临时换一个 |
-| 3 | `~/.sigma/.env` | **推荐**：在 git 仓库之外，不可能被误提交 |
-| 4 | `./.env` | 方便，但安全性依赖 `.gitignore` 挡着 |
-
-推荐第 3 种。用编辑器新建 `~/.sigma/.env`（Windows 上是
-`C:\Users\<你的用户名>\.sigma\.env`），内容一行即可：
-
-```
-SIGMA_API_KEY=sk-你的key
-```
-
-配好之后 CLI 会把来源打出来——**这条是为了排查"改了却没生效"**：
-
-```
-  密钥    已加载（来源：配置文件 C:\Users\...\.sigma\.env）
-```
-
-`.env` 的解析交给 **python-dotenv**，所以它支持的写法我们全支持
-（引号、转义、`export` 前缀、`${VAR}` 变量展开）。
-
-> 2026-09-20 更正：这里最初是自己写的 20 行解析器，理由是"能不新增依赖就不新增"。
-> **那是把原则用错了地方**——该原则的适用条件是"新增依赖会带来实质代价"
-> （当时拒 OpenAI SDK 是因为它藏起了要验证的协议细节），而 python-dotenv
-> 是纯 Python、零传递依赖。代价核算下来：自写版本 20 行 + **18 个测试**，
-> 覆盖面仍不如成熟库。改成依赖后测试降到 9 个——**省下的正是"验证自己造轮子"的成本。**
-
-**退出码**（Q4 已拍板）：`0` = 正常结束（**任务成没成都不影响**）；
-非 `0` = harness 自身失败（缺 key / 工作区不存在 / 连不上 provider）。
-
-> 📌 **安全边界（D5：三层软边界，不是沙箱）** —— 2026-09-22 更新，与代码同步
->
-> | 层 | 状态 | 说明 |
-> | --- | --- | --- |
-> | **L1 写路径约束** | ✅ 已落地 | `write` / `edit` / `bash` 的 `cwd` **不得越出工作区**（resolve 符号链接后判定，越界即拒绝）；`read` 不限制（读工作区外是合法需求） |
-> | **L2 可回滚** | ✅ 已落地 | 每次写操作前自动打**影子 git 快照**（独立 `GIT_DIR`，绝不碰你自己仓库的 `.git`）；`sigma --session <id> --rollback` 可退回——**包括删除新增的文件** |
-> | **L3 钩子规则** | ⬜ 未做 | 危险命令匹配属 P3-批次2；它是**软**边界，"只能减少不能消除" |
->
-> **它仍然不是沙箱**：`bash` 会以你的用户权限执行**任意命令**——可以删工作区外的目录、
-> 可以把数据发到网上、可以改环境变量。快照只覆盖**工作区内、未被 `.gitignore` / 5 MB 上限排除**的文件。
-> **只在受控目录内使用**，且不要让它接触不信任的脚本。
-> 不知道边界在哪比边界不存在更危险——所以 CLI 每次启动都会打印边界现状。
-
-> 另有**两个可选联网工具**——`web_search`（搜索，Tavily）与 `web_fetch`（精读，Firecrawl，
-> **单次最多 2 条 URL**），只在解析到对应 key 时注册，`--no-web-search` 可整体关。
-> 免费额度各 1000 **credits**/月，用尽后对应工具自动禁用；
-> 低质量来源与超过 2 年的旧结果会在代码层被过滤，丢弃条数会写进结果里。
-> **这一点写出来，不假装够用。**
-
-> 🧪 **REPL 是简版**：交互模式**不支持中途打断 / 消息注入**（那需要 P3 的
-> steering / follow-up 双队列）。一条任务跑完整轮才能输入下一条，
-> 这一点写进启动横幅，不假装支持。
-
-## 快速验证
+### 1. 安装
 
 ```bash
 python -m venv .venv
-source .venv/Scripts/activate      # Windows
-# source .venv/bin/activate        # macOS / Linux
-pip install -e ".[dev]"
-
-lint-imports    # 分层依赖契约
-mypy core       # 类型检查
-pytest -q       # 单测，不需要 API key
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"            # 运行期依赖只有 pydantic / httpx / python-dotenv
 ```
 
-三道全过 = 当前阶段达标。
+需要 Python **≥ 3.12**。
 
-> ⚠️ **Windows 上有一个坑：用 `python -m pytest`，不要直接调 `.venv/Scripts/pytest.exe`。**
-> 那个 `.exe` 是启动器，它从 **PATH** 解析解释器。如果 PATH 里 `python`
-> 指向别的环境（本机实测会挑到 anaconda），pytest 就会用**那套** site-packages 跑，
-> 症状是 `ModuleNotFoundError: No module named 'evals'` 这类**看起来像代码错**的报错。
-> 正确写法：`./.venv/Scripts/python.exe -m pytest -q`（本次为此多排查了一轮）。
->
-> ⚠️ **在沙箱化环境里跑 pytest，要把临时根指进仓库**（否则 pytest 的
-> 临时目录会在系统 Temp 里越攒越多，见下）：
->
-> ```bash
-> export TMPDIR='C:/Users/<你>/Desktop/sigma/.pytest_cache/tmp'
-> export PYTEST_DEBUG_TEMPROOT="$TMPDIR"
-> ```
->
-> **必须用 Windows 路径**：POSIX 形式（`/c/...`）会被 Python 忽略，静默回退到
-> `AppData\Local\Temp`。另外 `--basetemp=` 没用——它自己就要删那个目录，照样被拦。
-> 普通终端（无沙箱）不需要这一步，pytest 自己会清理。
+### 2. 配一个模型 key
 
-**回放场景评测**（离线、免 key、不联网）：
+只做 OpenAI 兼容协议（覆盖 DeepSeek / Kimi / GLM / 通义 / Ollama）。三种方式任选：
 
-```bash
-python evals/runner.py                      # 跑全部场景，报告落 evals/reports/
-python evals/runner.py --scenario read_then_edit
-```
-
-六个回放场景在 `tests/fixtures/transcripts/*.jsonl`
-（清单与期望值在 `_scenarios.py`，**同一份清单**同时驱动门禁测试与运行器）。
-`evals/datasets/` 的 70 条任务集**尚未落地**——那些需要真实 API key 与判定脚本。
-
-**门槛注入实验**（验证"约束真的在生效"，而不只是"配置跑绿"）：
-
-```bash
-python scripts/gate_injection_batch1.py     # 期望 7/7
-python scripts/gate_injection_batch15.py    # 期望 10/10
-python scripts/gate_injection_batch24.py    # 期望 10/10
-python scripts/gate_injection_batch6.py     # 期望 6/6
-python scripts/gate_injection_batch7.py     # 期望 5/5
-python scripts/gate_injection_batch8.py     # 期望 7/7
-python scripts/gate_injection_p21.py        # 期望 4/4
-python scripts/gate_injection_batch9.py     # 期望 3/3
-python scripts/gate_injection_batch10.py    # 期望 4/4
-python scripts/gate_injection_batch11.py    # 期望 4/4
-python scripts/gate_injection_batch12.py    # 期望 4/4
-python scripts/gate_injection_batch13.py    # 期望 9/9（P3-批次1：L1 写路径 + L2 影子 checkpoint）
-```
-
-> ⚠️ **跑注入前先把新文件 `git add`**：残留守卫的还原建议是 `git checkout -- <file>`，
-> 而未跟踪的新文件用它还原会直接报错（2026-09-22 踩过）。
-
-每个脚本逐条对源码注入破坏 → 确认对应断言变红 → **还原**。
-只有当"注入后确实变红"时该条才算通过——
-**"注入做了、测试仍然绿"是失败**，那说明门槛没有在防它声称防的东西。
-（批次 1 踩过 3 次这种情况，见 `P1-批次1-详规.md` 第 10.4 节。）
-
-```bash
-python scripts/gate_injection_batch15.py    # 输出 `10/10 条门槛被成功证伪`
-```
-
-**真实 API 冒烟**（需要 API key，且**只测 `sigma_ai` 层**，不需要 agent loop）：
-
-```bash
-export SIGMA_API_KEY=sk-...
-python scripts/real_api_smoke.py --preset deepseek
-```
-
-五项探测对应批次 1 详规第 9 节的 R2 / R4 / R5 / R6。
-支持 `--preset deepseek|moonshot|zhipu|dashscope|ollama`，也可用
-`--base-url` / `--model` 直接指定。**key 只从环境变量或命令行读，不落盘、不打印。**
-
-> **注意**：这个脚本会**临时修改真实仓库的源文件**，还原放在 `finally` 里。
-> 不要在它有未提交改动时并行做别的事。
-> 为什么不能"复制一份到临时目录再改"——见 `docs/plans/P1-批次1-详规.md` 第 10.4 节坑一。
-
-> **踩坑提醒**：上面三条命令**必须用项目 `.venv` 里的可执行文件跑**。
-> 若 `activate` 没生效（例如在 CI、或在别的 Python 环境里执行），
-> `pip install -e` 的包会装到那个环境去，而项目 `.venv` 仍然是空的——
-> **症状是 `./.venv/Scripts/lint-imports.exe` 报 `No such file or directory`**。
-> 确认方式：`./.venv/Scripts/python.exe -c "import sigma; print(sigma.__file__)"`。
-> 详见 `docs/plans/P0-骨架.md` 第 4.5 节。
-
-## 分层
-
-依赖方向严格受限，**由 CI 强制，不靠自觉**。
-
-```
-sigma         → sigma_tools, sigma_session, sigma_agent, sigma_ai
-sigma_tools   → sigma_agent, sigma_ai
-sigma_session → sigma_agent, sigma_ai
-sigma_agent   → sigma_ai
-sigma_ai      → （无内部依赖）
-```
-
-| 层 | 职责 |
-| --- | --- |
-| `sigma` | 产品壳：CLI / REPL / 一次性模式 / SDK 入口 |
-| `sigma_tools` | 内置工具：read / write / edit / bash / grep（+ 可选 web_search / web_fetch） |
-| `sigma_session` | 会话树 · 上下文组装 · 压缩 · 扩展装配 |
-| `sigma_agent` | agent loop · 工具注册表 · 钩子总线 · checkpoint |
-| `sigma_ai` | Provider 抽象 · 流式事件 · 用量 |
-
-**`sigma_tools` 与 `sigma_session` 是兄弟层，互不依赖。** 两者都只依赖
-`sigma_agent` 和 `sigma_ai`。
-
-### 三条契约
-
-写在 `pyproject.toml` 的 `[tool.importlinter]` 里：
-
-| 契约 | 类型 | 作用 |
+| 方式 | 做法 | 适用 |
 | --- | --- | --- |
-| 分层只允许向下依赖 | `layers` | 禁止下层引用上层 |
-| 核心层不得依赖评测与扩展 | `forbidden` | 禁止 core 引用 `evals` / `extensions` |
-| 内置工具与会话层互不依赖 | `independence` | 钉住兄弟层 |
+| 环境变量 | `export SIGMA_API_KEY=sk-xxx` | 临时切换；**不进 shell 历史**推荐用 `read -s` 或凭据管理器 |
+| 用户级文件 | 写进 `~/.sigma/.env` | **推荐**：在仓库之外，不会被误提交 |
+| 项目内文件 | 写进仓库根 `.env`（已被 `.gitignore` 覆盖） | 方便；安全性依赖 `.gitignore` 挡着 |
 
-为什么兄弟关系要单独一条：`layers` 是线性栈，语义只有「下层不许引用上层」,
-**它默认放行所有向下的 import**。只写 `layers` 的话，
-`sigma_tools → sigma_session` 会被静默放行。
+解析优先级：**命令行 `--api-key` > 环境变量 > `~/.sigma/.env` > 项目 `.env`**，
+启动横幅会打印 key 的来源——"改了 `.env` 但没生效"这类问题不该靠猜。
+环境变量名与可用预设见 [`.env.example`](.env.example)。
+
+### 3. 跑一条任务
+
+```bash
+sigma -p "把 foo.py 里的 off-by-one 修掉" --workspace ./your-repo   # 一次性
+sigma -i                                                            # 交互（跨轮记得上下文）
+```
+
+四种等价入口（逻辑只有一处，都在 `sigma.cli:main`）：
+
+```bash
+sigma -p "任务"          # console script
+python -m sigma -p "任务"  # 通用；console script 不在也能跑
+sigma.bat -p "任务"        # Windows cmd，也可双击进交互模式
+.\sigma.ps1 -p "任务"      # PowerShell，也可右键"使用 PowerShell 运行"
+```
+
+退出码：**`0` = 正常结束（任务成没成都不影响）；非 `0` = harness 自身失败**；`130` = 用户中断。
+把"任务没做对"混进退出码，会让"harness 崩了"和"模型没做对"无法区分，而 CI 只关心前者。
+
+### 4. 安全边界与回滚（P3-批次1）
+
+```bash
+sigma --list-checkpoints                       # 看本会话有哪些快照（标签 + ref）
+sigma --rollback                               # 退回"最近一次写操作之前"
+sigma --rollback-to 4f5dfd9a                   # 退回指定快照（接受 ref 前缀）
+sigma --no-checkpoint -p "任务"                 # 关掉快照（危险：破坏性操作不可回滚）
+```
+
+回滚**不启动模型**（它是人的动作，不是 agent 的一步），**也不需要 API key**——
+模型密钥失效时恰恰是最需要回滚的时刻。执行回滚前会自动再打一次快照，
+所以**回滚本身也可回滚**。
+
+### 5. 可选：联网能力（两个独立开关）
+
+| 工具 | 提供方 | 额度 | 硬闸 |
+| --- | --- | --- | --- |
+| `web_search` | Tavily | 1000 credits/月（basic 1 / advanced 2） | 用尽即禁用；结果进模型前先过黑名单 + 2 年时间预过滤，丢弃条数写回给模型看 |
+| `web_fetch` | Firecrawl | 1000 credits/月（1 credit/页） | **单次最多 2 条 URL**；来源黑名单再拦一次；会话内另有抓取上限 |
+
+有对应 key 才注册（工具 schema 占常驻上下文）；`--no-web-search` 可整体关掉；
+额度账本落在 `~/.sigma/{tavily,firecrawl}_usage.json`，并用服务端用量端点校准。
+
+### 6. 跑测试（不需要任何 API key）
+
+```bash
+pytest -q                 # 459 个单测
+mypy core                 # strict
+lint-imports              # 三条分层契约
+python evals/runner.py    # 回放六个场景，报告落 evals/reports/
+```
+
+> **Windows / 沙箱环境两个坑**（都被踩过）：
+> ① 用 `python -m pytest`，别直接调 `.venv/Scripts/pytest.exe`；
+> ② 把临时根指进仓库（`TMPDIR=C:/path/to/repo/.pytest_cache/tmp`，**必须是 Windows 路径**），
+> 否则 pytest 的 basetemp 只在系统 Temp 里只增不减。
+> 还有一条纪律：**任何两个 pytest 进程都不要并行**（共用临时根会造成成片假红）。
+
+---
+
+## 架构
+
+依赖方向严格受限，**由 CI 强制**：
+
+```
+sigma         → sigma_tools, sigma_session, sigma_agent, sigma_ai   # 产品壳
+sigma_tools   → sigma_agent, sigma_ai                                # 工具层
+sigma_session → sigma_agent, sigma_ai                                # 会话层
+sigma_agent   → sigma_ai                                             # 循环与注册表
+sigma_ai      → （无内部依赖）                                        # 协议层
+```
+
+`sigma_tools` 与 `sigma_session` 是**兄弟层，互不依赖**（由 `independence` 契约钉住）。
+
+| 层 | 职责 | 关键文件 |
+| --- | --- | --- |
+| `sigma` | 产品壳：CLI / REPL / 一次性模式 / SDK 入口 | `cli.py` `sdk.py` `repl.py` `render.py` `dotenv.py` |
+| `sigma_tools` | 内置工具与输出截断 | `read / write / edit / bash / grep` · `truncate` · `_paths`（L1 写路径约束）· `web_search / web_fetch`（可选） |
+| `sigma_session` | 会话树 · 上下文组装 · 压缩 | `tree.py` `store.py` `context.py` `compact.py` `resources.py` `sessions.py` |
+| `sigma_agent` | 唯一 agent loop · 工具注册表 · 观测事件 · 影子 checkpoint | `loop.py` `registry.py` `base.py` `agent_messages.py` `checkpoint.py` |
+| `sigma_ai` | Provider 抽象与流式协议 | `base.py` `messages.py` `events.py` `openai/` `fake.py` |
+
+### 一轮任务的数据流
+
+```mermaid
+flowchart LR
+    U["用户任务"] --> CTX["SessionContext<br/>常驻区 + 树上历史 + 压缩视图"]
+    CTX -->|"build_messages()"| LOOP["AgentLoop（唯一实现）"]
+    LOOP -->|"provider.stream"| API["模型 API（OpenAI 兼容）"]
+    API -->|"工具调用"| LOOP
+    LOOP -->|"写批次前 mark"| CP["ShadowCheckpoint<br/>独立 GIT_DIR"]
+    LOOP -->|"执行工具"| TOOLS["read / write / edit / bash / grep"]
+    LOOP -->|"追加结果"| TREE["SessionTree（只追加）"]
+    TREE -->|"JSONL 一行一节点"| DISK[("~/.sigma/sessions/&lt;id&gt;.jsonl")]
+```
+
+### 上下文管理：两件事分开算
+
+- **常驻区**（系统提示词 + 工具 schema + `AGENTS.md` + 技能索引）**≤ 3500 token，会话内逐字节稳定**——
+  它是 prompt cache 的充要条件，所以 `SessionContext` 每次组装都校验**指纹**与**预算**两道，违反即崩
+  （静默失效只是"变慢变贵"，不会报错）。`AGENTS.md` 硬截断到 800 token，且**截断标记写进正文**——
+  模型看不见"被截断了"就会以为项目就这些约定。
+- **压缩是视图，不是改写**：最旧的一段历史被压成一条摘要（降级成 `user`，绝不进常驻区），
+  树上原文一个字节不动——改写历史会让"这条消息当时是否存在过"不可考，审计链就断了。
+  触发线 = `(模型窗口 − 常驻区) × 0.8`，最近 4 轮原文保留。
+
+## 安全边界（写清楚，不假装）
+
+| 层 | 做什么 | 状态 |
+| --- | --- | --- |
+| **L1 写路径约束** | `write` / `edit` / `bash.cwd` 解析符号链接后必须仍在工作区内，越界即拒绝（`read` 不限制） | ✅ |
+| **L2 影子 git checkpoint** | 写批次前自动快照；`sigma --rollback` 整体退回（含删除新增文件）；独立 `GIT_DIR` 不碰你的仓库 | ✅ |
+| **L3 钩子规则** | 危险命令匹配（软边界，**只能减少不能消除**） | ⬜ 待做 |
+
+**它仍然不是沙箱。** `bash` 会以你的用户权限执行**任意命令**：可以删工作区外的目录、
+可以把数据发到网上、可以改环境变量。快照只覆盖**工作区内、未被 `.gitignore` 与 5 MB 上限排除**的文件。
+完整清单（"钩子挡不住什么"）在 [`docs/architecture.md` 6.3 节](docs/architecture.md)，
+不做容器的理由见 [`docs/decisions/D6`](docs/decisions/D6-不做容器隔离.md)。
+
+## 质量体系：三道门禁 + 73 条门槛
+
+**三道门禁**（CI 里就是这三条）：`lint-imports` · `mypy core`（strict）· `pytest`。
+
+**73 条门槛**分布（每条都有一份注入实验证明它能红）：
+
+| 批次 | 覆盖 | 条数 |
+| --- | --- | --- |
+| batch1 / 15 | 骨架契约、消息模型 | 7 + 10 |
+| batch24 | loop / 注册表 / 截断 | 10 |
+| batch6 | CLI 流式与 REPL | 6 |
+| batch7 / 8 | 联网搜索与精读（额度硬闸、来源过滤） | 5 + 7 |
+| p21 / batch9 | 会话树、存储替换语义 | 4 + 3 |
+| batch10 / 11 | 上下文接树、`AGENTS.md` 预算、压缩 | 4 + 4 |
+| batch12 | CLI 会话接续 | 4 |
+| batch13 | **安全边界（L1 路径约束 + L2 回滚）** | 9 |
+
+**一条门槛长什么样**（以 G68 为例——"回滚要删掉事后新建的文件"）：
+
+```python
+# src：checkpoint.py 用 reset --hard 而不是 checkout
+reset = self._git("reset", "--hard", "--quiet", ref)
+
+# 注入：把 reset 换成 checkout（架构 6.2 点名的坑：checkout 不删新增文件）
+# 期望：tests/test_agent_checkpoint.py::test_restore_deletes_files_added_after_ref 变红
+```
+
+跑注入实验：`python scripts/gate_injection_batch13.py` → **9/9 被成功证伪**。
+
+---
 
 ## 目录
 
 ```
 core/           五个包（package-dir 指向 core/，所以它们是顶层包）
-tests/          单测。fixtures/arch/ 里是契约测试的正反两个样例
-evals/          评测：数据集与运行器（P1 起填充）
-extensions/     运行时加载的扩展样例
+  sigma_ai/     协议层：Provider 抽象、消息模型、流式事件
+  sigma_agent/  agent loop、工具注册表、观测事件、影子 checkpoint
+  sigma_session/会话树、上下文组装、压缩、会话目录操作
+  sigma_tools/  内置工具、输出截断、路径约束
+  sigma/        产品壳：CLI / REPL / SDK 入口
+tests/          459 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
+evals/          评测运行器 + 报告（datasets/ 的任务集尚未落地，见下）
+extensions/     运行时加载的扩展样例（P4）
 docs/           架构方案、调研笔记、计划、决策记录
-.github/        CI
+scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
 ```
 
 ## 文档
 
 | 文件 | 内容 |
 | --- | --- |
-| `docs/architecture.md` | 架构方案 v1.3：六项决策、消息模型两层结构、接口设计、可验证性设计、分阶段计划 |
-| `docs/pi-harness研究笔记.md` | Pi Agent Harness 调研，含来源可信度分级 |
-| `docs/plans/` | 各阶段的实施计划与验收证据 |
-| `docs/decisions/` | 架构决策记录（ADR）。**D1–D6 的「判断依据」与「我接受的代价」两栏待本人填写**；集中填写清单见 `docs/decisions/_待填清单.md` |
-| `AGENTS.md` | 本项目的开发约定 |
+| [`docs/architecture.md`](docs/architecture.md) | 架构方案（v1.6）：六项决策、消息模型两层结构、上下文预算、安全边界、可验证性设计 |
+| [`docs/decisions/`](docs/decisions/) | ADR：D1 语言 / D2 harness 边界 / D3 扩展层形态 / D4 常驻区预算 / D5 安全边界 / D6 不做容器 |
+| [`docs/plans/`](docs/plans/) | 各批次实施计划与验收记录（含门槛表、风险、实现中发现的问题） |
+| [`docs/pi-harness研究笔记.md`](docs/pi-harness研究笔记.md) | 参照对象 Pi Agent Harness 的调研笔记，带来源可信度分级 |
+| [`AGENTS.md`](AGENTS.md) | 本项目的开发约定（它同时是 sigma 自己的"项目说明"注入源） |
 
-## 为什么有这些约束
+## 进度与未完成
 
-三条最容易违反的约定，全部做成了机器可查：
+| 阶段 | 状态 |
+| --- | --- |
+| P0 骨架 · P1 最小闭环（五工具 + CLI + 流式） | ✅ |
+| 批次 7/8：联网搜索 + 精读（额度硬闸、来源过滤、调研纪律） | ✅ |
+| P2-1…P2-5：回放评测 · 会话树 · 上下文接树 · 压缩 · CLI 会话接续 | ✅ |
+| **P3-批次1：安全边界（L1 写路径 + L2 影子 checkpoint）** | ✅ |
+| P3-批次2：HookManager + **L3 钩子规则** + steering | ⬜ |
+| P4 扩展系统（运行时热重载） | ⬜ |
+| P5 自证：数据集的基线 B0–B3 与消融 | ⬜ |
 
-1. **分层不能反向** —— 反向 import 由 `lint-imports` 拦。
-2. **常驻上下文不能变** —— 会话内常驻区一旦变动，prompt cache 从变动点起全部失效。
-3. **扩展热重载要找得到新对象** —— 任何调用方都不得缓存工具实例。
+**明确未验收的**（写出来，不假装）：
 
-第 2、3 条在 P2 / P4 落地时补进测试。
+- **`evals/datasets/` 的 70 条任务集未落地**（reproduce 20 / synthetic 30 / adversarial 20）。
+  构造纪律已定死：`synthetic/` **必须先有会失败的测试、后有任务描述**，反过来会造出一批
+  "本实现的水平恰好能过"的任务，评测就失去意义。
+- **P2 第 3 条验收门（压缩前后成功率下降 ≤ 5%）未验收**：它需要真模型判定"压完还够不够用"，
+  用回放录音算出来的"成功率"只是在数脚本对不对得上，与压缩质量无关。**未验收 ≠ 已通过。**
+- **L3 钩子规则未做**，且它本来就是软边界。
+- 顺带一条自我记录：曾试图加"回放工作区隔离"门槛（G57），**实测无法证伪，于是不注册**——
+  宁可少一条门槛，不要一条名义门槛。
 
-## 已知取舍
+### 计数纪律
 
-- **不做容器隔离。** 宿主环境不受保护。安全上落地了 D5 的**两层可证明的软边界**——
-  L1 写路径约束（不得越出工作区）与 L2 影子 git checkpoint（写前快照、可整体回滚）；
-  L3 钩子规则**仍未做**（P3-批次2），且它本来就是"只能减少不能消除"的一层。
-  边界写在 `docs/architecture.md` 第 6 节，**挡不住什么**那清单也在那里（6.3）。
-- **不做 TUI。** 用纯文本 REPL，避免拖累 CI。
+本文件里任何计数都必须绑定提交号。理由：批次 1.5 的代码曾"未提交就落在盘上"，
+导致"104 个单测"这句话在提交历史里过期而无人察觉。这是「配置跑绿」的第三种形态——
+**数字会随未提交代码漂移**。所以：换代码或换环境后，上面的数字**必须重跑**，不能照抄。
 
-### 不做的东西，以及代替路径
+## 不做的东西，以及代替路径
 
 砍功能必须给代替路径，否则"不做"看起来就是"没有"。
 
 | 不做 | 代替路径 |
 | --- | --- |
-| MCP | 写一个扩展（工具与内置工具走同一条注册路径） |
-| 子代理 | 用户在 REPL 里另开一个会话 |
-| Plan Mode | 在任务描述里要求先输出计划，人工确认后再让它动手 |
+| 容器隔离 | 不做，安全边界写在架构文档里（见 D6） |
+| MCP | 写一个扩展——扩展工具与内置工具走**同一条注册路径** |
+| 子代理 | 在 REPL 里另开一个会话 |
+| Plan Mode | 在任务描述里要求先输出计划，人工确认后再动手 |
 | 待办追踪 | 让 agent 往会话目录写一个 markdown 文件 |
-| 后台 bash | 用 `tmux` 或 `&` 自己跑，agent 只负责读输出 |
-| Web UI | 用 SDK 自己接（`create_session()` 是公开入口） |
-| Slack Bot | 同上，SDK 是唯一需要的接口 |
-| RPC / 远程 session | 同上 |
-| 多实例编排 | 起两个进程，各自有独立工作区与影子 git |
-| SQLite session backend | JSONL 追加写 + 内存索引；检索痛了再说 |
-| 15+ Provider | 只做 OpenAI 兼容协议（已覆盖国内主流）+ 按需补 Anthropic |
-| 云端 sandbox | 不做，边界写在架构文档里 |
+| 后台 bash | 用 `tmux` 或 `&` 自己跑，agent 只读输出 |
+| Web UI / Slack Bot / RPC | 用 SDK（`create_session()` 是公开入口） |
+| 多 Provider 抽象层 | 只做 OpenAI 兼容协议（已覆盖国内主流）；不做没有需求的设计 |
+| SQLite 会话后端 | JSONL 追加写 + 内存索引；检索痛了再说 |
+| TUI | 纯文本 REPL，避免拖累 CI |
 
-**最后一行是这份列表里唯一一条没有代替路径的**，这是有意的：
-它不是"暂时不做"，是这个项目的设计选择。理由见 `docs/decisions/D6-不做容器隔离.md`。
+## 许可
+
+个人项目，暂未声明许可证。引用前请先联系作者。
+
+
+

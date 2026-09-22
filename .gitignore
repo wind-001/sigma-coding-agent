@@ -11,6 +11,11 @@ venv/
 .mypy_cache/
 .pytest_cache/
 
+# pytest 的临时根别在仓库里（沙箱/CI 里跑测试时会把 TMPDIR 指进来）
+.ptb/
+.pytest-tmp/
+.pytest-tmp-base/
+
 # 手动试验用的演示工作区（scripts/make_demo_workspace.py 生成）
 demo/
 
