@@ -24,4 +24,20 @@ jobs:
         run: mypy core
 
       - name: 单测（不需要 API key）
-        run: pytest -q
+        run: |
+          set -o pipefail
+          python -m pytest -q 2>&1 | tee /tmp/pytest.log
+
+      # 为什么留这一步（2026-09-22）：
+      #   开发机是 Windows、CI 是 Linux，"本地绿 → 推上去红"已经发生过一次（mypy 平台差异）。
+      #   而 job 日志要鉴权才能读（`/actions/jobs/{id}/logs` 对匿名请求返回 403），
+      #   于是"到底哪个用例挂了"在本地拿不到证据。
+      #   这里把失败行发成 **check-run 注解**——public 仓库的注解可匿名读：
+      #     GET /repos/{owner}/{repo}/commits/{sha}/check-runs → /check-runs/{id}/annotations
+      #   取证成本降到一次 curl，而 CI 本身不变红变绿的口径。
+      - name: 失败时把 pytest 摘要写成注解（便于外部取证）
+        if: failure()
+        run: |
+          grep -E "^(FAILED|ERROR) |^E  |assert" /tmp/pytest.log | head -40 | while IFS= read -r line; do
+            echo "::error::$line"
+          done || true
