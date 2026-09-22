@@ -97,7 +97,12 @@ def _inject_e34(repo: Repo) -> None:
     """
     repo.patch(
         CLI,
-        "    if not args.prompt and not args.interactive and not stdin_is_interactive():",
+        "    if (\n"
+        "        not args.prompt\n"
+        "        and not args.interactive\n"
+        "        and not wants_rollback\n"
+        "        and not stdin_is_interactive()\n"
+        "    ):",
         "    if False:  # 注入：不判 stdin，非交互场景也往下走去 REPL",
     )
 

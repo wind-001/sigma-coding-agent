@@ -66,6 +66,54 @@ def _session(root: Path, session_id: str, rounds: list[list[dict[str, object]]])
     )
 
 
+def test_session_marks_baseline_checkpoint(tmp_path: Path) -> None:
+    """会话启动时打**基线**快照（G65）。
+
+    少了它，第一个写批次前的快照就是"已经被改过的状态"——
+    第一次回滚无点可退，而用户会以为"回滚没生效"。
+    """
+    session = sdk.InteractiveSession(
+        provider=FakeProvider.from_rounds([_text("嗯")]),
+        workspace_root=tmp_path,
+        model="fake",
+        session_id="s1",
+        project_instructions="",
+        shadow_git_dir=tmp_path / "sessions" / "s1.shadow.git",
+    )
+
+    assert session.checkpoint is not None
+    labels = [info.label for info in session.checkpoint.refs()]
+    assert labels == ["baseline"]
+
+
+def test_session_without_shadow_dir_has_no_checkpoint(tmp_path: Path) -> None:
+    """不传影子库路径 = 没有 checkpoint（回放与既有测试路径的默认）。
+
+    ``--no-checkpoint`` 走的也是这条路：**默认开、可关**，而不是默认关。
+    """
+    session = sdk.InteractiveSession(
+        provider=FakeProvider.from_rounds([_text("嗯")]),
+        workspace_root=tmp_path,
+        model="fake",
+        session_id="s2",
+        project_instructions="",
+    )
+
+    assert session.checkpoint is None
+
+
+def test_cli_shadow_dir_is_next_to_session_file(tmp_path: Path) -> None:
+    """影子库与会话文件同层（``<sessions>/<id>.shadow.git``）。
+
+    同层的意义：``--continue`` 续上会话就天然续上 checkpoint 历史；
+    换一个目录会让"续了会话却回滚不到刚才那一步"。
+    """
+    from sigma.cli import shadow_git_dir_for
+
+    assert shadow_git_dir_for(tmp_path, "会话 A") == tmp_path / "会话 A.shadow.git"
+    assert shadow_git_dir_for(tmp_path, "a/b") == tmp_path / "a_b.shadow.git"
+
+
 # ---------------------------------------------------------------------------
 # sessions.py：目录操作
 # ---------------------------------------------------------------------------

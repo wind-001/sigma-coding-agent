@@ -53,6 +53,7 @@ from sigma.sdk import (
     run_task,
 )
 from sigma_agent.registry import ToolRegistry
+from sigma_agent.checkpoint import ShadowCheckpoint
 from sigma.render import TerminalRenderer
 from sigma_agent.agent_messages import (
     AgentMessage,
@@ -129,7 +130,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workspace",
         default=".",
-        help="工作区根目录，默认当前目录。**这不是安全边界**（见文件顶部说明）",
+        help=(
+            "工作区根目录，默认当前目录。**写操作的硬边界**（L1：write/edit/bash 的 cwd "
+            "不得越出它）；读操作不受限。它不是沙箱——bash 仍能以你的用户权限执行任意命令"
+        ),
     )
     parser.add_argument("--max-rounds", type=int, default=20, help="最大轮数，默认 20")
     parser.add_argument("--temperature", type=float, default=0.0, help="采样温度，默认 0")
@@ -137,6 +141,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--trace",
         action="store_true",
         help="流式输出之外，结束再打印一遍完整消息序列（调试 / 评测用）",
+    )
+    parser.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help=(
+            "关闭影子 git checkpoint（D5 的 L2：写批次前自动快照、可整体回滚）。"
+            "默认开启——关掉之后破坏性操作**不可回滚**，横幅会明说这一点"
+        ),
+    )
+    rollback = parser.add_mutually_exclusive_group()
+    rollback.add_argument(
+        "--rollback",
+        action="store_true",
+        help="回到最近一次写操作之前的状态（执行前会先自动快照一次，回滚本身也可回滚）",
+    )
+    rollback.add_argument(
+        "--rollback-to",
+        default=None,
+        metavar="REF",
+        help="回到指定的快照；用 --list-checkpoints 看有哪些（接受 ref 前缀）",
+    )
+    parser.add_argument(
+        "--list-checkpoints",
+        action="store_true",
+        help="列出本会话的可用快照（标签 + ref），然后退出",
     )
     parser.add_argument(
         "--no-web-search",
@@ -369,6 +398,106 @@ def resolve_session(args: argparse.Namespace, sessions_root: Path) -> SessionBin
     return SessionBinding(session_id, tree, store.exists(), len(tree))
 
 
+def shadow_git_dir_for(sessions_root: Path, session_id: str) -> Path:
+    """本会话的影子库路径（D5 的 L2）。
+
+    **与会话文件同层扁平放置**：``<sessions>/<id>.shadow.git``——
+    这样 ``--continue`` 续上一个会话时，天然续上它的 checkpoint 历史。
+    """
+    safe = session_id.replace("/", "_").replace("\\", "_")
+    return sessions_root / f"{safe}.shadow.git"
+
+
+def run_rollback(
+    args: argparse.Namespace, sessions_root: Path, workspace: Path
+) -> int:
+    """执行 ``--rollback`` / ``--rollback-to`` / ``--list-checkpoints``。
+
+    这三件事**都不该启动模型**：回滚是人的动作。让模型去调用"回滚"更危险
+    （它可以把自己刚搞坏的状态"回滚"成另一个坏状态，而用户看不到）。
+    """
+    session_id = args.session or latest_session_id(sessions_root)
+    if session_id is None:
+        print(
+            f"[harness 错误] {sessions_root} 里没有会话，无法回滚。",
+            file=sys.stderr,
+        )
+        return EXIT_HARNESS_ERROR
+
+    shadow = ShadowCheckpoint(
+        root=shadow_git_dir_for(sessions_root, session_id), workspace=workspace
+    )
+    if not shadow.available:
+        print(f"[harness 错误] 影子库不可用：{shadow.unavailable_reason}", file=sys.stderr)
+        return EXIT_HARNESS_ERROR
+
+    # 工作区配对（**这条闸挡住了一次真事故**）：
+    # 影子库只对"它创建时那个工作区"有意义。不检查的后果是 `reset --hard`
+    # 拿 A 的快照去改 B——把 B 里快照没有的文件全删掉。
+    # 这里用**创建时记下的**工作区来执行，用户的 `--workspace` 只用于核对。
+    mismatch = shadow.workspace_mismatch()
+    if mismatch:
+        print(f"[harness 错误] {mismatch}", file=sys.stderr)
+        return EXIT_HARNESS_ERROR
+    recorded = shadow.recorded_workspace
+    assert recorded is not None  # mismatch 为空 ⇒ 一定有记录
+    workspace = recorded
+
+    refs = shadow.refs()
+    print(f"会话 {session_id} 的快照（新 → 旧）：")
+    if not refs:
+        print("  （还没有任何快照）")
+    for index, info in enumerate(refs):
+        print(f"  [{index}] {info.ref[:8]}  {info.label}")
+
+    if args.list_checkpoints:
+        return EXIT_OK
+
+    target = args.rollback_to
+    if target is None:
+        # `--rollback`：回到"最近一次写之前"。基线（baseline）不算"写之前"，
+        # 所以要跳过它——没有其它快照时退到基线，那正是"这一轮什么写都没发生过"。
+        written = [info for info in refs if not info.label.startswith("baseline")]
+        if not written:
+            print("没有可回滚的写操作（本会话还没有写过东西）。")
+            return EXIT_OK
+        target = written[0].ref
+    else:
+        # 接受 ref 前缀：人手敲 40 位哈希不现实，而前缀在单个仓库里足够唯一。
+        matched = [info.ref for info in refs if info.ref.startswith(target)]
+        if not matched:
+            print(f"[harness 错误] 找不到快照 {target!r}。", file=sys.stderr)
+            return EXIT_HARNESS_ERROR
+        if len(matched) > 1:
+            print(
+                f"[harness 错误] 前缀 {target!r} 匹配到 {len(matched)} 个快照，"
+                "请多给几位。",
+                file=sys.stderr,
+            )
+            return EXIT_HARNESS_ERROR
+        target = matched[0]
+
+    report = shadow.restore(target)
+    if not report.ok:
+        print(f"[harness 错误] 回滚失败：{report.note}", file=sys.stderr)
+        return EXIT_HARNESS_ERROR
+
+    print(
+        f"已回滚到 {report.ref[:8]}：恢复 {len(report.changed)} 个文件、"
+        f"删除 {len(report.deleted)} 个新增文件。"
+    )
+    if report.deleted:
+        for name in report.deleted[:20]:
+            print(f"  已删除 {name}")
+    if report.protected:
+        # **保护数必须打出来**：用户得知道"有些文件本来就不在回滚范围内"，
+        # 否则他会以为回滚不完整，或者更糟——以为 .env 之类也回到了旧版。
+        print(f"  （{report.protected} 个被 .gitignore/大小上限排除的文件未参与回滚）")
+    if report.pre_restore_ref:
+        print(f"  回滚前的状态也已快照：{report.pre_restore_ref[:8]}（回滚可再回滚）")
+    return EXIT_OK
+
+
 async def _run_once(
     args: argparse.Namespace,
     workspace: Path,
@@ -380,6 +509,7 @@ async def _run_once(
     system_prompt: str,
     tree: SessionTree,
     session_id: str,
+    shadow_git_dir: Path | None = None,
 ) -> TurnResult:
     """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -396,6 +526,7 @@ async def _run_once(
             observer=TerminalRenderer(),
             session_id=session_id,
             tree=tree,
+            shadow_git_dir=shadow_git_dir,
         )
     finally:
         await provider.aclose()
@@ -412,6 +543,7 @@ async def _run_interactive(
     system_prompt: str,
     tree: SessionTree,
     session_id: str,
+    shadow_git_dir: Path | None = None,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -426,6 +558,7 @@ async def _run_interactive(
         observer=TerminalRenderer(),
         session_id=session_id,
         tree=tree,
+        shadow_git_dir=shadow_git_dir,
     )
     try:
         return await run_repl(session)
@@ -467,7 +600,17 @@ def main(argv: list[str] | None = None) -> int:
     # W11：既没有 -p 又没有 -i，且 stdin 不是真控制台 → **绝不能进 REPL**。
     # 否则脚本 / CI / 管道里调用 sigma 会挂住等输入，
     # 症状是"卡住"而不是报错。
-    if not args.prompt and not args.interactive and not stdin_is_interactive():
+    #
+    # 回滚三件事是例外：它们不需要 prompt、不启动模型，是**独立的动作**
+    # （`sigma --list-checkpoints` 就该能在脚本里跑）。少了这半个条件，
+    # 回滚在非控制台（含 CI 与本次冒烟）里只会打印帮助——第一版就是这样。
+    wants_rollback = args.rollback or args.rollback_to is not None or args.list_checkpoints
+    if (
+        not args.prompt
+        and not args.interactive
+        and not wants_rollback
+        and not stdin_is_interactive()
+    ):
         parser.print_help()
         print()
         print('提示：一次性模式用法 —— sigma -p "把 foo.py 里的 off-by-one 修掉"')
@@ -481,6 +624,26 @@ def main(argv: list[str] | None = None) -> int:
     if not workspace.exists() or not workspace.is_dir():
         print(f"[harness 错误] 工作区不存在或不是目录：{workspace}", file=sys.stderr)
         return EXIT_HARNESS_ERROR
+
+    sessions_root = (
+        Path(args.sessions_dir).expanduser()
+        if args.sessions_dir
+        else DEFAULT_SESSIONS_DIR
+    )
+
+    # 回滚三件事（--rollback / --rollback-to / --list-checkpoints）**不启动模型**：
+    # 它们是人的动作。所以它们**必须排在 API key 检查之前**——
+    # 否则"模型密钥失效 / 没配 key"会顺带把"把工作区回滚回去"也堵死，
+    # 而那恰恰是最需要回滚的时刻。第一版就把它排在了后面，冒烟时当场发现。
+    if args.rollback or args.rollback_to is not None or args.list_checkpoints:
+        if args.no_checkpoint:
+            print(
+                "[harness 错误] --no-checkpoint 与回滚开关同时给出："
+                "关掉 checkpoint 就没有快照可回滚。",
+                file=sys.stderr,
+            )
+            return EXIT_HARNESS_ERROR
+        return run_rollback(args, sessions_root, workspace)
     if not api_key:
         print("[harness 错误] 缺少 API key。三种设置方式，任选一种：", file=sys.stderr)
         print(
@@ -507,12 +670,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     system_prompt = build_system_prompt(web_search=web_search_on, web_fetch=web_fetch_on)
 
-    sessions_root = (
-        Path(args.sessions_dir).expanduser()
-        if args.sessions_dir
-        else DEFAULT_SESSIONS_DIR
-    )
     binding = resolve_session(args, sessions_root)
+
+    shadow_dir = (
+        None
+        if args.no_checkpoint
+        else shadow_git_dir_for(sessions_root, binding.session_id)
+    )
 
     mode = "一次性" if args.prompt else "交互"
     print(f"sigma {__version__}（{mode}模式）")
@@ -540,9 +704,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"  会话    {binding.session_id}（新）")
     print()
-    print("  ⚠ 安全提示：P1 的工具没有任何边界约束（D5 的三层软边界尚未实现）。")
-    print("     read 可读任意路径、write/edit 可写任意路径，")
-    print("     bash 会以你的用户权限执行**任意命令**，无过滤无沙箱——请只在受控目录内使用。")
+    # 安全边界现状（P3-批次1 起**与代码同源**，不再是"什么都没有"）。
+    # 这一段的每一句都要能在代码里指到对应实现，否则它又会变回"文档里的边界"。
+    if shadow_dir is None:
+        print("  ⚠ 安全提示：影子 checkpoint 已按 --no-checkpoint 关闭——")
+        print("     **本次的破坏性操作不可回滚**（bash 仍能执行任意命令）。")
+    else:
+        print("  ⚠ 安全边界（不是沙箱）：")
+        print("     L1 写路径：write/edit/bash 的 cwd 不得越出工作区（越界即拒绝）。")
+        print("     L2 可回滚：每次写操作前自动快照；必要时用 sigma --rollback 退回。")
+        print("     仍未保护：bash 能以你的用户权限执行任意命令、可访问网络与工作区外的路径——")
+        print("     请只在**受控目录**里使用，且不要让它接触不信任的脚本。")
     print()
 
     try:
@@ -558,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
                     system_prompt=system_prompt,
                     tree=binding.tree,
                     session_id=binding.session_id,
+                    shadow_git_dir=shadow_dir,
                 )
             )
             if args.trace:
@@ -575,6 +748,7 @@ def main(argv: list[str] | None = None) -> int:
                 system_prompt=system_prompt,
                 tree=binding.tree,
                 session_id=binding.session_id,
+                shadow_git_dir=shadow_dir,
             )
         )
     except KeyboardInterrupt:

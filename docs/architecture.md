@@ -1,6 +1,6 @@
 # sigma 架构方案
 
-> 版本：v1.5 ｜ 2026-09-21
+> 版本：v1.6 ｜ 2026-09-22
 > 参照对象：Pi Agent Harness（架构与设计理念见 `pi-harness研究笔记.md`）
 > 定位：自研 coding agent harness，目标是**可自证的设计**，不是功能数量
 >
@@ -53,6 +53,15 @@
 > - **两家额度账本抽成基类 `CreditLedger`**（`_credit_ledger.py`）：Tavily / Firecrawl 各是实现子类，
 >   差异只剩校准端点与响应解析。批次 7 的 G37–G41 门槛随之重跑（E37 锚点迁移）。
 > - 完整详规与门槛（G42–G47）：`docs/plans/P1-批次8-联网调研与精读-详规.md`。
+>
+> **v1.6 变更**（2026-09-22，P3-批次1）：
+> - **D5 的 L1 与 L2 落地**（三层软边界里"高、可证明"的两层）：
+>   L1 = 写路径 resolve 后必须仍在工作区内（`_paths.resolve_write_path`，含符号链接与 Windows 大小写）；
+>   L2 = 影子 git checkpoint（`sigma_agent/checkpoint.py`，写批次前自动快照、`sigma --rollback` 可整体回退）。
+> - **L3 钩子规则仍未做**（属 P3-批次2，需要 HookManager）；6.3 节"挡不住什么"那份清单**一字未改**。
+> - 第 6 节表格与 CLI 横幅都改成"与代码同源"的现状描述——原先那句
+>   "P1 的工具没有任何边界约束"已删（**文档里的边界与代码里的边界必须是同一件事**）。
+> - 门槛 G64–G70 + 注入实验 `scripts/gate_injection_batch13.py`（8/8 可证伪）。
 
 ---
 
@@ -1038,11 +1047,23 @@ def _import_fresh(path: str) -> ModuleType:
 
 ### 6.1 三层，按可靠性排序
 
-| 层 | 机制 | 可靠性 | 可量化指标 |
-| --- | --- | --- | --- |
-| L1 | 工作区根目录约束（写路径 resolve 后必须在 root 下） | 高，可证明 | 越界拦截率、误拦率 |
-| L2 | 影子 git checkpoint（每批次前提交，可整体回滚） | 高，可证明 | 回滚成功率、恢复后成功率 |
-| L3 | 钩子规则（危险命令匹配） | **低，只能减少不能消除** | 对抗集拦截率、误拦率 |
+| 层 | 机制 | 可靠性 | 可量化指标 | 落地 |
+| --- | --- | --- | --- | --- |
+| L1 | 工作区根目录约束（写路径 resolve 后必须在 root 下） | 高，可证明 | 越界拦截率、误拦率 | ✅ **P3-批次1**（`_paths.resolve_write_path`，含符号链接与 Windows 大小写） |
+| L2 | 影子 git checkpoint（每批次前提交，可整体回滚） | 高，可证明 | 回滚成功率、恢复后成功率 | ✅ **P3-批次1**（`sigma_agent/checkpoint.py`，写批次前 mark + CLI 回滚） |
+| L3 | 钩子规则（危险命令匹配） | **低，只能减少不能消除** | 对抗集拦截率、误拦率 | ⬜ P3-批次2（要 HookManager） |
+
+> **2026-09-22（P3-批次1）追加**：
+> - L1 落在 `sigma_tools/_paths.py`，`write` / `edit` / `bash.cwd` 走它；**读路径不约束**
+>   （本节 6.3 早就写明"L1 只约束写"）。
+> - L2 落在 `sigma_agent/checkpoint.py`：独立 `GIT_DIR`、`info/exclude` = 内置清单 +
+>   工作区 `.gitignore`、>5 MB 不入快照、回滚先自查再 `reset --hard`（因此**新增文件会被删**）。
+> - 影子库位置：`~/.sigma/sessions/<session-id>.shadow.git`（与会话文件同层）。
+> - 开关：`--no-checkpoint` 关；回滚是人的动作：`sigma --session <id> --rollback[-to <ref>]`。
+> - 门槛 G64–G70 + 注入实验 `scripts/gate_injection_batch13.py`。
+>
+> L3 仍未落地——**本节 6.3 那份"挡不住什么"的清单依然全部成立**，一字未改。
+
 
 ### 6.2 影子 git 的实现约定
 

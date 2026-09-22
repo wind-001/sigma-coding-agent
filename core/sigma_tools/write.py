@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sigma_agent.base import BaseTool
 from sigma_agent.types import ToolContext, ToolResult
 from sigma_ai.messages import TextBlock
-from sigma_tools._paths import resolve_path
+from sigma_tools._paths import PathEscapesWorkspace, resolve_write_path
 
 
 class WriteParams(BaseModel):
@@ -35,6 +35,7 @@ class WriteTool(BaseTool):
     name = "write"
     description = (
         "把内容写入文件，覆盖原内容。父目录不存在时会报错，不会自动创建。"
+        "**只能写工作区内的路径**（工作区外会被拒绝——L1 硬边界）。"
         "若是修改已有文件的一小部分，请用 edit 而不是 write。"
     )
     read_only = False
@@ -45,7 +46,16 @@ class WriteTool(BaseTool):
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
         params = cast(WriteParams, args)
-        path = resolve_path(ctx, params.path)
+        try:
+            path = resolve_write_path(ctx, params.path)
+        except PathEscapesWorkspace as exc:
+            # 越界不是异常，是**给模型看的结果**：它要能读到"为什么不行、怎么改"，
+            # 才能换一个路径重试。异常穿透到 loop 等于把纠错能力关掉（详规 3.6）。
+            return ToolResult(
+                content=[TextBlock(text=str(exc))],
+                details={"path": params.path, "escaped_workspace": True},
+                is_error=True,
+            )
 
         if path.is_dir():
             return ToolResult(

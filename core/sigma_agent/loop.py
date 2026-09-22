@@ -39,6 +39,7 @@ from sigma_agent.agent_messages import (
     convert_to_llm,
 )
 from sigma_agent.base import BaseTool
+from sigma_agent.checkpoint import ShadowCheckpoint
 from sigma_agent.observe import (
     LoopEvent,
     LoopObserver,
@@ -116,6 +117,7 @@ class AgentLoop:
         clock: Callable[[], int] | None = None,
         emit: Callable[[str], None] | None = None,
         observer: LoopObserver | None = None,
+        checkpoint: ShadowCheckpoint | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -125,6 +127,10 @@ class AgentLoop:
         self._max_rounds = max_rounds
         self._sampling = sampling
         self._signal = signal
+        # 影子 git checkpoint（D5 的 L2）。**None = 没有**——回放与旧测试路径
+        # 不传它，行为与加它之前逐字节一致（与批次 6 observer 的纪律相同）。
+        # 它由产品壳构造并传入：放哪（GIT_DIR 路径）是产品壳的策略。
+        self._checkpoint = checkpoint
         # 时钟可注入：回放测试要求"两次执行逐字节一致"，
         # 而真实时钟每次不同——不注入就永远无法满足那条断言。
         self._clock: Callable[[], int] = clock or (lambda: int(time.time()))
@@ -409,6 +415,19 @@ class AgentLoop:
         readonly = [p for p in planned if p.tool.read_only]
         writers = [p for p in planned if not p.tool.read_only]
 
+        # L2：**写批量之前**打一次快照（D5 的影子 git checkpoint）。
+        #
+        # 位置就在这里，不能挪：批次边界只有 loop 知道（这正是它属 sigma_agent 的理由）。
+        # 时机必须是"执行前"——执行后打快照等于把破坏后的状态存成"可回到的点"。
+        #
+        # 三点刻意设计：
+        #   1. 只在 writers 非空时打：纯读批次不产生任何文件变化，快照没有信息量；
+        #   2. label 里写明本批次要跑哪些写工具名 —— 回滚时人要知道"退掉的是什么"；
+        #   3. **mark 失败不阻断执行**（checkpoint 是保险丝，不是发动机）。`ShadowCheckpoint`
+        #      内部把失败降级成返回 None，调用方在 `last_error` 里能看到原因。
+        if writers:
+            self._mark_before_writes(writers)
+
         if readonly:
             gathered = await asyncio.gather(
                 *(p.tool.run(p.args, self._make_context()) for p in readonly),
@@ -445,6 +464,22 @@ class AgentLoop:
                 "这是 loop 自身的缺陷——上面的分支没有覆盖全部情况。"
             )
         return [r for r in results if r is not None]
+
+    def _mark_before_writes(self, writers: list[_Planned]) -> None:
+        """写批次前打快照。**失败静默降级**（原因留在 checkpoint.last_error）。"""
+        if self._checkpoint is None:
+            return
+        names = ",".join(sorted({plan.tool.name for plan in writers}))
+        try:
+            self._checkpoint.mark(label=f"write-batch:{names}")
+        except Exception:
+            # checkpoint 是**保险丝**：它自己出问题时不许把任务带崩。
+            # 这里刻意宽（catch Exception）——快照的失败方式无法穷举
+            # （磁盘满、git 被换掉、路径权限突变……），而"少一次快照"的代价
+            # 远小于"整轮任务失败"。与 `sdk._compact_if_needed` 吞压缩失败同一条判据：
+            # **优化/保障类动作，不该成为新的失败源**。
+            # 失败原因由 ShadowCheckpoint.last_error 留下，横幅与日志能看到。
+            return
 
     # ------------------------------------------------------------------
 

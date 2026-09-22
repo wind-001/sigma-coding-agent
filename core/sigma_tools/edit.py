@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from sigma_agent.base import BaseTool
 from sigma_agent.types import ToolContext, ToolResult
 from sigma_ai.messages import TextBlock
-from sigma_tools._paths import resolve_path
+from sigma_tools._paths import PathEscapesWorkspace, resolve_write_path
 from sigma_tools.truncate import truncate_output
 
 
@@ -61,6 +61,7 @@ class EditTool(BaseTool):
     description = (
         "把文件中的一段文本精确替换为另一段。old_string 必须在文件中恰好出现一次，"
         "出现多次会被拒绝——请扩大上下文使其唯一。修改已有文件时优先用本工具而不是 write。"
+        "**只能改工作区内的文件**（工作区外的路径会被拒绝——L1 硬边界）。"
     )
     read_only = False
 
@@ -76,7 +77,14 @@ class EditTool(BaseTool):
         它们的纠法各不相同。
         """
         params = cast(EditParams, args)
-        path = resolve_path(ctx, params.path)
+        try:
+            path = resolve_write_path(ctx, params.path)
+        except PathEscapesWorkspace as exc:
+            return ToolResult(
+                content=[TextBlock(text=str(exc))],
+                details={"path": params.path, "escaped_workspace": True},
+                is_error=True,
+            )
 
         if not path.exists():
             return ToolResult(

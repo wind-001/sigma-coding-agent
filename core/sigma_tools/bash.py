@@ -1,11 +1,18 @@
-"""``bash`` 工具：执行 shell 命令。**P1 风险最高的工具。**
+"""``bash`` 工具：执行 shell 命令。**本工具是所有工具里风险最高的一层。**
 
-无保护（详规 R1，对策乙）
-    D5 的三层软边界在 P1 一层都没落地，本工具会以当前用户权限执行
-    **任意**命令，没有任何过滤、没有沙箱。防线只有两条：
-    CLI 启动时的安全提示，与评测任务全部在临时目录里跑。
-    命令黑名单是**名义防护**（挡不住绕过，却制造虚假安全感），
-    按"名义门槛比没有门槛更坏"的纪律，留给 P3 的钩子体系。
+它能做什么、边界在哪（P3-批次1 更新）
+    命令**没有任何过滤**：`python -c`、base64、先写脚本再执行都能绕过字符串匹配，
+    所以本项目**不做命令黑名单**——那是名义防护（挡不住绕过，却制造虚假安全感）。
+    这一点与 pi 笔记 9.3 的立场一致：钩子只能减少不能消除。
+
+    现在真正起作用的边界有两层（D5）：
+
+    - **L1**：``cwd`` 参数必须落在工作区内（越界直接拒绝）；
+    - **L2**：每个写批次前自动做影子 git checkpoint，破坏性操作**可整体回滚**。
+      这才是 bash 的兜底——不是拦截，是"拦不住也能退回去"。
+
+    **它仍然不是沙箱**：命令可以 `rm -rf` 工作区外的目录、可以把数据发到网上、
+    可以改环境变量。README 与 architecture 6.3 明写了这份暴露面，不藏。
 
 超时**必须**（详规 3.5）
     不设超时的话，一条挂起的命令（``tail -f`` / 缺输入的 ``cat``）会让
@@ -34,7 +41,7 @@ from pydantic import BaseModel, Field
 from sigma_agent.base import BaseTool
 from sigma_agent.types import ToolContext, ToolResult
 from sigma_ai.messages import TextBlock
-from sigma_tools._paths import resolve_path
+from sigma_tools._paths import PathEscapesWorkspace, resolve_write_path
 from sigma_tools.truncate import truncate_output
 
 DEFAULT_TIMEOUT_S = 60
@@ -63,7 +70,9 @@ class BashTool(BaseTool):
     name = "bash"
     description = (
         "在 bash 中执行一条命令（如 ls、mkdir -p、运行测试）。"
-        "命令没有任何过滤，输出超过 8 KB 会被截断——请用 head/grep 缩小输出范围。"
+        "**cwd 必须在工作区内**；命令本身没有过滤（这是刻意的，见工具文档），"
+        "但每次写操作前的 checkpoint 让破坏性改动可以整体回滚。"
+        "输出超过 8 KB 会被截断——请用 head/grep 缩小输出范围。"
     )
     read_only = False
 
@@ -76,7 +85,15 @@ class BashTool(BaseTool):
         params = cast(BashParams, args)
 
         if params.cwd is not None:
-            cwd = resolve_path(ctx, params.cwd)
+            # cwd 走 L1 约束：命令会以它为基础改文件，所以它与写路径同级看。
+            try:
+                cwd = resolve_write_path(ctx, params.cwd)
+            except PathEscapesWorkspace as exc:
+                return ToolResult(
+                    content=[TextBlock(text=str(exc))],
+                    details={"cwd": params.cwd, "escaped_workspace": True},
+                    is_error=True,
+                )
             if not cwd.is_dir():
                 return ToolResult(
                     content=[TextBlock(text=f"工作目录不存在或不是目录：{cwd}")],

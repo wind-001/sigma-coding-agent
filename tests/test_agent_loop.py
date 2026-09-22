@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
 from sigma_agent.base import BaseTool
+from sigma_agent.checkpoint import ShadowCheckpoint
 from sigma_agent.loop import AgentLoop
 from sigma_agent.registry import DuplicateToolError, ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult
@@ -102,11 +104,68 @@ class FailingTool(BaseTool):
         )
 
 
+class WriteProbeTool(BaseTool):
+    """写工具（`read_only = False`）——用于验证"写批次前打快照"。
+
+    ⚠️ 不能用 ``EchoTool`` 凑数：它是**只读**的，于是批次里没有 writer，
+    快照根本不该打——那样断言 `marks == []` 会通过，而门槛其实没被验证。
+    第一版就是这么写的，测试当场变红（好在这次是"假绿"的反面：它报了红）。
+    """
+
+    name = "poke"
+    description = "写工具"
+    read_only = False
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    @property
+    def params(self) -> type[BaseModel]:
+        return EchoParams
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
+        params = cast(EchoParams, args)
+        self.seen.append(params.message)
+        return ToolResult(content=[TextBlock(text=f"poked: {params.message}")])
+
+
+class ReadonlySpyTool(BaseTool):
+    """只读工具（用于验证纯读批次**不**打快照）。"""
+
+    name = "peek"
+    description = "只读"
+    read_only = True
+
+    @property
+    def params(self) -> type[BaseModel]:
+        return EchoParams
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
+        return ToolResult(content=[TextBlock(text="peek")])
+
+
+class _SpyCheckpoint(ShadowCheckpoint):
+    """只记录"什么时候被要求打快照"，不碰 git。
+
+    记录的是**调用**而不是 git 状态，因为本条门槛要钉的恰恰是
+    "loop 有没有在正确的位置调它"——真实 git 行为由 checkpoint 自己的用例覆盖。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(root=Path("unused-shadow"), workspace=Path("."))
+        self.marks: list[str] = []
+
+    def mark(self, *, label: str) -> str | None:
+        self.marks.append(label)
+        return "spy-ref"
+
+
 def _make_loop(
     rounds: list[list[dict[str, Any]]],
     *,
     tools: list[BaseTool] | None = None,
     max_rounds: int = 20,
+    checkpoint: ShadowCheckpoint | None = None,
 ) -> tuple[AgentLoop, FakeProvider, ToolRegistry]:
     registry = ToolRegistry()
     for tool in tools if tools is not None else [EchoTool()]:
@@ -121,6 +180,7 @@ def _make_loop(
         max_rounds=max_rounds,
         signal=_NeverCancelled(),
         clock=lambda: FIXED_TIME,
+        checkpoint=checkpoint,
     )
     return loop, provider, registry
 
@@ -166,6 +226,87 @@ def _history() -> list[AgentMessage]:
             message=UserMessage(content="请回显 hi", timestamp=FIXED_TIME),
         )
     ]
+
+
+# ---------------------------------------------------------------------------
+# L2：写批次前的影子快照（P3-批次1 / G66）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_batch_marks_a_checkpoint_first() -> None:
+    """含写工具的批次：**执行前**打一次快照，label 里写明本批次要跑哪些写工具。
+
+    "执行前"是这条门槛的全部要点：执行后打快照等于把**破坏后的状态**
+    存成一个"可以回到的点"——那是假的可回滚。
+    """
+    spy = _SpyCheckpoint()
+    loop, _, _ = _make_loop(
+        [_tool_call_round('{"message": "hi"}', name="poke"), _text_round("完成")],
+        tools=[WriteProbeTool()],
+        checkpoint=spy,
+    )
+
+    await loop.run_turn(_history())
+
+    assert len(spy.marks) == 1
+    assert spy.marks[0].startswith("write-batch:")
+    assert "poke" in spy.marks[0]
+
+
+@pytest.mark.asyncio
+async def test_readonly_batch_does_not_mark() -> None:
+    """纯读批次不打快照：它不产生任何文件变化，快照没有信息量、只有开销。"""
+    spy = _SpyCheckpoint()
+    loop, _, _ = _make_loop(
+        [_tool_call_round('{"message": "hi"}', name="peek"), _text_round("完成")],
+        tools=[ReadonlySpyTool()],
+        checkpoint=spy,
+    )
+
+    await loop.run_turn(_history())
+
+    assert spy.marks == []
+
+
+@pytest.mark.asyncio
+async def test_no_checkpoint_configured_is_a_no_op() -> None:
+    """没配 checkpoint（回放 / 旧路径）时行为与加它之前一致——不抛、不记。"""
+    loop, _, _ = _make_loop(
+        [_tool_call_round('{"message": "hi"}'), _text_round("完成")],
+        tools=[EchoTool()],
+        checkpoint=None,
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_failure_does_not_stop_the_batch() -> None:
+    """快照失败**不阻断**任务（G70）：保险丝烧断不该让电器停止工作。"""
+    tool = WriteProbeTool()
+    loop, _, _ = _make_loop(
+        [_tool_call_round('{"message": "hi"}', name="poke"), _text_round("完成")],
+        tools=[tool],
+        checkpoint=_FailingCheckpoint(),
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "completed"
+    assert tool.seen == ["hi"], "快照失败把写批次也带崩了"
+
+
+class _FailingCheckpoint(ShadowCheckpoint):
+    """mark **抛异常**（模拟 git 换掉 / 磁盘满 / 权限突变）。"""
+
+    def __init__(self) -> None:
+        super().__init__(root=Path("unused-shadow"), workspace=Path("."))
+
+    def mark(self, *, label: str) -> str | None:
+        raise RuntimeError("模拟 checkpoint 内部故障")
 
 
 # ---------------------------------------------------------------------------

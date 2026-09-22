@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Callable
 
 from sigma import dotenv
 from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
+from sigma_agent.checkpoint import ShadowCheckpoint
 from sigma_agent.loop import AgentLoop
 from sigma_agent.observe import LoopObserver
 from sigma_agent.registry import ToolRegistry
@@ -277,6 +278,8 @@ class InteractiveSession:
         project_instructions: str | None = None,
         compaction_policy: CompactionPolicy | None = None,
         tree: SessionTree | None = None,
+        shadow_git_dir: Path | None = None,
+        enable_checkpoint: bool = True,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -307,6 +310,19 @@ class InteractiveSession:
             )
         else:
             self._instructions = ProjectInstructions(text=project_instructions)
+
+        # 影子 git checkpoint（D5 的 L2）。**位置由调用方给**（``shadow_git_dir``）：
+        # 与 store.py / sessions.py 同一条判据——会话层与 agent 层不拼 ``Path.home()``，
+        # 落点是产品壳的决定。不传就是"没有 checkpoint"（回放与测试路径的默认）。
+        self._checkpoint: ShadowCheckpoint | None = None
+        if enable_checkpoint and shadow_git_dir is not None:
+            self._checkpoint = ShadowCheckpoint(
+                root=shadow_git_dir, workspace=workspace_root
+            )
+            # 启动基线：**必须在任何写操作之前**。少了它，"第一个写批次前的快照"
+            # 就是"已经被改过的状态"，第一次回滚无点可退（门槛 G65）。
+            # 失败不阻断——它自己会降级（last_error 里留原因）。
+            self._checkpoint.mark(label="baseline")
         # ``tree`` 由调用方传入（通常是 ``SessionTree.from_store(...)``）——
         # **会话接续的落点就在这里**：不传就是纯内存的新会话，
         # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。
@@ -330,6 +346,7 @@ class InteractiveSession:
             clock=self._clock,
             emit=emit,
             observer=observer,
+            checkpoint=self._checkpoint,
         )
 
     async def send(self, task: str) -> TurnResult:
@@ -389,6 +406,15 @@ class InteractiveSession:
         return self._compaction_policy
 
     @property
+    def checkpoint(self) -> ShadowCheckpoint | None:
+        """影子 checkpoint（``None`` = 本会话没有回滚保障）。
+
+        CLI 用它打横幅与执行回滚——**可用性必须能被问出来**：
+        静默降级的 checkpoint 等于没有 checkpoint。
+        """
+        return self._checkpoint
+
+    @property
     def last_compaction(self) -> CompactionOutcome | None:
         """最近一次成功压缩的结果（CLI 用来告诉用户"压过了"）。"""
         return self._last_compaction
@@ -440,11 +466,15 @@ async def run_task(
     project_instructions: str | None = None,
     compaction_policy: CompactionPolicy | None = None,
     tree: SessionTree | None = None,
+    shadow_git_dir: Path | None = None,
+    enable_checkpoint: bool = True,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
-    ``workspace_root`` 决定工具里相对路径的基准——**它同时是 CLI 的 ``--workspace``**。
-    注意它**不是安全边界**（D5 的三层软边界在 P1 全未落地，见详规 0.1 代价第 3 条）。
+    ``workspace_root`` 决定两件事：工具里相对路径的基准（**它同时是 CLI 的
+    ``--workspace``**），以及 L1 写路径约束的边界（写操作不得越出它）。
+    它**不是沙箱**——bash 仍能以当前用户权限执行任意命令，兜底是 L2 的可回滚，
+    不是拦截（见 D5 / architecture 6.3）。
 
     时间戳用真实时钟。若要让执行**确定**（回放测试要求两次逐字节一致），
     调用方应自行构造 ``AgentLoop`` 并注入固定 ``clock`` ——
@@ -466,5 +496,7 @@ async def run_task(
         project_instructions=project_instructions,
         compaction_policy=compaction_policy,
         tree=tree,
+        shadow_git_dir=shadow_git_dir,
+        enable_checkpoint=enable_checkpoint,
     )
     return await session.send(task)
