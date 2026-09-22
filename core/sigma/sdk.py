@@ -48,6 +48,7 @@ from sigma_ai.base import NeverCancelled, SamplingParams
 from sigma_ai.messages import UserMessage
 from sigma_session.compact import CompactionOutcome, CompactionPolicy
 from sigma_session.context import SessionContext
+from sigma_session.tree import SessionTree
 from sigma_session.resources import (
     AGENTS_MD_FILENAME,
     ProjectInstructions,
@@ -275,9 +276,11 @@ class InteractiveSession:
         session_id: str = "sigma-session",
         project_instructions: str | None = None,
         compaction_policy: CompactionPolicy | None = None,
+        tree: SessionTree | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
+        self._session_id = session_id
         self._registry = registry if registry is not None else default_registry()
         self._clock = _real_clock
         # 压缩策略：不传就用保守窗口的默认值（见 DEFAULT_CONTEXT_WINDOW_TOKENS）。
@@ -304,12 +307,16 @@ class InteractiveSession:
             )
         else:
             self._instructions = ProjectInstructions(text=project_instructions)
+        # ``tree`` 由调用方传入（通常是 ``SessionTree.from_store(...)``）——
+        # **会话接续的落点就在这里**：不传就是纯内存的新会话，
+        # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。
         self._context = SessionContext(
             system_prompt=system_prompt,
             tools_schema=self._registry.schemas(),
             clock=self._clock,
             session_id=session_id,
             project_instructions=self._instructions.text,
+            tree=tree,
         )
         self._loop = AgentLoop(
             provider=provider,
@@ -372,6 +379,12 @@ class InteractiveSession:
         return outcome
 
     @property
+    def session_id(self) -> str:
+        """本会话的 id。``--continue`` 的横幅要把它打出来——
+        **用户得知道自己在续哪个会话**，否则"续上了吗"只能靠猜。"""
+        return self._session_id
+
+    @property
     def compaction_policy(self) -> CompactionPolicy | None:
         return self._compaction_policy
 
@@ -426,6 +439,7 @@ async def run_task(
     session_id: str = "sigma-session",
     project_instructions: str | None = None,
     compaction_policy: CompactionPolicy | None = None,
+    tree: SessionTree | None = None,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -451,5 +465,6 @@ async def run_task(
         session_id=session_id,
         project_instructions=project_instructions,
         compaction_policy=compaction_policy,
+        tree=tree,
     )
     return await session.send(task)

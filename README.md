@@ -14,11 +14,13 @@
 > P2-1 完成**回放场景 + 最小评测运行器**（G55–G56、G58，见 `evals/`）；
 > P2-2 完成**会话树与存储**（`sigma_session/tree.py` + `store.py`，G48/G49/G53）；
 > P2-3 完成**上下文接树 + `AGENTS.md` 注入**（`resources.py`，常驻区预算 G59）；
-> P2-4 完成**上下文压缩**（`compact.py`：视图式，不改历史；G51/G52/G60）。
-> 当前盘上 `408 个单测全绿`、三道门禁全绿（mypy strict 48 files / 契约 3 kept）、
-> 注入实验 **60/60** 证伪成功
+> P2-4 完成**上下文压缩**（`compact.py`：视图式，不改历史；G51/G52/G60）；
+> P2-5 完成 **CLI 会话接续**（`--continue` / `--session`；G61/G62/G63）。
+> 当前盘上 `424 个单测全绿`、三道门禁全绿（mypy strict 49 files / 契约 3 kept）、
+> 注入实验 **64/64** 证伪成功
 > （批次 1 的 7 条 + 批次 1.5 的 10 条 + 批次 2–4 的 10 条 + 批次 6 的 6 条
-> + 批次 7 的 5 条 + 批次 8 的 7 条 + P2-1 的 4 条 + P2-2 的 3 条 + P2-3 的 4 条 + P2-4 的 4 条）。
+> + 批次 7 的 5 条 + 批次 8 的 7 条 + P2-1 的 4 条 + P2-2 的 3 条 + P2-3 的 4 条 + P2-4 的 4 条
+> + P2-5 的 4 条）。
 > **注意**：这些数字只对应当前工作区状态；换代码或换环境后**必须重跑**——
 > 注入锚点与源码硬耦合，数字会随未提交代码漂移（详见下方「门槛注入实验」）。
 > 另注：P2-1 曾试图加一条「回放工作区隔离」门槛（G57），
@@ -226,6 +228,7 @@ python scripts/gate_injection_p21.py        # 期望 4/4
 python scripts/gate_injection_batch9.py     # 期望 3/3
 python scripts/gate_injection_batch10.py    # 期望 4/4
 python scripts/gate_injection_batch11.py    # 期望 4/4
+python scripts/gate_injection_batch12.py    # 期望 4/4
 ```
 
 每个脚本逐条对源码注入破坏 → 确认对应断言变红 → **还原**。

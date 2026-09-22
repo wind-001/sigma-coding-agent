@@ -29,6 +29,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 REPO = Path(__file__).resolve().parent.parent
 PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
@@ -43,8 +44,17 @@ assert (REPO / "core" / "sigma_agent" / "loop.py").exists(), "仓库根解析错
 class Repo:
     """在真实仓库上做受控破坏，并保证还原。"""
 
+    #: 未还原的文件（路径 → 写入前的**原始字节**）。
+    #:
+    #: **为什么是类级而不是实例级**：终止信号处理器够不到某个实例，
+    #: 但它必须能还原——否则中断一次就把仓库留成脏的（实测发生过一次）。
+    #:
+    #: **为什么存原始字节而不是归一化后的文本**：还原必须**逐字节精确**。
+    #: 文本化再写回要走 `_write` 的行尾还原逻辑，而那多一个出错的机会；
+    #: 直接写回原字节则与行尾无关。
+    _pending: ClassVar[list[tuple[Path, bytes]]] = []
+
     def __init__(self) -> None:
-        self._pending: list[tuple[Path, str]] = []
         self._crlf: dict[Path, bool] = {}
 
     # ------------------------------------------------------------------
@@ -84,7 +94,7 @@ class Repo:
         text = self._read(path)
 
         if not any(p == path for p, _ in self._pending):
-            self._pending.append((path, text))
+            self._pending.append((path, path.read_bytes()))
 
         if old not in text:
             raise AssertionError(f"{rel_path}: 注入锚点没找到：{old[:70]!r}")
@@ -95,13 +105,26 @@ class Repo:
         path = REPO / rel_path
         text = self._read(path)
         if not any(p == path for p, _ in self._pending):
-            self._pending.append((path, text))
+            self._pending.append((path, path.read_bytes()))
         self._write(path, text + extra)
 
+    @classmethod
+    def restore_all(cls) -> None:
+        """把登记过的文件**逐字节**写回原样。
+
+        写成 classmethod 是为了让终止信号处理器也能调它——
+        它拿不到实例，但**必须能还原**（见 `_pending` 的说明）。
+        """
+        for path, raw in reversed(cls._pending):
+            path.write_bytes(raw)
+        cls._pending.clear()
+
     def restore(self) -> None:
-        for path, original in reversed(self._pending):
-            self._write(path, original)
-        self._pending.clear()
+        self.restore_all()
+
+    @classmethod
+    def has_pending(cls) -> bool:
+        return bool(cls._pending)
 
     def run_pytest(self, target: str) -> tuple[int, str]:
         proc = subprocess.run(
@@ -118,9 +141,86 @@ class Repo:
 
 RESULTS: list[tuple[str, str, bool, str]] = []
 
+#: 注入标记。所有注入都用这个前缀注释（`# 注入：…`），
+#: 于是"有没有残留"可以用**一次扫描**回答。
+INJECTION_MARKER = "# 注入："
+
+
+def find_residue() -> list[str]:
+    """扫描 ``core/`` 下的注入残留，返回 ``["相对路径:行号: 内容", …]``。
+
+    **为什么需要它（这是踩过的坑）**
+
+        注入实验被**硬中断**（SIGTERM / 关窗口 / 杀进程）时，
+        ``finally`` 里的还原不会执行——SIGTERM 的默认处置是立即终止，
+        Python 不会跑 ``finally``。源码于是留在被改坏的状态。
+
+        后果**不是报错**，而是**基线变红**：脚本把每一条门槛都报成
+        "基线不是绿的，实验无效"，看起来像环境噪声，**实际是源码坏了**。
+
+        实测发生过一次：`web_search.py` 的额度判定被顶成 `if False`，
+        两个额度用例因此失败，而第一轮排查方向指向了别处。
+    """
+    hits: list[str] = []
+    for path in sorted((REPO / "core").rglob("*.py")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for number, line in enumerate(text.splitlines(), start=1):
+            if INJECTION_MARKER in line:
+                hits.append(f"{path.relative_to(REPO)}:{number}: {line.strip()}")
+    return hits
+
+
+def assert_no_residue() -> None:
+    """开工前先确认上一次的注入已经还原。**发现残留就直接退出。**
+
+    这是本脚本的"配置跑绿 ≠ 约束生效"的又一次应用：
+    **还原成功**这件事本身也需要被检查，不能假设它发生了。
+    """
+    hits = find_residue()
+    if hits:
+        raise SystemExit(
+            "检测到**上一次注入实验的残留**（还原没有执行）：\n  "
+            + "\n  ".join(hits)
+            + "\n\n先还原再跑：git checkout -- <上面列出的文件>\n"
+            "理由：残渣会让基线变红，而脚本会把它报成"
+            "「基线不是绿的，实验无效」——看起来像环境噪声，实际是源码被改坏了。"
+        )
+
+
+def _install_restore_on_termination() -> None:
+    """被硬中断时也还原。
+
+    ``finally`` 挡不住 SIGTERM，所以额外挂一个处理器。
+    非主线程或平台不支持时静默跳过——那只是少一道保险，
+    还有 :func:`assert_no_residue` 在下次开工时兜住。
+    """
+    import signal
+
+    def _handler(signum: int, _frame: object) -> None:
+        if Repo.has_pending():
+            Repo.restore_all()
+            print(f"\n[警告] 收到信号 {signum}，已还原注入改动。", file=sys.stderr)
+        raise SystemExit(128 + signum)
+
+    for name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):  # 非主线程 / 平台不支持
+            pass
+
+
+_install_restore_on_termination()
+
 
 def experiment(gate: str, what: str, target: str, inject) -> None:
     """跑一次注入实验：基线绿 → 注入 → 必须红 → 还原。"""
+    assert_no_residue()
     repo = Repo()
     try:
         code, out = repo.run_pytest(target)

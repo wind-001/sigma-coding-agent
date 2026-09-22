@@ -31,6 +31,7 @@ import argparse
 import asyncio
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,13 @@ from sigma_agent.agent_messages import (
 from sigma_agent.types import TurnResult
 from sigma_ai.openai import OpenAICompatProvider
 from sigma_ai.registry import builtin_providers
+from sigma_session.sessions import (
+    list_sessions,
+    latest_session_id,
+    new_session_id,
+)
+from sigma_session.store import JsonlStore
+from sigma_session.tree import SessionTree
 
 EXIT_OK = 0
 EXIT_HARNESS_ERROR = 2
@@ -71,6 +79,16 @@ EXIT_INTERRUPTED = 130
 # 换一个入口（直接调 sdk.run_task、评测运行器）就得再抄一份。
 # 现在这里只留"默认用哪个"这一个**产品决策**。
 DEFAULT_PRESET = "deepseek"
+
+#: 会话文件放哪——**"策略"在这一层**。
+#:
+#: P2 详规 Q1 定了落点是 `~/.sigma/sessions/<id>.jsonl`，而 `store.py` 与
+#: `sessions.py` **都刻意不拼 `Path.home()`**：它们只接受一个 `root`。
+#: 判据是「谁决定策略，谁传参」——与批次 8 的"工具层不自己去猜密钥路径"同源。
+#: 放在用户级配置目录（而不是 `<workspace>/.sigma/`）还有一个具体理由：
+#: **往用户的工作区里写目录会污染别人的仓库**（那个项目未必 gitignore 它）。
+DEFAULT_SESSIONS_DIR = USER_CONFIG_DIR / "sessions"
+SESSION_DIR_HINT = "~/.sigma/sessions"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -127,6 +145,31 @@ def build_parser() -> argparse.ArgumentParser:
             "禁用整个联网工具组（web_search 搜索 / web_fetch 精读）。"
             "默认：解析到哪个 key 就启用哪个（各 1000 credits/月，超额自动禁用）"
         ),
+    )
+    # 会话接续（P2-5）。两者互斥：一个说"续最近那个"，一个说"用这个 id"，
+    # 同时给没有意义——而 argparse 的互斥组会把这句话变成启动时的报错，
+    # 比"后者静默覆盖前者"好。
+    session_group = parser.add_mutually_exclusive_group()
+    session_group.add_argument(
+        "--continue",
+        dest="resume",
+        action="store_true",
+        help=(
+            "续接**最近修改**的那个会话（含它的全部历史）。"
+            "一个会话都没有时开一个新的，并明确告诉你。"
+        ),
+    )
+    session_group.add_argument(
+        "--session",
+        default=None,
+        metavar="ID",
+        help="使用指定 id 的会话；不存在就新建。不传则每次生成一个新的。",
+    )
+    parser.add_argument(
+        "--sessions-dir",
+        default=None,
+        metavar="PATH",
+        help=f"会话文件目录，默认 {SESSION_DIR_HINT}。",
     )
     parser.add_argument("--version", action="version", version=f"sigma {__version__}")
     return parser
@@ -282,6 +325,50 @@ def _make_provider(
     )
 
 
+@dataclass(frozen=True)
+class SessionBinding:
+    """``--session`` / ``--continue`` 解析出来的结果。
+
+    ``previous_messages`` 单独带出来是为了**在横幅里说清"续上了多少"**：
+    只说"已续接"而不说续到几条，用户无法判断这是不是他想要的那个会话——
+    而会话 id 是自动生成的，光看 id 认不出来。
+    """
+
+    session_id: str
+    tree: SessionTree
+    resumed: bool
+    previous_messages: int
+
+
+def resolve_session(args: argparse.Namespace, sessions_root: Path) -> SessionBinding:
+    """把三个开关解析成"要用哪个会话、接哪棵树"。
+
+    **三种情况都要有明确行为，一种都不能静默**：
+
+    | 输入 | 行为 |
+    | --- | --- |
+    | ``--continue`` 且目录里有会话 | 续最近那个（按 mtime，同秒按 id，见 `list_sessions`）|
+    | ``--continue`` 但一个都没有 | **开新的，并在横幅里明说"没有可续的"** |
+    | ``--session ID`` | 有就用、没有就建（`resumed` 由文件是否存在决定）|
+    | 都没给 | 新 id，正常持久化 |
+
+    "``--continue`` 找不到时就静默开一个新的"是**必须避免**的：
+    用户以为自己在续上下文，实际拿到一个空白会话，于是模型"忘了"之前说过的
+    一切——而它看起来只是"这次回答得不好"。
+    """
+    if args.resume:
+        existing = latest_session_id(sessions_root)
+        if existing is not None:
+            tree = SessionTree.from_store(JsonlStore(sessions_root, existing))
+            return SessionBinding(existing, tree, True, len(tree))
+        return SessionBinding(new_session_id(), SessionTree(), False, 0)
+
+    session_id = args.session or new_session_id()
+    store = JsonlStore(sessions_root, session_id)
+    tree = SessionTree.from_store(store) if store.exists() else SessionTree(store=store)
+    return SessionBinding(session_id, tree, store.exists(), len(tree))
+
+
 async def _run_once(
     args: argparse.Namespace,
     workspace: Path,
@@ -291,6 +378,8 @@ async def _run_once(
     *,
     registry: ToolRegistry,
     system_prompt: str,
+    tree: SessionTree,
+    session_id: str,
 ) -> TurnResult:
     """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -305,6 +394,8 @@ async def _run_once(
             registry=registry,
             system_prompt=system_prompt,
             observer=TerminalRenderer(),
+            session_id=session_id,
+            tree=tree,
         )
     finally:
         await provider.aclose()
@@ -319,6 +410,8 @@ async def _run_interactive(
     *,
     registry: ToolRegistry,
     system_prompt: str,
+    tree: SessionTree,
+    session_id: str,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -331,6 +424,8 @@ async def _run_interactive(
         registry=registry,
         system_prompt=system_prompt,
         observer=TerminalRenderer(),
+        session_id=session_id,
+        tree=tree,
     )
     try:
         return await run_repl(session)
@@ -412,6 +507,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     system_prompt = build_system_prompt(web_search=web_search_on, web_fetch=web_fetch_on)
 
+    sessions_root = (
+        Path(args.sessions_dir).expanduser()
+        if args.sessions_dir
+        else DEFAULT_SESSIONS_DIR
+    )
+    binding = resolve_session(args, sessions_root)
+
     mode = "一次性" if args.prompt else "交互"
     print(f"sigma {__version__}（{mode}模式）")
     print(f"  工作区  {workspace.resolve()}")
@@ -423,6 +525,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _report_web_tool(registry, "web_search", "搜索", tavily_source, TAVILY_ENV_VAR)
         _report_web_tool(registry, "web_fetch", "精读", firecrawl_source, FIRECRAWL_ENV_VAR)
+    if binding.resumed:
+        print(
+            f"  会话    已续接 {binding.session_id}"
+            f"（载入 {binding.previous_messages} 条历史）"
+        )
+    elif args.resume:
+        # `--continue` 却没东西可续：**必须说出来**。静默开一个新的，
+        # 用户会以为自己在续上下文，而模型其实"忘了"之前的一切——
+        # 那看起来只是"这次答得不好"。
+        print(f"  会话    没有可续的会话（{sessions_root} 是空的），已新建 {binding.session_id}")
+    elif args.session:
+        print(f"  会话    新建 {binding.session_id}")
+    else:
+        print(f"  会话    {binding.session_id}（新）")
     print()
     print("  ⚠ 安全提示：P1 的工具没有任何边界约束（D5 的三层软边界尚未实现）。")
     print("     read 可读任意路径、write/edit 可写任意路径，")
@@ -440,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
                     api_key,
                     registry=registry,
                     system_prompt=system_prompt,
+                    tree=binding.tree,
+                    session_id=binding.session_id,
                 )
             )
             if args.trace:
@@ -455,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
                 api_key,
                 registry=registry,
                 system_prompt=system_prompt,
+                tree=binding.tree,
+                session_id=binding.session_id,
             )
         )
     except KeyboardInterrupt:
