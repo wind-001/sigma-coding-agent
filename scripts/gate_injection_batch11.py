@@ -73,20 +73,26 @@ def _inject_e66(repo: Repo) -> None:
 
     这是"每压一次 prompt cache 全失效"的形态：压缩本来是为了省 token，
     结果让整段常驻前缀每次都重算——**越压越贵**，而且完全静默。
+
+    **锚点于 2026-09-22（P4-批次1）移动过一次**：`_resident_text()` 从
+    "两段拼接（提示词 + 项目说明）"改成了"三段 parts 列表"（多了技能索引），
+    原来的两条 `return` 语句在源码里已经不存在了。
+
+    这正是元纪律②要防的形态，**而且这次它响亮地抛了 `AssertionError`**
+    （`Repo.patch` 找不到锚点直接抛），没有伪装成"实验通过"。
+    所以修复方式只是把锚点换成新写法，注入的**意图一字未改**：
+    仍然是把摘要拼进常驻区。
     """
     repo.patch(
         CONTEXT,
-        '        if not self._project_instructions:\n'
-        '            return self._system_prompt\n'
-        '        return f"{self._system_prompt}\\n\\n{self._project_instructions}"',
-        "        base = (\n"
-        "            self._system_prompt\n"
-        "            if not self._project_instructions\n"
-        '            else f"{self._system_prompt}\\n\\n{self._project_instructions}"\n'
-        "        )\n"
+        "        if self._skill_index:\n"
+        "            parts.append(self._skill_index)\n"
+        '        return "\\n\\n".join(parts)',
+        "        if self._skill_index:\n"
+        "            parts.append(self._skill_index)\n"
         "        if self._summary is not None:  # 注入：把摘要塞进常驻区\n"
-        '            base = f"{base}\\n\\n{self._summary.summary}"\n'
-        "        return base",
+        "            parts.append(self._summary.summary)  # type: ignore[attr-defined]\n"
+        '        return "\\n\\n".join(parts)',
     )
 
 

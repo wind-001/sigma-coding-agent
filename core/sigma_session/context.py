@@ -105,6 +105,7 @@ class SessionContext:
         clock: Callable[[], str],
         session_id: str = "sigma-session",
         project_instructions: str = "",
+        skill_index: str = "",
         tree: SessionTree | None = None,
         resident_budget_tokens: int = DEFAULT_RESIDENT_BUDGET_TOKENS,
     ) -> None:
@@ -115,6 +116,13 @@ class SessionContext:
         # 已经**截断过**的项目说明文本（resources.load_project_instructions 的产物）。
         # 本类不读文件——从哪读是产品壳的策略（见 resources.py 的分层说明）。
         self._project_instructions = project_instructions
+        # 已经**渲染好**的技能索引（sigma_agent.skills.render_index 的产物）。
+        #
+        # 同样是"文本进、本类不读文件"：技能扫描要遍历目录、要处理坏文件，
+        # 那些策略归产品壳。**这里只负责把它算进常驻区预算与指纹**——
+        # 而这两件事必须在本层做，否则技能索引就成了预算管不到的盲区
+        # （门槛 G59 会漏掉它），那和"偷偷往常驻区加东西"没区别。
+        self._skill_index = skill_index
         self._resident_budget = resident_budget_tokens
         # 不传 store 的树就是纯内存的：一个实现覆盖两种用法。
         self._tree = tree if tree is not None else SessionTree()
@@ -129,20 +137,25 @@ class SessionContext:
     # ------------------------------------------------------------------
 
     def _resident_text(self) -> str:
-        """常驻区里的文本部分 = 系统提示词 + 项目说明。
+        """常驻区里的文本部分 = 系统提示词 + 项目说明 + 技能索引。
 
-        两者拼接而不是发成两条 system 消息：**指纹关心的是整块内容**，
-        消息条数只是外壳。合成一块后，"改了 AGENTS.md"与"改了提示词"
-        走的是同一条校验路径，不会有一条被漏掉。
+        **顺序是有意的**：先"你是谁、有什么工具"，再"这个项目的额外约定"，
+        最后才是"有哪些技能可以加载"。前两者是**人写的约束**，
+        最后一项是**自动生成的能力目录**——把它们混在一起会让模型
+        分不清哪句是硬规矩、哪句只是可选项。
 
-        项目说明为空时**逐字节等于** ``self._system_prompt``——
-        这样"没有 AGENTS.md 的机器"与"加这个功能之前"的提示词完全一致
-        （与批次 7 的 ``default_registry()`` 是同一条纪律：
+        三段**空一段就少一段**，不做补位：全部为空时逐字节等于
+        ``self._system_prompt``，于是"没有 AGENTS.md、没有技能的项目"
+        与"加这些功能之前"的常驻区完全一致（与批次 7 的 ``default_registry()``、
+        P2-3 的 ``project_instructions`` 是同一条纪律：
         新功能不该改变既有路径的字节）。
         """
-        if not self._project_instructions:
-            return self._system_prompt
-        return f"{self._system_prompt}\n\n{self._project_instructions}"
+        parts = [self._system_prompt]
+        if self._project_instructions:
+            parts.append(self._project_instructions)
+        if self._skill_index:
+            parts.append(self._skill_index)
+        return "\n\n".join(parts)
 
     def _compute_fingerprint(self) -> str:
         """常驻区的指纹。
@@ -162,6 +175,16 @@ class SessionContext:
     def fingerprint(self) -> str:
         """当前常驻区指纹（测试与审计用）。"""
         return self._compute_fingerprint()
+
+    def resident_text(self) -> str:
+        """常驻区的**文本部分**（系统提示词 + 项目说明 + 技能索引）。
+
+        公开它是因为"什么东西真的进了常驻区"必须可被**从外部断言**——
+        P4-批次1 的 G76 就是靠它验"技能正文没进来"。
+        若不公开，那条测试只能去读私有属性，而私有属性一改名测试就失效
+        （或者更糟：改成静默读到 None 而断言仍然为真）。
+        """
+        return self._resident_text()
 
     def _tools_schema_text(self) -> str:
         """工具 schema 的规范化文本。

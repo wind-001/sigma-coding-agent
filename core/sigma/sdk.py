@@ -43,6 +43,13 @@ from sigma_agent.checkpoint import ShadowCheckpoint
 from sigma_agent.loop import AgentLoop
 from sigma_agent.observe import LoopObserver
 from sigma_agent.registry import ToolRegistry
+from sigma_agent.skills import (
+    SKILLS_DIRNAME,
+    SkillMeta,
+    SkillScan,
+    discover_skills,
+    render_index,
+)
 from sigma_agent.types import TurnResult
 from sigma_ai import stamps
 from sigma_ai.base import NeverCancelled, SamplingParams
@@ -59,6 +66,7 @@ from sigma_tools.bash import BashTool
 from sigma_tools.edit import EditTool
 from sigma_tools.grep import GrepTool
 from sigma_tools.read import ReadTool
+from sigma_tools.skill import LoadSkillTool
 from sigma_tools.web_fetch import WebFetchTool
 from sigma_tools.web_search import WebSearchTool
 from sigma_tools.write import WriteTool
@@ -66,6 +74,8 @@ from sigma_tools._firecrawl_quota import FirecrawlQuota
 from sigma_tools._tavily_quota import TavilyQuota
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sigma_ai.base import BaseProvider
 
 
@@ -104,6 +114,16 @@ WEB_FETCH_TOOL_LINE = (
     "  低质量来源与超过 2 年的旧结果会被代码层过滤，过滤条数会写在结果里。\n"
 )
 
+#: 技能工具的**工具行**。同上面两条纪律：只在启用时进提示词，否则提示词会指向
+#: 一个不存在的工具（模型会去调它，然后拿到"未注册的工具"错误）。
+#:
+#: 它与「可用技能」那段是**两件事**：这里说"有这么个工具"，
+#: 那边说"有哪些技能可以取"。合成一段会让"没有技能时的提示词"
+#: 与"没有这个工具时的提示词"分不清。
+LOAD_SKILL_TOOL_LINE = (
+    "- load_skill：按名加载某个技能的完整说明。**只在确实需要时用**——正文会占上下文。\n"
+)
+
 #: 调研纪律（批次 8）。它是 **Guide**（pi 笔记 13.2：前馈控制），
 #: 与代码里那四道硬闸（Sensor）是一对——只用其中任何一个都会坏掉。
 #:
@@ -120,29 +140,42 @@ RESEARCH_FETCH_RULE = (
 )
 
 
-def build_system_prompt(*, web_search: bool = False, web_fetch: bool = False) -> str:
+def build_system_prompt(
+    *, web_search: bool = False, web_fetch: bool = False, skills: bool = False
+) -> str:
     """按启用的工具集生成系统提示词。
 
-    为什么不是"提示词自己写死六个工具"：那样关掉某一个后提示词仍会告诉模型
+    为什么不是"提示词自己写死所有工具"：那样关掉某一个后提示词仍会告诉模型
     有一个并不存在的工具，模型会去调它，然后拿到 "未注册的工具" 错误。
     提示词与注册表必须同源。
 
     **只在会话开始时算一次**：它在常驻区里，会话内不能变（SessionContext 会算指纹并断言）。
+
+    ``skills`` 控制的是 **load_skill 这一行**，不是技能目录本身——
+    目录是另一段（由 ``sigma_agent.skills.render_index`` 渲染后注入常驻区）。
+    两者分开是因为**没有技能时连工具都不该注册**（省 163 token 的 schema），
+    而那时提示词里也就不该有这一行。
     """
-    lines: list[str] = []
+    tool_lines: list[str] = []
     if web_search:
-        lines.append(WEB_SEARCH_TOOL_LINE)
+        tool_lines.append(WEB_SEARCH_TOOL_LINE)
     if web_fetch:
-        lines.append(WEB_FETCH_TOOL_LINE)
-    if not lines:
+        tool_lines.append(WEB_FETCH_TOOL_LINE)
+    if skills:
+        tool_lines.append(LOAD_SKILL_TOOL_LINE)
+    if not tool_lines:
         return SYSTEM_PROMPT
 
-    rules = list(RESEARCH_RULES)
-    if web_fetch:
-        # 插在"只采信结果条目"与"引用要带时间"之间：先说能不能信，再说要不要深挖
-        rules.insert(2, RESEARCH_FETCH_RULE)
-    numbered = "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, start=1))
-    block = "".join(lines) + "\n调研纪律（联网时按这个顺序做）：\n" + numbered + "\n"
+    block = "".join(tool_lines)
+    # 调研纪律**只在联网时**加：它是给联网工具用的操作规程，
+    # 与技能无关（早期版本的 `if not lines` 判据会把"只有技能"也算成联网）。
+    if web_search or web_fetch:
+        rules = list(RESEARCH_RULES)
+        if web_fetch:
+            # 插在"只采信结果条目"与"引用要带时间"之间：先说能不能信，再说要不要深挖
+            rules.insert(2, RESEARCH_FETCH_RULE)
+        numbered = "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, start=1))
+        block += "\n调研纪律（联网时按这个顺序做）：\n" + numbered + "\n"
 
     marker = "\n工作方式："
     head, sep, tail = SYSTEM_PROMPT.partition(marker)
@@ -184,6 +217,7 @@ def default_registry(
     tavily_api_key: str | None = None,
     web_fetch: bool = False,
     firecrawl_api_key: str | None = None,
+    skills: Sequence[SkillMeta] = (),
 ) -> ToolRegistry:
     """内置工具集：read / write / edit / bash / grep 全部就位。
 
@@ -219,6 +253,11 @@ def default_registry(
                 "（sigma.dotenv.resolve_firecrawl_api_key），本层不自己去猜路径。"
             )
         registry.register(web_fetch_tool(api_key=firecrawl_api_key))
+    # load_skill **只在真有技能时注册**：它的 schema 实测约 163 token，
+    # 一个没有技能目录的项目不该为它付这份常驻成本——
+    # 与两个联网工具"有 key 才注册"是同一条判据。
+    if skills:
+        registry.register(LoadSkillTool(skills=skills))
     return registry
 
 
@@ -237,6 +276,42 @@ def default_registry(
 #: 所以宁小勿大。调用方知道自己的模型时应当显式传 ``compaction_policy``
 #: 覆盖它——这也是 ``CompactionPolicy.context_window_tokens`` 没有默认值的原因。
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32_000
+
+
+def _skills_label(root: Path, workspace: Path) -> str:
+    """技能根目录的**人可读位置**，给索引头部用（模型据此知道文件在哪）。
+
+    能相对工作区表示就相对表示（``extensions/skills/``）——绝对路径在索引里
+    既长又是本机路径，对模型没有价值。相对不了（比如技能目录在工作区之外）
+    才退回绝对路径：**报一个准确的路径，好过报一个好看但错的**。
+    """
+    try:
+        return f"{root.relative_to(workspace).as_posix()}/"
+    except ValueError:
+        return f"{root.as_posix()}/"
+
+
+def scan_skills(
+    workspace_root: Path, *, skills_root: Path | None = None
+) -> tuple[SkillScan, str]:
+    """扫技能 → ``(扫描结果, 索引文本)``。
+
+    产品壳需要**在构造会话之前**拿到这两样（打横幅、拼提示词），所以它得能单独调。
+
+    **本函数会被调两次**（产品壳一次、``InteractiveSession`` 内部一次）。
+    这在纸面上是 TOCTOU：两次之间理论上可能不一致。
+    但代价只是"横幅上少一个刚加进来的技能"，而收益是
+    **不必在 sdk 与 shell 之间传一份状态**——那份状态才是真会腐化的东西
+    （谁负责更新它、什么时候失效，都没有好的答案）。
+    **启动时多读两个目录，换掉一个跨层状态**，这笔账划算。
+    """
+    root = (
+        skills_root
+        if skills_root is not None
+        else workspace_root / "extensions" / SKILLS_DIRNAME
+    )
+    scan = discover_skills(root)
+    return scan, render_index(scan.skills, root_label=_skills_label(root, workspace_root))
 
 
 def _real_clock() -> str:
@@ -280,6 +355,7 @@ class InteractiveSession:
         tree: SessionTree | None = None,
         shadow_git_dir: Path | None = None,
         enable_checkpoint: bool = True,
+        skills_root: Path | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -323,6 +399,25 @@ class InteractiveSession:
             # 就是"已经被改过的状态"，第一次回滚无点可退（门槛 G65）。
             # 失败不阻断——它自己会降级（last_error 里留原因）。
             self._checkpoint.mark(label="baseline")
+        # 技能：**自动从 ``<workspace>/extensions/skills`` 扫**（与 AGENTS.md 同一处置），
+        # 但扫描结果要**同时**喂给两处，少一处就是半截功能：
+        #   - 常驻区：渲染成"可用技能"那段文本（模型据此知道有哪些技能）
+        #   - 注册表：``load_skill`` 工具（模型据此去取正文）
+        # 只喂常驻区 → 模型看得到、调不动；只喂注册表 → 它不知道有哪些名字可调。
+        self._skills_root = (
+            skills_root
+            if skills_root is not None
+            else workspace_root / "extensions" / SKILLS_DIRNAME
+        )
+        self._skill_scan, self._skill_index = scan_skills(
+            workspace_root, skills_root=skills_root
+        )
+        # 有技能就必须有 load_skill。**这里会往调用方传进来的注册表里补一个工具**——
+        # 看似越权，但反过来（有技能却没这个工具）的后果是"模型看得到技能却调不动"，
+        # 在运行期表现成"它就是不用技能"，排查方向完全错。
+        # 判据：**宁可在启动时补一个明确的注册项，也不要留一个只能在运行期看出来的断点。**
+        if self._skill_scan.skills and LoadSkillTool.name not in self._registry.names():
+            self._registry.register(LoadSkillTool(skills=self._skill_scan.skills))
         # ``tree`` 由调用方传入（通常是 ``SessionTree.from_store(...)``）——
         # **会话接续的落点就在这里**：不传就是纯内存的新会话，
         # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。
@@ -332,6 +427,7 @@ class InteractiveSession:
             clock=self._clock,
             session_id=session_id,
             project_instructions=self._instructions.text,
+            skill_index=self._skill_index,
             tree=tree,
         )
         self._loop = AgentLoop(
@@ -394,6 +490,11 @@ class InteractiveSession:
         if outcome is not None:
             self._last_compaction = outcome
         return outcome
+
+    @property
+    def skill_scan(self) -> SkillScan:
+        """本次启动扫到的技能（含问题清单）。CLI 用它打横幅。"""
+        return self._skill_scan
 
     @property
     def session_id(self) -> str:
@@ -468,6 +569,7 @@ async def run_task(
     tree: SessionTree | None = None,
     shadow_git_dir: Path | None = None,
     enable_checkpoint: bool = True,
+    skills_root: Path | None = None,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -498,5 +600,6 @@ async def run_task(
         tree=tree,
         shadow_git_dir=shadow_git_dir,
         enable_checkpoint=enable_checkpoint,
+        skills_root=skills_root,
     )
     return await session.send(task)

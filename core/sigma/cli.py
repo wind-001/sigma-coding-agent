@@ -52,6 +52,7 @@ from sigma.sdk import (
     build_system_prompt,
     default_registry,
     run_task,
+    scan_skills,
 )
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.checkpoint import ShadowCheckpoint
@@ -200,6 +201,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=f"会话文件目录，默认 {SESSION_DIR_HINT}。",
+    )
+    parser.add_argument(
+        "--skills-dir",
+        default=None,
+        metavar="PATH",
+        help="技能目录，默认 <工作区>/extensions/skills。没有技能时不注册 load_skill。",
     )
     parser.add_argument("--version", action="version", version=f"sigma {__version__}")
     return parser
@@ -517,6 +524,7 @@ async def _run_once(
     tree: SessionTree,
     session_id: str,
     shadow_git_dir: Path | None = None,
+    skills_root: Path | None = None,
 ) -> TurnResult:
     """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -534,6 +542,7 @@ async def _run_once(
             session_id=session_id,
             tree=tree,
             shadow_git_dir=shadow_git_dir,
+            skills_root=skills_root,
         )
     finally:
         await provider.aclose()
@@ -551,6 +560,7 @@ async def _run_interactive(
     tree: SessionTree,
     session_id: str,
     shadow_git_dir: Path | None = None,
+    skills_root: Path | None = None,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。"""
     provider = _make_provider(args, base_url, api_key)
@@ -566,6 +576,7 @@ async def _run_interactive(
         session_id=session_id,
         tree=tree,
         shadow_git_dir=shadow_git_dir,
+        skills_root=skills_root,
     )
     try:
         return await run_repl(session)
@@ -669,13 +680,28 @@ def main(argv: list[str] | None = None) -> int:
     firecrawl_key, firecrawl_source = resolve_firecrawl_api_key()
     web_search_on = not args.no_web_search and bool(tavily_key)
     web_fetch_on = not args.no_web_search and bool(firecrawl_key)
+
+    # 技能：**在构造注册表之前扫一次**——因为它同时决定三样东西：
+    # 注册表里有没有 load_skill、提示词里有没有那一行、横幅上打什么。
+    # （InteractiveSession 内部还会再扫一次；两次扫描的取舍写在 sdk.scan_skills 的
+    #  docstring 里：宁可启动时多读两个目录，也不在 sdk 与 shell 之间传一份状态。）
+    skills_root = (
+        Path(args.skills_dir).expanduser() if args.skills_dir else None
+    )
+    skill_scan, _skill_index = scan_skills(workspace, skills_root=skills_root)
+
     registry = default_registry(
         web_search=web_search_on,
         tavily_api_key=tavily_key,
         web_fetch=web_fetch_on,
         firecrawl_api_key=firecrawl_key,
+        skills=skill_scan.skills,
     )
-    system_prompt = build_system_prompt(web_search=web_search_on, web_fetch=web_fetch_on)
+    system_prompt = build_system_prompt(
+        web_search=web_search_on,
+        web_fetch=web_fetch_on,
+        skills=bool(skill_scan.skills),
+    )
 
     binding = resolve_session(args, sessions_root)
 
@@ -696,6 +722,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _report_web_tool(registry, "web_search", "搜索", tavily_source, TAVILY_ENV_VAR)
         _report_web_tool(registry, "web_fetch", "精读", firecrawl_source, FIRECRAWL_ENV_VAR)
+    # 技能：**数量 + 问题都要打**。
+    # 问题清单尤其重要——一个坏技能文件如果只是被静默跳过，
+    # 症状是"我加了技能它怎么不用"，与手工清单漂移是同一种失败。
+    if skill_scan.skills:
+        names = "、".join(s.name for s in skill_scan.skills)
+        print(f"  技能    {len(skill_scan.skills)} 个：{names}")
+    for problem in skill_scan.problems:
+        print(f"          ⚠ {problem}")
     if binding.resumed:
         print(
             f"  会话    已续接 {binding.session_id}"
@@ -738,6 +772,7 @@ def main(argv: list[str] | None = None) -> int:
                     tree=binding.tree,
                     session_id=binding.session_id,
                     shadow_git_dir=shadow_dir,
+                    skills_root=skills_root,
                 )
             )
             if args.trace:
@@ -756,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
                 tree=binding.tree,
                 session_id=binding.session_id,
                 shadow_git_dir=shadow_dir,
+                skills_root=skills_root,
             )
         )
     except KeyboardInterrupt:

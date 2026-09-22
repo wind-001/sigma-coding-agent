@@ -111,7 +111,7 @@ class AgentLoop:
         model: str,
         session_id: str = "sigma-session",
         workspace_root: Any = None,
-        max_rounds: int = 20,
+        max_rounds: int = 100,
         sampling: SamplingParams | None = None,
         signal: CancelToken | None = None,
         clock: Callable[[], str] | None = None,

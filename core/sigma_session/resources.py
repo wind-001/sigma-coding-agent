@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from sigma_ai.tokens import CHARS_PER_TOKEN, estimate_text
+from sigma_ai.tokens import Marker, estimate_text, truncate_to_tokens
 
 AGENTS_MD_FILENAME = "AGENTS.md"
 """约定的项目说明文件名。**只用于给调用方一个默认值**，
@@ -114,42 +114,21 @@ def _short_marker(path: Path, original_tokens: int, kept_tokens: int) -> str:
     return f"\n[...AGENTS.md 已截断，全文见 {path.name} ...]"
 
 
-def _compose_truncated(
-    raw: str, path: Path, budget_chars: int, original_tokens: int
-) -> str:
-    """把 ``raw`` 截到 ``budget_chars`` **字符**之内，并带上一个能塞进去的标记。
+def _markers_for(path: Path) -> tuple[Marker, ...]:
+    """本模块的两档标记（长 → 短）。
 
-    **保证 ``len(结果) <= budget_chars``**，任何输入下都成立——
-    这条不变量由 ``test_budget_is_never_exceeded`` 参数化扫多档上限来钉。
+    **截断算法本身不在这里**——它在 ``sigma_ai.tokens.truncate_to_tokens``。
+    2026-09-22 加技能系统时发现"按 token 截断且让丢弃可见"是两个不相干的
+    调用方都要的东西（这里是 AGENTS.md，那边是技能正文），
+    于是把算法收进公共层，**本模块只提供文案**。
 
-    做法是从"最长标记"往"最短标记"试，第一个能装下的就用：
-
-    1. 用 ``kept_tokens=0`` 生成标记——那时 ``dropped`` 最大、**文案最长**，
-       所以它的长度是这一形态的长度上界（拿它做预留一定够）；
-    2. 正文容量 = 预算 − 标记上界；
-    3. 尽量切在行边界（切在句中会产出"看起来完整、实际断了"的约定）；
-    4. 用真实 ``kept_tokens`` 重新生成标记，**再校验一次总长**。
-
-    两种标记都装不下时返回空串：此时预算已经小到放不下一句说明，
-    由调用方的 ``truncated`` / ``original_tokens`` 字段兜住可见性。
+    保留两档是有原因的（写进 ``_short_marker`` 的 docstring）：
+    预算很小时详细标记自己就能撑破上限，短标记是那条退路。
     """
-    for maker in (_long_marker, _short_marker):
-        probe = maker(path, original_tokens, 0)  # kept=0 → dropped 最大 → 最长形态
-        cap = budget_chars - len(probe)
-        if cap < 0:
-            continue
-
-        body = raw[:cap]
-        newline = body.rfind("\n")
-        if newline > cap // 2:
-            body = body[: newline + 1]
-
-        marker = maker(path, original_tokens, estimate_text(body))
-        text = body + marker
-        if len(text) <= budget_chars:
-            return text
-
-    return ""
+    return (
+        lambda original, kept: _long_marker(path, original, kept),
+        lambda original, kept: _short_marker(path, original, kept),
+    )
 
 
 def load_project_instructions(
@@ -191,14 +170,12 @@ def load_project_instructions(
             original_tokens=original_tokens,
         )
 
-    # 预算换算成字符：估算器是 chars / CHARS_PER_TOKEN。
-    text = _compose_truncated(
-        raw, path, int(max_tokens * CHARS_PER_TOKEN), original_tokens
-    )
+    # 截断算法走公共层（sigma_ai.tokens）；本模块只决定"用哪两档标记"。
+    result = truncate_to_tokens(raw, max_tokens, markers=_markers_for(path))
     return ProjectInstructions(
-        text=text,
+        text=result.text,
         source=path,
-        truncated=True,
-        tokens=estimate_text(text),
+        truncated=result.truncated,
+        tokens=result.tokens,
         original_tokens=original_tokens,
     )
