@@ -1,0 +1,30 @@
+{
+  "id": "syn-009",
+  "kind": "synthetic",
+  "title": "保序去重：casefold 合并重复但要保留首现原样",
+  "description": "工作区里的 dedupe 模块的 unique(items, *, casefold=False) 做保序去重：默认区分大小写；casefold=True 时按「不区分大小写」判定重复，但**保留首次出现的那份原样**——调用方展示的是用户原文，不是归一化后的样子。比较用 str.casefold（比 lower 更彻底）。\n\n它现在有 bug：casefold=True 时返回的是归一化后的小写形式，把用户原文弄丢了——`[\"Ab\", \"aB\", \"AB\"]` 应该得到 `[\"Ab\"]`（合并成一份、保留首个的原样），实际得到 `[\"ab\"]`。\n\n请修好它，让 tests/ 下的测试全部通过。默认分支（casefold=False）的行为是正确的，不要动它。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import dedupe` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "4 failed, 5 passed in 0.13s",
+    "failed_tests": [
+      "tests/test_dedupe.py::test_casefold_merges_and_keeps_first_form",
+      "tests/test_dedupe.py::test_casefold_single_pair_keeps_first",
+      "tests/test_dedupe.py::test_casefold_handles_sharp_s",
+      "tests/test_dedupe.py::test_casefold_preserves_order_of_first_appearance"
+    ],
+    "recorded_at": "2026-09-23T12:19:25.449",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

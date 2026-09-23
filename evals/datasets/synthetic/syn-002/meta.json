@@ -1,0 +1,29 @@
+{
+  "id": "syn-002",
+  "kind": "synthetic",
+  "title": "金额分摊不丢账（最大余数法）",
+  "description": "工作区里的 split_amount 模块负责把一笔总额（整数分）按权重分摊成若干份，账单分摊和配额下发都在用。\n\n它现在有 bug：分摊完各份加起来常常比总额少——把 100 分摊给三个等权重的人，得到 [33, 33, 33]，一共 99，丢了 1 分；5 份等权重分 5 甚至只分出去 4。\n\n请修好它，让 tests/ 下的测试全部通过。取整规则用**最大余数法**（与议席分配同规则）：按理想份额的小数部分从大到小补 1 分，余数相同时靠前的权重先得。非法输入（空权重表、负总额、负权重、权重和为 0）抛 ValueError 的行为保持不变。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import split_amount` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 6 passed in 0.13s",
+    "failed_tests": [
+      "tests/test_split_amount.py::test_sum_is_preserved",
+      "tests/test_split_amount.py::test_sum_is_preserved_with_ones",
+      "tests/test_split_amount.py::test_tie_goes_to_the_earlier_weight"
+    ],
+    "recorded_at": "2026-09-23T12:19:04.419",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

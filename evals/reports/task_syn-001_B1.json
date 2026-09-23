@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T12:38:45",
+  "task": "syn-001",
+  "title": "按显示宽度折行（东亚宽度）",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-001",
+    "eval_profile": "B1",
+    "status": "completed",
+    "rounds": 11,
+    "tool_calls": 11,
+    "tool_failures": 0,
+    "prompt_tokens": 40487,
+    "completion_tokens": 1688,
+    "wall_clock_s": 29.878,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-001\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": ".........                                                                [100%]\n9 passed in 0.04s"
+    }
+  }
+}

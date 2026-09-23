@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T12:37:51",
+  "task": "syn-005",
+  "title": "LRU 缓存：淘汰的是「最久未使用」而不是「最先写入」",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-005",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 613,
+    "completion_tokens": 347,
+    "wall_clock_s": 1.277,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-005\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": "........                                                                 [100%]\n8 passed in 0.04s"
+    }
+  }
+}

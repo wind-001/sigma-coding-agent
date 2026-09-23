@@ -1,0 +1,33 @@
+{
+  "id": "syn-004",
+  "kind": "synthetic",
+  "title": "二分查找的两处边界（index_of / insertion_point）",
+  "description": "工作区里的 binary_search 模块提供有序列表上的两个函数：index_of（找不到返回 -1）与 insertion_point（语义与标准库 bisect.bisect_left 一致：返回第一个不小于 target 的下标；target 已存在时返回它第一个出现的位置）。\n\n它现在有 bug：查找经常漏掉列表两端的元素（第一个、最后一个、甚至单元素列表都返回 -1）；insertion_point 返回的位置整体偏大 1——该插在下标 0 的结果说插在下标 1。\n\n请修好它，让 tests/ 下的测试全部通过。空列表的行为保持：index_of 得 -1，insertion_point 得 0。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import binary_search` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "7 failed, 4 passed in 0.14s",
+    "failed_tests": [
+      "tests/test_binary_search.py::test_found_first_element",
+      "tests/test_binary_search.py::test_found_last_element",
+      "tests/test_binary_search.py::test_single_element_list",
+      "tests/test_binary_search.py::test_insertion_point_before_first",
+      "tests/test_binary_search.py::test_insertion_point_in_middle",
+      "tests/test_binary_search.py::test_insertion_point_at_end",
+      "tests/test_binary_search.py::test_insertion_point_hits_first_duplicate"
+    ],
+    "recorded_at": "2026-09-23T12:19:10.419",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

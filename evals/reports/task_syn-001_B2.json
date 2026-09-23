@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-23T11:28:28",
+  "generated_at": "2026-09-23T12:41:42",
   "task": "syn-001",
   "title": "按显示宽度折行（东亚宽度）",
   "kind": "synthetic",
@@ -7,12 +7,12 @@
     "task_id": "syn-001",
     "eval_profile": "B2",
     "status": "completed",
-    "rounds": 11,
-    "tool_calls": 11,
+    "rounds": 9,
+    "tool_calls": 9,
     "tool_failures": 0,
-    "prompt_tokens": 40983,
-    "completion_tokens": 1669,
-    "wall_clock_s": 32.514,
+    "prompt_tokens": 32422,
+    "completion_tokens": 1431,
+    "wall_clock_s": 18.013,
     "error": null
   },
   "verdict": {

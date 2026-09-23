@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T12:43:35",
+  "task": "syn-006",
+  "title": "闰年漏了整百年规则（1900 不是闰年）",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-006",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 8,
+    "tool_calls": 8,
+    "tool_failures": 1,
+    "prompt_tokens": 24623,
+    "completion_tokens": 767,
+    "wall_clock_s": 12.752,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-006\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": ".........                                                                [100%]\n9 passed in 0.03s"
+    }
+  }
+}

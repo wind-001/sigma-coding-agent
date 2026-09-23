@@ -1,6 +1,6 @@
-# 任务评测：syn-001 —— 按显示宽度折行（东亚宽度）
+# 任务评测：syn-002 —— 金额分摊不丢账（最大余数法）（档位 B2）
 
-> 生成时间 2026-09-23T11:28:28 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
+> 生成时间 2026-09-23T12:42:01 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
 
 ## 判定
 
@@ -11,19 +11,19 @@
 | 指标 | 值 |
 | --- | --- |
 | status | `completed` |
-| 轮数 | 11 |
-| 工具调用 | 11 |
-| 工具失败 | 0 |
-| prompt token | 40983 |
-| completion token | 1669 |
-| wall-clock | 32.514s |
+| 轮数 | 7 |
+| 工具调用 | 8 |
+| 工具失败 | 1 |
+| prompt token | 22737 |
+| completion token | 1113 |
+| wall-clock | 16.122s |
 
 ## 证据（为什么这么判）
 
 ```json
 {
   "command": "python -m pytest tests/ -q",
-  "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-001\\judge_tests",
+  "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-002\\judge_tests",
   "tests_restored_to": "tests",
   "tests_were_modified": false,
   "exit_code": 0,

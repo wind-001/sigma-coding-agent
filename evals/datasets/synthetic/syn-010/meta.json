@@ -1,0 +1,30 @@
+{
+  "id": "syn-010",
+  "kind": "synthetic",
+  "title": "换行归一化：CRLF 不能变成两个 LF",
+  "description": "工作区里的 newline_lite 模块把任意换行风格统一成 LF，三路日志（Windows CRLF / 老Mac CR / Unix LF）入库前都过它。\n\n它现在有 bug：只把 \\r 换成 \\n，于是 CRLF 被换成了**两个** LF——`a\\r\\nb` 本应是 `a\\nb`，实际成了 `a\\n\\nb`，按行切分就会出「幽灵空行」。\n\n请修好它，让 tests/ 下的测试全部通过。单独的 CR（老 Mac 风格）转 LF 的行为是正确的，保持住。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import newline_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "4 failed, 4 passed in 0.12s",
+    "failed_tests": [
+      "tests/test_newline_lite.py::test_crlf_becomes_lf",
+      "tests/test_newline_lite.py::test_mixed_styles",
+      "tests/test_newline_lite.py::test_trailing_crlf",
+      "tests/test_newline_lite.py::test_consecutive_crlf"
+    ],
+    "recorded_at": "2026-09-23T12:19:28.414",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

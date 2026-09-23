@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T12:43:51",
+  "task": "syn-007",
+  "title": "模板渲染：占位符互相独立 + 缺失 key 要炸出来",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-007",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 7,
+    "tool_calls": 7,
+    "tool_failures": 1,
+    "prompt_tokens": 21762,
+    "completion_tokens": 1019,
+    "wall_clock_s": 13.027,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-007\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": "..........                                                               [100%]\n10 passed in 0.04s"
+    }
+  }
+}

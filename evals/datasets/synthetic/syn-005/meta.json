@@ -1,0 +1,29 @@
+{
+  "id": "syn-005",
+  "kind": "synthetic",
+  "title": "LRU 缓存：淘汰的是「最久未使用」而不是「最先写入」",
+  "description": "工作区里的 lru_cache 模块是一个固定容量的 LRUCache：get 与 put 都算一次「使用」，容量满时淘汰**最久未被使用**的键。\n\n它现在有 bug：get 命中和 put 覆盖都**没有刷新使用顺序**，于是淘汰的常常不是「最久未使用」而是「最先写入」——put a、put b、get a、put c 之后，活下来的应该是 a（刚被读过），实际留下的却是 b。\n\n请修好它，让 tests/ 下的测试全部通过。keys_by_recency() 返回「最旧 → 最新」的键序，修完后它要如实反映使用顺序。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import lru_cache` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 5 passed in 0.17s",
+    "failed_tests": [
+      "tests/test_lru_cache.py::test_get_refreshes_recency",
+      "tests/test_lru_cache.py::test_put_refreshes_recency",
+      "tests/test_lru_cache.py::test_recency_order_is_visible"
+    ],
+    "recorded_at": "2026-09-23T12:19:13.458",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "syn-007",
+  "kind": "synthetic",
+  "title": "模板渲染：占位符互相独立 + 缺失 key 要炸出来",
+  "description": "工作区里的 template_lite 模块的 render(template, **variables) 把 {{key}} 替换成对应值，告警文案生成在用它。\n\n它现在有两个 bug：\n1. 正则用了贪婪匹配，相邻的多个占位符被当成一大段——`{{a}} and {{b}}` 本应渲染成 `1 and 2`，实际渲染成了空串；占位符必须**互相独立**。\n2. 缺失的 key 不报错、被悄悄替换成空串。这是设计立场问题：缺失 key 是调用方的 bug，**必须在渲染那一刻抛 KeyError**（消息里带上 key 名），不能渲染出一份悄悄缺了字段的文案。\n\n请修好它，让 tests/ 下的测试全部通过。key 的字符集是字母数字下划线（Python 标识符）。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import template_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "6 failed, 4 passed in 0.14s",
+    "failed_tests": [
+      "tests/test_template_lite.py::test_two_placeholders",
+      "tests/test_template_lite.py::test_repeated_key",
+      "tests/test_template_lite.py::test_adjacent_placeholders",
+      "tests/test_template_lite.py::test_missing_key_raises",
+      "tests/test_template_lite.py::test_missing_key_message_names_the_key",
+      "tests/test_template_lite.py::test_partial_missing_also_raises"
+    ],
+    "recorded_at": "2026-09-23T12:19:19.409",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

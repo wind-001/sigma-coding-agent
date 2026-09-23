@@ -1,0 +1,28 @@
+{
+  "id": "syn-006",
+  "kind": "synthetic",
+  "title": "闰年漏了整百年规则（1900 不是闰年）",
+  "description": "工作区里的 leap 模块负责公历闰年判断与月份天数，日期统计在用它。\n\n它现在有 bug：只判断了「能被 4 整除」，于是整百年被误判——1900、2100 这类**能被 100 整除但不能被 400 整除**的年份不是闰年，二月在 1900 年也多算了一天。完整规则：能被 4 整除的是闰年；但能被 100 整除的不闰；能被 400 整除的又是闰年（2000 是闰年）。\n\n请修好它，让 tests/ 下的测试全部通过。days_in_month 对非法月份抛 ValueError 的行为保持不变。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import leap` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "2 failed, 7 passed in 0.12s",
+    "failed_tests": [
+      "tests/test_leap.py::test_century_year_is_not_leap",
+      "tests/test_leap.py::test_february_in_century_year"
+    ],
+    "recorded_at": "2026-09-23T12:19:16.395",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

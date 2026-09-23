@@ -352,6 +352,7 @@ class InteractiveSession:
         session_id: str = "sigma-session",
         project_instructions: str | None = None,
         compaction_policy: CompactionPolicy | None = None,
+        enable_compaction: bool = True,
         tree: SessionTree | None = None,
         shadow_git_dir: Path | None = None,
         enable_checkpoint: bool = True,
@@ -366,11 +367,19 @@ class InteractiveSession:
         # **默认开**而不是默认关：压缩是长会话能不能跑下去的前提，
         # 一个"默认关、要用得记得开"的能力等于没有——而它的症状是
         # 长会话跑到一半突然失败（R1）。
-        self._compaction_policy = (
-            compaction_policy
-            if compaction_policy is not None
-            else CompactionPolicy(context_window_tokens=DEFAULT_CONTEXT_WINDOW_TOKENS)
-        )
+        #
+        # ``enable_compaction=False`` 是**显式关断**（EvalProfile 的 B1 档），
+        # 它的优先级必须压过上面的"默认开"：``None`` 在下面会被替换成
+        # 默认策略，所以"关压缩"不能靠传 ``None`` 表达——那是 §11.5 第 1 条
+        # 踩出来的坑。三条分支的次序就是这个优先级，不要重排。
+        if not enable_compaction:
+            self._compaction_policy = None
+        elif compaction_policy is not None:
+            self._compaction_policy = compaction_policy
+        else:
+            self._compaction_policy = CompactionPolicy(
+                context_window_tokens=DEFAULT_CONTEXT_WINDOW_TOKENS
+            )
         self._last_compaction: CompactionOutcome | None = None
         # 项目说明（``AGENTS.md``）：
         #   None → **自动**从 ``workspace_root/AGENTS.md`` 读（默认行为）
@@ -472,7 +481,10 @@ class InteractiveSession:
         （provider 抖了一下 / 摘要为空）不该让用户丢掉整个会话——
         那就本末倒置了。所以异常在这里被降级成"这一轮不压"。
         """
-        if self._compaction_policy is None:  # pragma: no cover - 目前恒为真
+        if self._compaction_policy is None:
+            # 显式关断（B1 档）走这里。以前标着 pragma: no cover——
+            # 当时 None 不可达；enable_compaction 落地后它是真实分支，
+            # 有测试钉着（test_interactive_session_explicit_compaction_off）。
             return None
         if not self._context.should_compact(self._compaction_policy):
             return None
@@ -566,6 +578,7 @@ async def run_task(
     session_id: str = "sigma-session",
     project_instructions: str | None = None,
     compaction_policy: CompactionPolicy | None = None,
+    enable_compaction: bool = True,
     tree: SessionTree | None = None,
     shadow_git_dir: Path | None = None,
     enable_checkpoint: bool = True,
@@ -577,6 +590,10 @@ async def run_task(
     ``--workspace``**），以及 L1 写路径约束的边界（写操作不得越出它）。
     它**不是沙箱**——bash 仍能以当前用户权限执行任意命令，兜底是 L2 的可回滚，
     不是拦截（见 D5 / architecture 6.3）。
+
+    ``enable_compaction=False`` 是评测用的**显式消融开关**（B1 档，见
+    :mod:`sigma.eval_profile`）：关掉自动压缩。它与 ``enable_checkpoint``
+    同构——评测要能声明"无 harness 干预"档，否则 B1 对照无从成立。
 
     时间戳用真实时钟。若要让执行**确定**（回放测试要求两次逐字节一致），
     调用方应自行构造 ``AgentLoop`` 并注入固定 ``clock`` ——
@@ -597,6 +614,7 @@ async def run_task(
         session_id=session_id,
         project_instructions=project_instructions,
         compaction_policy=compaction_policy,
+        enable_compaction=enable_compaction,
         tree=tree,
         shadow_git_dir=shadow_git_dir,
         enable_checkpoint=enable_checkpoint,

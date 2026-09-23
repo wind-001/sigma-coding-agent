@@ -1,0 +1,29 @@
+{
+  "id": "syn-003",
+  "kind": "synthetic",
+  "title": "单行 CSV 解析（RFC 4180 引号规则）",
+  "description": "工作区里的 csv_lite 模块负责把一行 CSV 文本拆成字段列表，日志抽样与配置行解析在用。\n\n它现在有 bug：只会按逗号朴素切分，带引号的字段全错——`a,\"b,c\",d` 被拆成 4 段而不是 3 段（第二个字段里的逗号被当成了分隔符）；字段里转义的双引号（写成两个连续双引号）也没有处理。\n\n请修好它，让 tests/ 下的测试全部通过。引号规则以 **RFC 4180** 为准：\n- 用一对双引号包裹的字段里可以有逗号；\n- 字段内的双引号转义成两个连续双引号；\n- 引号只在被包裹时才有特殊含义，裸露的引号是普通字符；\n- 不做空白裁剪（`a, b` 的第二个字段就是 ` b`）。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import csv_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 5 passed in 0.13s",
+    "failed_tests": [
+      "tests/test_csv_lite.py::test_quoted_field_may_contain_comma",
+      "tests/test_csv_lite.py::test_doubled_quote_is_an_escaped_quote",
+      "tests/test_csv_lite.py::test_fully_quoted_single_field"
+    ],
+    "recorded_at": "2026-09-23T12:19:07.406",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

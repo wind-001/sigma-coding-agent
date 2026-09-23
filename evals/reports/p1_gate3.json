@@ -1,0 +1,399 @@
+{
+  "generated_at": "2026-09-23T12:46:27",
+  "n_tasks": 10,
+  "n_pairs": 10,
+  "regressions_B1_pass_B2_fail": [],
+  "gains_B1_fail_B2_pass": [],
+  "rows": [
+    {
+      "task_id": "syn-001",
+      "title": "按显示宽度折行（东亚宽度）",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 552,
+          "completion_tokens": 408,
+          "wall_clock_s": 2.05
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 11,
+          "tool_calls": 11,
+          "tool_failures": 0,
+          "prompt_tokens": 40487,
+          "completion_tokens": 1688,
+          "wall_clock_s": 29.878
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 9,
+          "tool_calls": 9,
+          "tool_failures": 0,
+          "prompt_tokens": 32422,
+          "completion_tokens": 1431,
+          "wall_clock_s": 18.013
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-002",
+      "title": "金额分摊不丢账（最大余数法）",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 599,
+          "completion_tokens": 413,
+          "wall_clock_s": 2.015
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 22787,
+          "completion_tokens": 1166,
+          "wall_clock_s": 16.112
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 22737,
+          "completion_tokens": 1113,
+          "wall_clock_s": 16.122
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-003",
+      "title": "单行 CSV 解析（RFC 4180 引号规则）",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 521,
+          "completion_tokens": 494,
+          "wall_clock_s": 2.021
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 28083,
+          "completion_tokens": 1540,
+          "wall_clock_s": 16.117
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 14,
+          "tool_calls": 14,
+          "tool_failures": 1,
+          "prompt_tokens": 56973,
+          "completion_tokens": 1914,
+          "wall_clock_s": 34.83
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-004",
+      "title": "二分查找的两处边界（index_of / insertion_point）",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 578,
+          "completion_tokens": 276,
+          "wall_clock_s": 1.317
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 21698,
+          "completion_tokens": 1017,
+          "wall_clock_s": 13.47
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 9,
+          "tool_failures": 1,
+          "prompt_tokens": 27002,
+          "completion_tokens": 1574,
+          "wall_clock_s": 17.34
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-005",
+      "title": "LRU 缓存：淘汰的是「最久未使用」而不是「最先写入」",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 613,
+          "completion_tokens": 347,
+          "wall_clock_s": 1.277
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 7,
+          "tool_failures": 1,
+          "prompt_tokens": 23056,
+          "completion_tokens": 1397,
+          "wall_clock_s": 14.059
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 28936,
+          "completion_tokens": 1479,
+          "wall_clock_s": 16.599
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-006",
+      "title": "闰年漏了整百年规则（1900 不是闰年）",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 513,
+          "completion_tokens": 245,
+          "wall_clock_s": 1.224
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 25414,
+          "completion_tokens": 782,
+          "wall_clock_s": 14.015
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 24623,
+          "completion_tokens": 767,
+          "wall_clock_s": 12.752
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-007",
+      "title": "模板渲染：占位符互相独立 + 缺失 key 要炸出来",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 563,
+          "completion_tokens": 236,
+          "wall_clock_s": 1.22
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 7,
+          "tool_failures": 1,
+          "prompt_tokens": 21908,
+          "completion_tokens": 1067,
+          "wall_clock_s": 13.456
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 7,
+          "tool_failures": 1,
+          "prompt_tokens": 21762,
+          "completion_tokens": 1019,
+          "wall_clock_s": 13.027
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-008",
+      "title": "通配符匹配：* 是「零个或多个」不是「一个或多个」",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 483,
+          "completion_tokens": 191,
+          "wall_clock_s": 1.086
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 25166,
+          "completion_tokens": 945,
+          "wall_clock_s": 14.229
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 24393,
+          "completion_tokens": 1013,
+          "wall_clock_s": 15.72
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-009",
+      "title": "保序去重：casefold 合并重复但要保留首现原样",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 479,
+          "completion_tokens": 152,
+          "wall_clock_s": 1.066
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 7,
+          "tool_failures": 1,
+          "prompt_tokens": 20509,
+          "completion_tokens": 945,
+          "wall_clock_s": 13.375
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 7,
+          "tool_failures": 1,
+          "prompt_tokens": 20188,
+          "completion_tokens": 792,
+          "wall_clock_s": 13.677
+        }
+      },
+      "pair": "both_pass"
+    },
+    {
+      "task_id": "syn-010",
+      "title": "换行归一化：CRLF 不能变成两个 LF",
+      "verdicts": {
+        "B0": "✓",
+        "B1": "✓",
+        "B2": "✓"
+      },
+      "metrics": {
+        "B0": {
+          "status": "completed",
+          "rounds": 1,
+          "tool_calls": 0,
+          "tool_failures": 0,
+          "prompt_tokens": 372,
+          "completion_tokens": 89,
+          "wall_clock_s": 1.066
+        },
+        "B1": {
+          "status": "completed",
+          "rounds": 8,
+          "tool_calls": 8,
+          "tool_failures": 1,
+          "prompt_tokens": 23079,
+          "completion_tokens": 1174,
+          "wall_clock_s": 15.021
+        },
+        "B2": {
+          "status": "completed",
+          "rounds": 7,
+          "tool_calls": 7,
+          "tool_failures": 1,
+          "prompt_tokens": 19482,
+          "completion_tokens": 742,
+          "wall_clock_s": 12.99
+        }
+      },
+      "pair": "both_pass"
+    }
+  ]
+}

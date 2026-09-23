@@ -1,0 +1,29 @@
+{
+  "id": "syn-008",
+  "kind": "synthetic",
+  "title": "通配符匹配：* 是「零个或多个」不是「一个或多个」",
+  "description": "工作区里的 glob_lite 模块做极简文件名匹配：`?` 恰好一个字符，`*` 任意个（**含零个**）字符，匹配区分大小写，无通配符时退化为全等。白名单规则在用它。\n\n它现在有 bug：`*` 被实现成了「至少吃掉一个字符」——`a*` 匹配不上 `a`，`a*b` 匹配不上 `ab`，连单独的 `*` 都匹配不上空串。正确的语义是**零个或多个**。\n\n请修好它，让 tests/ 下的测试全部通过。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import glob_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 10 passed in 0.12s",
+    "failed_tests": [
+      "tests/test_glob_lite.py::test_star_matches_nothing_at_end",
+      "tests/test_glob_lite.py::test_star_matches_nothing_in_middle",
+      "tests/test_glob_lite.py::test_star_alone_matches_empty"
+    ],
+    "recorded_at": "2026-09-23T12:19:22.408",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T12:38:12",
+  "task": "syn-010",
+  "title": "换行归一化：CRLF 不能变成两个 LF",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-010",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 372,
+    "completion_tokens": 89,
+    "wall_clock_s": 1.066,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-010\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": "........                                                                 [100%]\n8 passed in 0.03s"
+    }
+  }
+}
