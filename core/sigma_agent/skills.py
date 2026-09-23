@@ -255,7 +255,27 @@ def load_body(
             f"完整内容请用 read 工具读取 {skill.source}。以上说明可能不完整。]"
         )
 
-    return truncate_to_tokens(body, max_tokens, markers=(marker,))
+    def short_marker(original: int, kept: int) -> str:
+        """短标记：预算装不下详细标记时的退路。
+
+        **它存在的理由与 ``resources.py`` 的 ``_short_marker`` 完全相同，
+        而且是同一个坑第二次踩到**（2026-09-22，由全量跑暴露）：
+        详细标记里带**绝对路径**，而路径长度**随环境变化**——
+        临时目录在 `AppData\\Local\\Temp` 下时约 90 字符，
+        指进项目里就有 130+ 字符。
+
+        于是同一个 `max_tokens=200`，一种环境下"切得下"，另一种环境下
+        **标记自己就把预算吃光** → 候选标记全被否掉 → 返回空文本。
+        症状是"调用方拿到一段说明被截断的技能，但连'被截断'三个字都没看到"。
+
+        **教训**：把"随环境变化的量"放进有预算上限的文案里，
+        就等于让**同一段代码在不同机器上行为不同**。
+        退路（短标记）是必要的，因为它保证"丢弃可见"这条底线与环境无关。
+        """
+        del original, kept  # 短标记不报数字，只保证可见
+        return f"\n[...技能 {skill.name} 的正文已截断，请用 read 读 {skill.location} ...]"
+
+    return truncate_to_tokens(body, max_tokens, markers=(marker, short_marker))
 
 
 def body_tokens(skill: SkillMeta) -> int:

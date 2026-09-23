@@ -98,18 +98,53 @@ class LoadSkillTool(BaseTool):
 
         result = load_body(skill, max_tokens=self._max_tokens)
         if not result.text:
-            # 读不出来（权限 / 编码 / 文件被删）。**转成模型可见的错误**，
-            # 不抛：一个技能文件坏了不该让整轮任务崩，模型还能换个做法。
+            # 空文本有**三种**原因，而它们要指向完全不同的排查方向。
+            # 一开始这里只有一句话："正文读不出来（权限 / 编码 / 文件被删）"——
+            # 于是"预算小到连截断说明都放不下"也被报成了这个，
+            # **人和模型都会去查文件系统，而真正要改的是预算**。
+            # 症状不指向根因，正是本项目最不能接受的那种失败。
+            if result.truncated:
+                # truncated=True 且正文为空 ⇒ 丢过东西，但没地方写说明。
+                return ToolResult(
+                    content=[
+                        TextBlock(
+                            text=(
+                                f"技能 {skill.name} 的正文约 {result.original_tokens} token，"
+                                f"当前预算（{self._max_tokens} token）里连"
+                                "「已截断」这句说明都放不下，因此没有返回正文。"
+                                f"请直接用 read 工具读取 {skill.location}，"
+                                "或调大该工具的正文预算。"
+                            )
+                        )
+                    ],
+                    details={
+                        "name": skill.name,
+                        "location": skill.location,
+                        "original_tokens": result.original_tokens,
+                        "max_tokens": self._max_tokens,
+                        "reason": "预算装不下截断说明",
+                    },
+                    is_error=True,
+                )
+            # truncated=False 且正文为空 ⇒ 真的没内容：文件读不出来
+            # （权限 / 编码 / 被删），或文件里只有 frontmatter。
+            # 这两种在 ``TruncatedText`` 上不可区分，**处置也一样**，
+            # 所以合成一句——但文案不咬定其中某一个原因。
             return ToolResult(
                 content=[
                     TextBlock(
                         text=(
-                            f"技能 {skill.name} 的正文读不出来（文件：{skill.location}）。"
-                            "请改用别的方式完成任务，或直接读该文件。"
+                            f"技能 {skill.name} 没有正文（文件：{skill.location}）——"
+                            "可能读不出来，也可能文件里只有 frontmatter。"
+                            "请改用别的方式完成任务，或直接读该文件确认。"
                         )
                     )
                 ],
-                details={"name": skill.name, "location": skill.location},
+                details={
+                    "name": skill.name,
+                    "location": skill.location,
+                    "reason": "正文为空",
+                },
                 is_error=True,
             )
 

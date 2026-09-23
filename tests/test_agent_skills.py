@@ -493,3 +493,135 @@ def test_skill_index_counts_toward_the_budget() -> None:
             skill_index="x" * 20_000,
             resident_budget_tokens=100,
         ).build_messages()
+
+
+# ---------------------------------------------------------------------------
+# G79：**截断说明自己不能被预算吃掉**（2026-09-22 真实踩到）
+# ---------------------------------------------------------------------------
+
+#: 档位刻意从"宽松"扫到"紧到详细标记必装不下"。
+#:
+#: 重点不是分界点落在哪，而是**每一档的结论都与环境无关**——
+#: 跑它的机器上临时目录有多长，不该改变任何一条断言的真假。
+#:
+#: 下限取 25 是**测出来的，不是猜的**（2026-09-22 实测，``CHARS_PER_TOKEN = 3.0``）：
+#:
+#: ```text
+#: 详细标记  145 字符 = 固定文案 91 + source 绝对路径 54   ← 路径那截随环境变
+#: 短标记     44 字符 = 固定文案 + location 相对路径       ← 与环境无关
+#: ```
+#:
+#: 要"详细装不下、短的一定装得下"，需 ``len(短) < 3 × max_tokens < len(详细)``。
+#: 代入 25：``44 < 75 < 145`` ✓ —— **两个不等式都留了余量**（31 与 70 字符），
+#: 所以这一档在任何机器上都成立 ⇒ G79 的注入（去掉短标记）必红。
+#: 别把下限压到 15：45 字符的预算只比短标记多 1 个字符，那是在碰运气。
+_BODY_BUDGETS = [400, 300, 200, 150, 100, 60, 40, 30, 25]
+
+
+@pytest.mark.parametrize("max_tokens", _BODY_BUDGETS)
+def test_discard_stays_visible_at_every_body_budget(
+    tmp_path: Path, max_tokens: int
+) -> None:
+    """**G79 本体**：任何预算档下，「被截断」都必须是可见的。
+
+    这条要防的是一个**真实踩到的形态**（2026-09-22，由全量跑暴露,单文件跑是绿的）：
+
+        详细标记里带**绝对路径**，而路径长度**随环境变化**——
+        临时目录在 ``AppData\\Local\\Temp`` 下约 90 字符，指进项目里就有 130+。
+        于是同一个 ``max_tokens=200``：一种环境下切得下；
+        另一种环境下**标记自己就把预算吃光** → 候选标记全被否 → 返回**空文本**。
+        调用方拿到一段既没正文、也没说明的结果，**「丢弃」就这样静默了**。
+
+    ``resources.py`` 修过一模一样的坑（AGENTS.md 的标记撑破预算），
+    当时的处置是加短标记退路——技能这边漏了。**同一个坑第二次踩到**，
+    所以这次除了修，还要把「短标记真的在接手」钉住。
+
+    第二条断言（``result.text`` 非空）才是真正有区分力的那一条：
+    把 ``load_body`` 的 ``markers`` 里的 ``short_marker`` 去掉，
+    低档位必然返回空文本 → 它会红。
+    """
+    _make_skill(tmp_path, "big", body_only="很长的正文句子。\n" * 400)
+    meta = discover_skills(tmp_path).skills[0]
+
+    result = load_body(meta, max_tokens=max_tokens)
+
+    assert result.truncated, "正文约 1000 token，这一档不可能不截断"
+    assert result.text, (
+        f"预算 {max_tokens} token 下返回了空文本。"
+        "正文放不下可以接受，但**连「被截断了」都不说**不行——"
+        "详细标记装不下时，短标记必须接手。"
+    )
+    assert result.tokens <= max_tokens, f"{result.tokens} 超上限 {max_tokens}"
+    assert "截断" in result.text, f"标记里没说被截断：{result.text[:60]!r}"
+
+
+def test_a_body_that_fits_gets_no_marker(tmp_path: Path) -> None:
+    """反向：**没截断就不该出现「已截断」字样**。
+
+    少了这一条，上面那个断言可以靠「永远加一句已截断」骗过去——
+    而那会让模型以为读到的规范不完整，于是去 read 一遍全文，白花一轮。
+    **假阳性与假阴性都要花钱。**
+    """
+    _make_skill(tmp_path, "small")
+    meta = discover_skills(tmp_path).skills[0]
+
+    result = load_body(meta, max_tokens=500)
+
+    assert not result.truncated
+    assert "截断" not in result.text
+
+
+async def test_tool_blames_the_budget_not_the_file(tmp_path: Path) -> None:
+    """预算小到放不下任何说明时，报错必须**指向预算**，不是指向文件。
+
+    三种空文本的原因要指向三种不同的排查方向：
+
+    | 原因 | 该去查什么 |
+    | --- | --- |
+    | 文件读不出来 | 权限 / 编码 / 文件在不在 |
+    | 文件里只有 frontmatter | 文件内容 |
+    | 预算装不下截断说明 | **预算（``max_tokens``）** |
+
+    第一版把三种合成一句「正文读不出来（权限 / 编码 / 文件被删）」，
+    于是第三种会让人**去查文件系统**——而文件好好的。症状不指向根因。
+    """
+    from sigma_agent.types import ToolContext
+    from sigma_ai.base import NeverCancelled
+
+    _make_skill(tmp_path, "big", body_only="很长的正文句子。\n" * 400)
+    tool = LoadSkillTool(skills=discover_skills(tmp_path).skills, max_tokens=1)
+    ctx = ToolContext(
+        session_id="s", workspace_root=tmp_path, signal=NeverCancelled()
+    )
+
+    result = await tool.run(tool.params(name="big"), ctx)
+
+    assert result.is_error
+    text = "".join(getattr(b, "text", "") for b in result.content)
+    assert "预算" in text, f"报错没提预算：{text[:80]!r}"
+    assert result.details["reason"] == "预算装不下截断说明"
+
+
+async def test_tool_says_body_is_empty_when_there_is_nothing_to_read(
+    tmp_path: Path,
+) -> None:
+    """反向：**正文真的为空**时，报的是"没有正文"，不是"预算不够"。
+
+    与上一条成对。只有一条的话，把报错分支写死成任一种都能绿——
+    而那会让模型按错误的原因去重试。
+    """
+    from sigma_agent.types import ToolContext
+    from sigma_ai.base import NeverCancelled
+
+    path = _make_skill(tmp_path, "hollow")
+    # 只留 frontmatter：正文为空（``load_body`` 会 strip 掉空白）
+    path.write_text("---\nname: hollow\ndescription: 没有正文\n---\n\n", encoding="utf-8")
+    tool = _tool(tmp_path)
+    ctx = ToolContext(
+        session_id="s", workspace_root=tmp_path, signal=NeverCancelled()
+    )
+
+    result = await tool.run(tool.params(name="hollow"), ctx)
+
+    assert result.is_error
+    assert result.details["reason"] == "正文为空"

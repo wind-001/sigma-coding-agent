@@ -4,12 +4,12 @@
 
 [![ci](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.12-blue)
-![tests](https://img.shields.io/badge/tests-498%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-510%20passed-brightgreen)
 ![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-73%2F73-brightgreen)
 
 > **现状**（数字绑**本次提交**；换代码必须重跑，见[计数纪律](#计数纪律)）：
 > P1 最小闭环 ✅ · P2 会话树 / 上下文 / 压缩 / 会话接续 ✅ · **P3-批次1 工具安全边界 ✅ · P4-批次1 技能系统 ✅**
-> ——**498 单测全绿 · 三道门禁全绿（mypy strict 53 files / 契约 3 kept）· 81 条门槛注入全部可证伪 · 回放 6/6**。
+> ——**510 单测全绿 · 三道门禁全绿（mypy strict 53 files / 契约 3 kept）· 78 条门槛注入全部可证伪 · 回放 6/6**。
 > 未完成的部分不藏：评测任务集 70 条、压缩质量验收门、L3 钩子规则、skill 热重载（见[进度与未完成](#进度与未完成)）。
 
 ---
@@ -54,7 +54,7 @@ sigma 0.0.1（一次性模式）
 线性 `layers` 契约的语义只有"下层不许引用上层"、**默认放行一切向下 import**，
 所以另配一条 `independence` 契约把兄弟关系钉死（实测过：只写 `layers` 时，
 `sigma_tools → sigma_session` 是静默通过的）。
-类型 → `mypy --strict`；行为 → 498 个单测。**CI 就这三条命令，跑不过不合。**
+类型 → `mypy --strict`；行为 → 510 个单测。**CI 就这三条命令，跑不过不合。**
 
 **2. 门槛必须是"可被证伪"的。**
 73 条门槛，每条都配一次 **破坏 → 断言变红 → 还原 → 断言变绿** 的注入实验
@@ -142,7 +142,7 @@ sigma --no-checkpoint -p "任务"                 # 关掉快照（危险：破�
 ### 6. 跑测试（不需要任何 API key）
 
 ```bash
-pytest -q                 # 498 个单测
+pytest -q                 # 510 个单测
 mypy core                 # strict
 lint-imports              # 三条分层契约
 python evals/runner.py    # 回放六个场景，报告落 evals/reports/
@@ -243,7 +243,7 @@ reset = self._git("reset", "--hard", "--quiet", ref)
 ```
 
 跑注入实验：`python scripts/gate_injection_batch13.py` → **9/9 被成功证伪**、
-`scripts/gate_injection_batch14.py` → **4/4 被成功证伪**。
+`scripts/gate_injection_batch14.py` → **5/5 被成功证伪**。
 
 ---
 
@@ -256,7 +256,7 @@ core/           五个包（package-dir 指向 core/，所以它们是顶层包�
   sigma_session/会话树、上下文组装、压缩、会话目录操作
   sigma_tools/  内置工具、输出截断、路径约束
   sigma/        产品壳：CLI / REPL / SDK 入口
-tests/          498 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
+tests/          510 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
 evals/          评测运行器 + 报告（datasets/ 的任务集尚未落地，见下）
 extensions/     运行时加载的扩展样例（P4）
 docs/           架构方案、调研笔记、计划、决策记录
