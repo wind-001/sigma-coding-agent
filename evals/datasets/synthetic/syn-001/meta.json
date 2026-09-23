@@ -1,0 +1,29 @@
+{
+  "id": "syn-001",
+  "kind": "synthetic",
+  "title": "按显示宽度折行（东亚宽度）",
+  "description": "工作区里的 textwrap_lite 模块负责把长文本折成指定宽度的若干行，供终端表格和告警卡片使用。\n\n它现在有 bug：把每个字符都当成占一列，于是中日韩文本的折行结果会溢出——比如预算 4 列时，「中文字符」本应折成两行、每行两个字，实际却只折了「中文字符」一整行（显示宽度 8 列）。\n\n请修好它，让 tests/ 下的测试全部通过。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import textwrap_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 6 passed in 0.12s",
+    "failed_tests": [
+      "tests/test_textwrap_lite.py::test_cjk_is_two_columns_per_char",
+      "tests/test_textwrap_lite.py::test_mixed_text_adds_up",
+      "tests/test_textwrap_lite.py::test_wrap_cjk_respects_column_width"
+    ],
+    "recorded_at": "2026-09-23T11:17:57.757",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。这一条是那个顺序的证据。"
+  }
+}

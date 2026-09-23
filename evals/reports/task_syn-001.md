@@ -1,0 +1,32 @@
+# 任务评测：syn-001 —— 按显示宽度折行（东亚宽度）
+
+> 生成时间 2026-09-23T11:28:28 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
+
+## 判定
+
+- **通过** —— 判定命令 exit 0
+
+## 指标（口径与 runner.py 对齐）
+
+| 指标 | 值 |
+| --- | --- |
+| status | `completed` |
+| 轮数 | 11 |
+| 工具调用 | 11 |
+| 工具失败 | 0 |
+| prompt token | 40983 |
+| completion token | 1669 |
+| wall-clock | 32.514s |
+
+## 证据（为什么这么判）
+
+```json
+{
+  "command": "python -m pytest tests/ -q",
+  "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-001\\judge_tests",
+  "tests_restored_to": "tests",
+  "tests_were_modified": false,
+  "exit_code": 0,
+  "summary": ".........                                                                [100%]\n9 passed in 0.04s"
+}
+```
