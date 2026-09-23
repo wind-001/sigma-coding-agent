@@ -27,7 +27,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from pydantic import ValidationError
 
@@ -120,6 +120,9 @@ class AgentLoop:
         observer: LoopObserver | None = None,
         checkpoint: ShadowCheckpoint | None = None,
         todo_steer_interval: int = 10,
+        tool_lock: asyncio.Lock | None = None,
+        mailbox_drain: Callable[[], list[AgentMessage]] | None = None,
+        mailbox_wait: Callable[[], Awaitable[list[AgentMessage]]] | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -153,6 +156,20 @@ class AgentLoop:
         # 拼装失败的调用 name 为 None，自然不会被误判为"碰过"。
         self._todo_steer_interval = todo_steer_interval
         self._todo_stall = 0
+        # tool_lock（P4 task 工具，星辰拍板 2026-09-23）：**含写工具的批次**在锁内
+        # 执行——主 loop 与后台子 agent 的 loop 传同一把锁，写文件互斥，
+        # checkpoint mark 也一起被罩住（git index 不会并发冲突）。
+        # readonly 批次不拿锁：dispatch/status 这类"只启动后台活、不碰文件"
+        # 的调用必须能立即返回，否则派发会被在跑的写批次卡死。
+        self._tool_lock = tool_lock
+        # 信箱钩子（P4 task 工具的"下一轮开始之前收集子任务结果"）：
+        #   drain：非阻塞地取走"已完成且未回报"的子任务结果；
+        #   wait ：有在跑子任务就等它们完成，然后 drain。
+        # 两个回调由产品壳接线（TaskTool 提供），loop 不 import 工具层——
+        # 与 todo steering "只认机制不认格式"是同一条纪律。
+        # 默认 None = 行为与加它之前逐字节一致（observer 同款承诺）。
+        self._mailbox_drain = mailbox_drain
+        self._mailbox_wait = mailbox_wait
 
     def _notify(self, event: LoopEvent) -> None:
         """向观察者发一个事件。没有观察者时这是一次空调用。"""
@@ -197,6 +214,11 @@ class AgentLoop:
             # produced，模型本轮就能看到；produced 随 TurnResult 返回后被
             # sdk 追加回会话树——提醒既被看到、也被持久化，恢复会话后仍可见。
             produced.extend(self._todo_steer_if_due())
+            # 信箱收集（P4 task 工具）：后台子任务完成后，结果在**下一轮开始之前**
+            # 被取走并注入——这正是 loop.py 顶部注释里预留的 transformContext
+            # 接入点的第一个真实住客。与 steering 同模式：尾部 user 消息，
+            # 不进常驻区、不改前缀（D4 缓存不破）。
+            produced.extend(self._drain_mailbox())
             # 第 2 步 transformContext：P1 没有钩子体系（属 P3），此处跳过。
             # 保留这个注释是为了让 P3 接手时能一眼看到接入点在哪。
             llm_messages = self._to_llm(messages, produced)  # 第 3 步
@@ -206,10 +228,22 @@ class AgentLoop:
             last_text = _text_of(assistant)
             total_usage = _add_usage(total_usage, assistant.usage)
 
-            if not calls:  # 第 8 步：模型不再要工具 → 完成
+            if not calls:  # 第 8 步：模型不再要工具 → 尝试收尾
                 # 这一轮它什么工具都没调，自然也没碰 todo——计一笔。
                 # （跨 send 累计正是 steering 的意义：跑偏发生在很多轮之后。）
                 self._todo_stall += 1
+                # 信箱兜底（P4 task 工具）：模型可能 dispatch 之后直接输出
+                # "已派发"就收尾——没有这一步，子任务的结果会永远留在信箱里，
+                # 而没有任何一步报错。先取已完成未回报的；信箱空但还有子任务
+                # 在跑，就等它们完成再取。拿到就注入并**继续一轮**——模型看到
+                # 结果后才会真正收尾。run_turn 的结束条件因此是：
+                # "模型不再调工具 且 信箱没有未回报内容 且 没有在跑的子任务"。
+                # 死锁不可能：此刻主 loop 不持有 tool_lock（批次已结束），
+                # 子批次拿锁无阻碍。
+                tail_msgs = await self._drain_or_wait_mailbox()
+                if tail_msgs:
+                    produced.extend(tail_msgs)
+                    continue
                 finished = TurnResult(
                     status="completed",
                     messages=produced,
@@ -313,6 +347,27 @@ class AgentLoop:
     def todo_stall(self) -> int:
         """当前已连续多少轮没碰 todo。测试与观测用。"""
         return self._todo_stall
+
+    # ------------------------------------------------------------------
+    # 信箱（P4 task 工具的子任务结果收集）
+    # ------------------------------------------------------------------
+
+    def _drain_mailbox(self) -> list[AgentMessage]:
+        """非阻塞取走"已完成且未回报"的子任务结果。没接线时恒为空。"""
+        if self._mailbox_drain is None:
+            return []
+        return self._mailbox_drain()
+
+    async def _drain_or_wait_mailbox(self) -> list[AgentMessage]:
+        """收尾兜底用：先取已完成的；信箱空但还有子任务在跑，等完再取。
+
+        两步分开而不是只调 wait：wait 的语义是"等在跑的完成再 drain"，
+        而已完成的**不需要等**——先 drain 一次，避免"明明有结果却多等一轮"。
+        """
+        msgs = self._drain_mailbox()
+        if not msgs and self._mailbox_wait is not None:
+            msgs = await self._mailbox_wait()
+        return msgs
 
     # ------------------------------------------------------------------
     # 第 3 步：agent 层 → LLM 层
@@ -487,19 +542,8 @@ class AgentLoop:
         readonly = [p for p in planned if p.tool.read_only]
         writers = [p for p in planned if not p.tool.read_only]
 
-        # L2：**写批量之前**打一次快照（D5 的影子 git checkpoint）。
-        #
-        # 位置就在这里，不能挪：批次边界只有 loop 知道（这正是它属 sigma_agent 的理由）。
-        # 时机必须是"执行前"——执行后打快照等于把破坏后的状态存成"可回到的点"。
-        #
-        # 三点刻意设计：
-        #   1. 只在 writers 非空时打：纯读批次不产生任何文件变化，快照没有信息量；
-        #   2. label 里写明本批次要跑哪些写工具名 —— 回滚时人要知道"退掉的是什么"；
-        #   3. **mark 失败不阻断执行**（checkpoint 是保险丝，不是发动机）。`ShadowCheckpoint`
-        #      内部把失败降级成返回 None，调用方在 `last_error` 里能看到原因。
-        if writers:
-            self._mark_before_writes(writers)
-
+        # readonly 先跑（**锁外**）：dispatch/status 这类"启动后台活"的调用
+        # 必须立即返回，不能被在跑的写批次卡住；它们也不碰文件，无需互斥。
         if readonly:
             gathered = await asyncio.gather(
                 *(p.tool.run(p.args, self._make_context()) for p in readonly),
@@ -508,6 +552,43 @@ class AgentLoop:
             for plan, outcome in zip(readonly, gathered, strict=True):
                 results[plan.position] = _as_result(outcome, plan.tool.name)
 
+        # 写批次在 tool_lock 内执行（P4 task 工具）：主 loop 与后台子 agent 的
+        # loop 共用一把锁，写文件互斥，checkpoint mark 一并被罩住。
+        # 没接锁时行为与加它之前逐字节一致（None = 直通）。
+        if writers:
+            if self._tool_lock is None:
+                await self._run_write_batch(writers, results)
+            else:
+                async with self._tool_lock:
+                    await self._run_write_batch(writers, results)
+
+        # 到这里每个位置都应该有结果；若没有，说明上面的分支漏了一种。
+        # **宁可崩，不要错**：返回一个 None 会让下游 unpack 时才炸，症状远离根因。
+        missing = [i for i, r in enumerate(results) if r is None]
+        if missing:
+            raise RuntimeError(
+                f"_execute_batch 有位置没有结果：{missing}。"
+                "这是 loop 自身的缺陷——上面的分支没有覆盖全部情况。"
+            )
+        return [r for r in results if r is not None]
+
+    async def _run_write_batch(
+        self, writers: list[_Planned], results: list[ToolResult | None]
+    ) -> None:
+        """执行写批次（调用方保证已在 tool_lock 内——如果有的话）。
+
+        L2：**写批量之前**打一次快照（D5 的影子 git checkpoint）。
+
+        位置就在这里，不能挪：批次边界只有 loop 知道（这正是它属 sigma_agent 的理由）。
+        时机必须是"执行前"——执行后打快照等于把破坏后的状态存成"可回到的点"。
+
+        三点刻意设计：
+            1. 只在 writers 非空时打：纯读批次不产生任何文件变化，快照没有信息量；
+            2. label 里写明本批次要跑哪些写工具名 —— 回滚时人要知道"退掉的是什么"；
+            3. **mark 失败不阻断执行**（checkpoint 是保险丝，不是发动机）。`ShadowCheckpoint`
+               内部把失败降级成返回 None，调用方在 `last_error` 里能看到原因。
+        """
+        self._mark_before_writes(writers)
         for plan in writers:
             try:
                 results[plan.position] = await plan.tool.run(
@@ -526,16 +607,6 @@ class AgentLoop:
                     details={"tool_name": plan.tool.name},
                     is_error=True,
                 )
-
-        # 到这里每个位置都应该有结果；若没有，说明上面的分支漏了一种。
-        # **宁可崩，不要错**：返回一个 None 会让下游 unpack 时才炸，症状远离根因。
-        missing = [i for i, r in enumerate(results) if r is None]
-        if missing:
-            raise RuntimeError(
-                f"_execute_batch 有位置没有结果：{missing}。"
-                "这是 loop 自身的缺陷——上面的分支没有覆盖全部情况。"
-            )
-        return [r for r in results if r is not None]
 
     def _mark_before_writes(self, writers: list[_Planned]) -> None:
         """写批次前打快照。**失败静默降级**（原因留在 checkpoint.last_error）。"""

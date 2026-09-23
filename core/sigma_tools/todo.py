@@ -75,31 +75,6 @@ class _TodoData(BaseModel):
     items: list[dict[str, Any]]
 
 
-def _todo_path(ctx: ToolContext) -> Path:
-    return ctx.workspace_root / TODO_RELATIVE
-
-
-def _load(ctx: ToolContext) -> _TodoData | None:
-    """读清单。文件不存在返回 None；**损坏时报错路径由调用方走 is_error**，
-    这里抛 ValueError——宁可崩不要错：半截 JSON 静默当成"没有清单"
-    会让模型 create 覆盖掉还有三条没做完的计划。"""
-    path = _todo_path(ctx)
-    if not path.exists():
-        return None
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError("清单文件不是 JSON 对象")
-    return _TodoData.model_validate(raw)
-
-
-def _save(ctx: ToolContext, data: _TodoData) -> None:
-    path = _todo_path(ctx)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        data.model_dump_json(indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-
 def _render(data: _TodoData) -> str:
     """渲染给人与模型都易读的清单。进度行放最前——它是 steering 提醒里也引用的口径。"""
     done = sum(1 for it in data.items if it["status"] == "completed")
@@ -130,7 +105,13 @@ def _check_transition(old: str, new: str, task_id: int) -> str | None:
 
 
 class TodoTool(BaseTool):
-    """任务清单工具。写工具（改 ``.sigma/todo.json``），批次中严格顺序执行。"""
+    """任务清单工具。写工具（改 ``.sigma/todo.json``），批次中严格顺序执行。
+
+    ``relative_path``（P4 task 工具）：账本落点，默认不变。子 agent 的账本
+    换成 ``.sigma/todo-<派生id>.json``——两个 agent 共享一个账本会让
+    "至多一条 running"被静默破坏（主 agent 正在跑 #3，子 agent 把它标
+    completed，状态机毫无察觉）。**账本随 agent 走，一个 agent 一本账。**
+    """
 
     name = "todo"
     description = (
@@ -139,6 +120,35 @@ class TodoTool(BaseTool):
         "流转：pending→running→completed；completed→pending 为返工。"
     )
     read_only = False
+
+    def __init__(self, relative_path: str = TODO_RELATIVE) -> None:
+        self._relative_path = relative_path
+
+    # ------------------------------------------------------------------
+    # 账本读写（实例方法：路径随实例走——子 agent 换独立账本不改这里一行）
+    # ------------------------------------------------------------------
+
+    def _todo_path(self, ctx: ToolContext) -> Path:
+        return ctx.workspace_root / self._relative_path
+
+    def _load(self, ctx: ToolContext) -> _TodoData | None:
+        """读清单。文件不存在返回 None；**损坏时报错路径由调用方走 is_error**，
+        这里抛 ValueError——宁可崩不要错：半截 JSON 静默当成"没有清单"
+        会让模型 create 覆盖掉还有三条没做完的计划。"""
+        path = self._todo_path(ctx)
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("清单文件不是 JSON 对象")
+        return _TodoData.model_validate(raw)
+
+    def _save(self, ctx: ToolContext, data: _TodoData) -> None:
+        path = self._todo_path(ctx)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            data.model_dump_json(indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     @property
     def params(self) -> type[BaseModel]:
@@ -177,7 +187,7 @@ class TodoTool(BaseTool):
                 details={"action": "create", "missing": "items"},
                 is_error=True,
             )
-        existing = _load(ctx)
+        existing = self._load(ctx)
         if existing is not None and not params.overwrite:
             return ToolResult(
                 content=[
@@ -208,7 +218,7 @@ class TodoTool(BaseTool):
                 is_error=True,
             )
         data.next_id = len(data.items) + 1
-        _save(ctx, data)
+        self._save(ctx, data)
         note = "已重建" if existing is not None else "已创建"
         return ToolResult(
             content=[TextBlock(text=f"{note}任务清单（{len(params.items)} 条，全部 pending）：\n" + _render(data))],
@@ -216,7 +226,7 @@ class TodoTool(BaseTool):
         )
 
     def _update(self, params: TodoParams, ctx: ToolContext) -> ToolResult:
-        data = _load(ctx)
+        data = self._load(ctx)
         if data is None:
             return ToolResult(
                 content=[
@@ -280,7 +290,7 @@ class TodoTool(BaseTool):
             target["detail"] = params.detail
 
         data.updated_at = stamps.now()
-        _save(ctx, data)
+        self._save(ctx, data)
         change = (
             f"#{params.id} 状态 {old_status} → {target['status']}。"
             if params.status is not None and params.status != old_status
@@ -298,7 +308,7 @@ class TodoTool(BaseTool):
         )
 
     def _list(self, ctx: ToolContext) -> ToolResult:
-        data = _load(ctx)
+        data = self._load(ctx)
         if data is None:
             return ToolResult(
                 content=[

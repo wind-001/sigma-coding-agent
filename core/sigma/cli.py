@@ -177,6 +177,14 @@ def build_parser() -> argparse.ArgumentParser:
             "默认：解析到哪个 key 就启用哪个（各 1000 credits/月，超额自动禁用）"
         ),
     )
+    parser.add_argument(
+        "--sub-agent",
+        action="store_true",
+        help=(
+            "启用 task 工具：模型可派后台子 agent（独立上下文、最多 3 个并发）"
+            "执行子任务，完成后自动回报。子任务会消耗额外 token。"
+        ),
+    )
     # 会话接续（P2-5）。两者互斥：一个说"续最近那个"，一个说"用这个 id"，
     # 同时给没有意义——而 argparse 的互斥组会把这句话变成启动时的报错，
     # 比"后者静默覆盖前者"好。
@@ -543,6 +551,7 @@ async def _run_once(
             tree=tree,
             shadow_git_dir=shadow_git_dir,
             skills_root=skills_root,
+            enable_sub_agent=args.sub_agent,
         )
     finally:
         await provider.aclose()
@@ -577,6 +586,7 @@ async def _run_interactive(
         tree=tree,
         shadow_git_dir=shadow_git_dir,
         skills_root=skills_root,
+        enable_sub_agent=args.sub_agent,
     )
     try:
         return await run_repl(session)
@@ -701,6 +711,7 @@ def main(argv: list[str] | None = None) -> int:
         web_search=web_search_on,
         web_fetch=web_fetch_on,
         skills=bool(skill_scan.skills),
+        task=args.sub_agent,
     )
 
     binding = resolve_session(args, sessions_root)

@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -50,9 +51,9 @@ from sigma_agent.skills import (
     discover_skills,
     render_index,
 )
-from sigma_agent.types import TurnResult
+from sigma_agent.types import ToolContext, TurnResult
 from sigma_ai import stamps
-from sigma_ai.base import NeverCancelled, SamplingParams
+from sigma_ai.base import CancelToken, NeverCancelled, SamplingParams
 from sigma_ai.messages import UserMessage
 from sigma_session.compact import CompactionOutcome, CompactionPolicy
 from sigma_session.context import SessionContext
@@ -67,6 +68,7 @@ from sigma_tools.edit import EditTool
 from sigma_tools.grep import GrepTool
 from sigma_tools.read import ReadTool
 from sigma_tools.skill import LoadSkillTool
+from sigma_tools.task import SubAgentFactory, TaskTool
 from sigma_tools.todo import TodoTool
 from sigma_tools.web_fetch import WebFetchTool
 from sigma_tools.web_search import WebSearchTool
@@ -75,7 +77,7 @@ from sigma_tools._firecrawl_quota import FirecrawlQuota
 from sigma_tools._tavily_quota import TavilyQuota
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Sequence
 
     from sigma_ai.base import BaseProvider
 
@@ -127,6 +129,25 @@ LOAD_SKILL_TOOL_LINE = (
     "- load_skill：按名加载某个技能的完整说明。**只在确实需要时用**——正文会占上下文。\n"
 )
 
+#: task 工具的工具行。同上面几条纪律：**只在 enable_sub_agent 时拼进提示词**——
+#: 否则提示词会指向一个不存在的工具，模型去调它然后拿到"未注册"错误。
+#: 它由调用方（CLI / 评测）经 ``build_system_prompt(task=True)`` 拼入，
+#: InteractiveSession 不做"看参数猜提示词"的魔法。
+TASK_TOOL_LINE = (
+    "- task：派子任务给后台子 agent（独立上下文、同款工具）执行，不阻塞你；\n"
+    "  status 查进度，完成后自动回报。探索/调研类工作适合派它；\n"
+    "  子任务是后续步骤的前置依赖时，先做完其他事再收尾。\n"
+)
+
+#: 子 agent 提示词的前缀（角色行）。正文复用 :func:`build_system_prompt` 的产物——
+#: 子会话的 registry 是主 registry 的克隆，提示词必须与它同源（批次 7 教训），
+#: 不另写一份会漂移的静态文案。
+SUB_SYSTEM_PROMPT_PREFIX = (
+    "你是被主 agent 派来执行单个子任务的执行者。\n"
+    "你的上下文里没有主对话历史，只依据任务描述独立干活。"
+    "完成后用一段自包含的总结收尾：结论、关键文件路径、没做完的部分如实说明。\n\n"
+)
+
 #: 调研纪律（批次 8）。它是 **Guide**（pi 笔记 13.2：前馈控制），
 #: 与代码里那四道硬闸（Sensor）是一对——只用其中任何一个都会坏掉。
 #:
@@ -144,7 +165,11 @@ RESEARCH_FETCH_RULE = (
 
 
 def build_system_prompt(
-    *, web_search: bool = False, web_fetch: bool = False, skills: bool = False
+    *,
+    web_search: bool = False,
+    web_fetch: bool = False,
+    skills: bool = False,
+    task: bool = False,
 ) -> str:
     """按启用的工具集生成系统提示词。
 
@@ -158,6 +183,8 @@ def build_system_prompt(
     目录是另一段（由 ``sigma_agent.skills.render_index`` 渲染后注入常驻区）。
     两者分开是因为**没有技能时连工具都不该注册**（省 163 token 的 schema），
     而那时提示词里也就不该有这一行。
+
+    ``task`` 同理：只在 ``enable_sub_agent`` 的主会话里为 True。
     """
     tool_lines: list[str] = []
     if web_search:
@@ -166,6 +193,8 @@ def build_system_prompt(
         tool_lines.append(WEB_FETCH_TOOL_LINE)
     if skills:
         tool_lines.append(LOAD_SKILL_TOOL_LINE)
+    if task:
+        tool_lines.append(TASK_TOOL_LINE)
     if not tool_lines:
         return SYSTEM_PROMPT
 
@@ -365,10 +394,21 @@ class InteractiveSession:
         enable_checkpoint: bool = True,
         skills_root: Path | None = None,
         todo_steer_interval: int = 10,
+        enable_sub_agent: bool = False,
+        sub_agent_max_concurrent: int = 3,
+        sub_agent_max_rounds: int = 50,
+        signal: CancelToken | None = None,
+        tool_lock: asyncio.Lock | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
         self._session_id = session_id
+        self._workspace_root = workspace_root
+        # 子 agent 工厂要重建同款组装（见 _make_sub_agent_factory），
+        # 这几样先存起来——它们本来只为构造 AgentLoop 存在，现在多一个读者。
+        self._emit = emit
+        self._observer = observer
+        self._shadow_git_dir = shadow_git_dir
         self._registry = registry if registry is not None else default_registry()
         self._clock = _real_clock
         # 压缩策略：不传就用保守窗口的默认值（见 DEFAULT_CONTEXT_WINDOW_TOKENS）。
@@ -435,6 +475,33 @@ class InteractiveSession:
         # 判据：**宁可在启动时补一个明确的注册项，也不要留一个只能在运行期看出来的断点。**
         if self._skill_scan.skills and LoadSkillTool.name not in self._registry.names():
             self._registry.register(LoadSkillTool(skills=self._skill_scan.skills))
+        # task 工具与信箱接线（P4 sub_agent，星辰拍板 2026-09-23）：
+        # 主会话创建锁与 TaskTool；AgentLoop 只拿两个回调与锁——
+        # loop 不 import 工具层（兄弟层契约），与 todo steering 同一条纪律。
+        # 锁**主子共用**：主 loop 的写批次与后台子 agent 的写批次互斥（读写冲突
+        # 的防护），checkpoint mark 一并被罩住。dispatch/status 是 read_only，
+        # 在锁外的 readonly 组执行——派发永远不会被在跑的写批次卡死。
+        self._tool_lock: asyncio.Lock | None = tool_lock
+        self._mailbox_drain: Callable[[], list[AgentMessage]] | None = None
+        self._mailbox_wait: Callable[[], Awaitable[list[AgentMessage]]] | None = None
+        if enable_sub_agent:
+            if "task" in self._registry.names():
+                raise ValueError(
+                    "registry 里已注册 task 工具，与 enable_sub_agent=True 冲突。"
+                    "task 只能由本类注册（否则工厂与注册表可能不一致）。"
+                )
+            # 子会话由工厂传入主会话的锁（tool_lock 参数）；主会话自己没有时新建。
+            if self._tool_lock is None:
+                self._tool_lock = asyncio.Lock()
+            task_tool = TaskTool(
+                factory=self._make_sub_agent_factory(
+                    self._tool_lock, sub_agent_max_rounds
+                ),
+                max_concurrent=sub_agent_max_concurrent,
+            )
+            self._registry.register(task_tool)
+            self._mailbox_drain = task_tool.drain_completed
+            self._mailbox_wait = task_tool.wait_and_drain
         # ``tree`` 由调用方传入（通常是 ``SessionTree.from_store(...)``）——
         # **会话接续的落点就在这里**：不传就是纯内存的新会话，
         # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。
@@ -455,13 +522,73 @@ class InteractiveSession:
             workspace_root=workspace_root,
             max_rounds=max_rounds,
             sampling=SamplingParams(temperature=temperature),
-            signal=NeverCancelled(),
+            signal=signal if signal is not None else NeverCancelled(),
             clock=self._clock,
             emit=emit,
             observer=observer,
             checkpoint=self._checkpoint,
             todo_steer_interval=todo_steer_interval,
+            tool_lock=self._tool_lock,
+            mailbox_drain=self._mailbox_drain,
+            mailbox_wait=self._mailbox_wait,
         )
+
+    def _make_sub_agent_factory(
+        self, tool_lock: asyncio.Lock, sub_max_rounds: int
+    ) -> SubAgentFactory:
+        """造子 agent 工厂（闭包捕获主会话的组装知识，每次 dispatch 调用一次）。
+
+        子会话的 registry = 主 registry 的**克隆**，两处刻意改动：
+
+        1. **去掉 task**——递归禁止的构造上排除（星辰原话"工具中不允许包含
+           task 工具"）。克隆意味着 web/技能/其余工具**与主会话天然同款**，
+           不需要把开关参数抄一份（抄一份必然漂移）。
+        2. **todo 换独立账本**——共享会让"至多一条 running"被静默破坏。
+        """
+        async def factory(
+            description: str, ctx: ToolContext, sub_session_id: str
+        ) -> TurnResult:
+            sub_registry = ToolRegistry()
+            for name in self._registry.names():
+                if name in ("task", "todo"):
+                    continue
+                sub_registry.register(self._registry.get(name))
+            sub_registry.register(
+                TodoTool(relative_path=f".sigma/todo-{sub_session_id}.json")
+            )
+            sub_names = sub_registry.names()
+            sub_session = InteractiveSession(
+                provider=self._provider,
+                workspace_root=self._workspace_root,
+                model=self._model,
+                registry=sub_registry,
+                # 提示词与克隆后的 registry **同源**（批次 7 教训）：
+                # 按 registry 里实际有哪些工具拼条件行，角色行放最前。
+                system_prompt=SUB_SYSTEM_PROMPT_PREFIX
+                + build_system_prompt(
+                    web_search="web_search" in sub_names,
+                    web_fetch="web_fetch" in sub_names,
+                    skills="load_skill" in sub_names,
+                ),
+                max_rounds=sub_max_rounds,
+                observer=self._observer,
+                emit=self._emit,
+                session_id=sub_session_id,
+                # AGENTS.md 用主会话已加载的文本（同一份，不重读文件）
+                project_instructions=self._instructions.text,
+                compaction_policy=self._compaction_policy,
+                enable_compaction=self._compaction_policy is not None,
+                enable_checkpoint=self._checkpoint is not None,
+                shadow_git_dir=self._shadow_git_dir,
+                skills_root=self._skills_root,
+                tool_lock=tool_lock,
+                # 取消传播：主会话被取消时子任务同步停（signal 从派发时的
+                # ToolContext 里来——那是主 loop 的取消令牌）。
+                signal=ctx.signal,
+            )
+            return await sub_session.send(description)
+
+        return factory
 
     async def send(self, task: str) -> TurnResult:
         """发一条任务，跑完整轮，把产出追加回历史。
@@ -593,6 +720,9 @@ async def run_task(
     enable_checkpoint: bool = True,
     skills_root: Path | None = None,
     todo_steer_interval: int = 10,
+    enable_sub_agent: bool = False,
+    sub_agent_max_concurrent: int = 3,
+    sub_agent_max_rounds: int = 50,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -630,5 +760,8 @@ async def run_task(
         enable_checkpoint=enable_checkpoint,
         skills_root=skills_root,
         todo_steer_interval=todo_steer_interval,
+        enable_sub_agent=enable_sub_agent,
+        sub_agent_max_concurrent=sub_agent_max_concurrent,
+        sub_agent_max_rounds=sub_agent_max_rounds,
     )
     return await session.send(task)

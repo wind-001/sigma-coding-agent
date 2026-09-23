@@ -1,4 +1,4 @@
-"""EvalProfile 与 todo 门槛注入实验：逐条证伪（G80–G83）。
+"""EvalProfile 与 todo/task 门槛注入实验：逐条证伪（G80–G86）。
 
 沿用既有框架（在真实仓库上改、跑、finally 还原），不另写 Repo。
 
@@ -8,6 +8,9 @@
 | E69 | G81 档位声明不是名义开关 | ``EvalProfile.b1`` 返回全开档 | b1 的 flags 断言红 |
 | E70 | G82 至多一条 running | todo 工具的冲突检查改成 ``if False:`` | "第二条 running 被拒"红 |
 | E71 | G83 steering 注入真的会发生 | loop 的注入分支改成 ``if True:``（恒 return []） | "第 4 轮前注入提醒"红 |
+| E72 | G84 子 registry 无 task（递归禁止） | 克隆排除改成只排 todo | 端到端"子工具集无 task"红 |
+| E73 | G85 超长回报截断且可见 | 截断分支改成 ``if False:`` | "已截断"标记 + 长度上限双红 |
+| E74 | G86 收尾兜底等在跑的子任务 | loop 兜底的 wait 条件改成 ``if False`` | "慢子任务的回报在 produced 里"红 |
 
 **为什么 G80 的注入"确定性会红"**
 
@@ -34,6 +37,27 @@
     计数照常加——只是永远不提醒，防跑偏闸变成摆设。测试断言
     "第 4 轮前 produced 里必须有提醒"，注入后立即红。
 
+**为什么需要 G84**
+
+    「子 agent 不得再派发」是构造上排除（克隆时跳过），没有任何运行期
+    报错会提醒"排除丢了"。删掉排除后子 agent 悄悄拿到 task——深度不设限，
+    并发 3 的 token 闸只算一层，嵌套派发全部绕过它。唯一能抓它的地方
+    是端到端取证：子请求的工具集里不该出现 task。
+
+**为什么需要 G85**
+
+    子任务回报是唯一一条"子上下文→主上下文"的通道。截断分支被删后
+    4000+ 字符整段涌入——「隔离上下文」这个工具存在的理由被它自己的
+    回报架空，且模型不知道内容被剪过（丢弃必须可见）。双断言（标记 +
+    长度上限）保证删分支或改上限都会红。
+
+**为什么需要 G86**
+
+    收尾兜底钉的是 run_turn 的结束条件："模型不再调工具 **且** 信箱排空
+    **且** 无在跑子任务"。删掉 wait 之后慢子任务的回报永远留在信箱里
+    ——不报错、没有丢失感，主 agent 从此不知道子任务干了什么。
+    靶测试专门让回报**不在**最后一轮（慢任务），走的正是兜底路径。
+
 用法
     export PYTHONPATH=scripts
     ./.venv/Scripts/python.exe scripts/gate_injection_eval.py
@@ -49,11 +73,15 @@ SDK = "core/sigma/sdk.py"
 PROFILE = "core/sigma/eval_profile.py"
 TODO = "core/sigma_tools/todo.py"
 LOOP = "core/sigma_agent/loop.py"
+TASK = "core/sigma_tools/task.py"
 
 OFF_TEST = "tests/test_eval_profile.py::test_interactive_session_explicit_compaction_off"
 B1_TEST = "tests/test_eval_profile.py::test_b1_disables_every_intervention"
 RUNNING_TEST = "tests/test_todo_tool.py::test_update_rejects_second_running"
 STEER_TEST = "tests/test_todo_steering.py::test_reminder_injected_after_interval"
+SUB_E2E_TEST = "tests/test_sub_agent.py::test_dispatch_runs_sub_session_and_reports_back"
+TRUNCATE_TEST = "tests/test_task_tool.py::test_result_truncated_with_visible_marker"
+TAILWAIT_TEST = "tests/test_task_tool.py::test_loop_waits_for_pending_subtasks_before_finishing"
 
 
 def _inject_e68(repo: Repo) -> None:
@@ -109,11 +137,58 @@ def _inject_e71(repo: Repo) -> None:
     )
 
 
+def _inject_e72(repo: Repo) -> None:
+    """E72 / G84：子 registry 克隆不再排除 task（递归禁止失效）。
+
+    后果：子 agent 拿到 task 工具后可以再派子 agent——深度不设限，
+    token 成本闸（并发 3）只算一层，嵌套派发全部绕过它。这正是
+    星辰需求「工具中不允许包含 task」要防的事。
+    只去掉 task 的排除、保留 todo 的排除（否则 DuplicateToolError
+    会以脏方式红——报错红不是断言红，取证价值低）。
+    """
+    repo.patch(
+        SDK,
+        '                if name in ("task", "todo"):',
+        "                if name in (\"todo\",):  # 注入：task 的排除被删",
+    )
+
+
+def _inject_e73(repo: Repo) -> None:
+    """E73 / G85：超长回报的截断分支被删。
+
+    后果：子任务回了一个 4000+ 字符的"总结"时，主上下文被整段塞满——
+    「隔离上下文」这个 task 工具存在的理由被它自己的回报架空。
+    截断标记消失还意味着模型不知道内容被剪过（丢弃必须可见）。
+    """
+    repo.patch(
+        TASK,
+        "            if len(text) > MAX_RESULT_CHARS:",
+        "            if False:  # 注入：截断分支被删",
+    )
+
+
+def _inject_e74(repo: Repo) -> None:
+    """E74 / G86：收尾兜底不再等在跑的子任务。
+
+    后果：模型 dispatch 完最后一个工具就输出文本收尾时，慢子任务的
+    结果永远留在信箱里——不报错、不丢失感、没有任何一步红，
+    只有"主 agent 从此不知道子任务干了什么"。静默失效的典型形状。
+    """
+    repo.patch(
+        LOOP,
+        "        if not msgs and self._mailbox_wait is not None:",
+        "        if False and self._mailbox_wait is not None:  # 注入：等完成被删",
+    )
+
+
 def main() -> int:
     experiment("G80", "显式关断压过默认替换与显式策略", OFF_TEST, _inject_e68)
     experiment("G81", "档位声明不是名义开关（b1 必须真关）", B1_TEST, _inject_e69)
     experiment("G82", "至多一条 running（依次执行的机器化）", RUNNING_TEST, _inject_e70)
     experiment("G83", "steering 提醒真的会发生", STEER_TEST, _inject_e71)
+    experiment("G84", "子 registry 无 task（递归禁止=构造上排除）", SUB_E2E_TEST, _inject_e72)
+    experiment("G85", "超长回报截断且截断可见", TRUNCATE_TEST, _inject_e73)
+    experiment("G86", "收尾兜底等在跑的子任务（结果不丢）", TAILWAIT_TEST, _inject_e74)
 
     print()
     print("=" * 78)
