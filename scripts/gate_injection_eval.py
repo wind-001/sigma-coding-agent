@@ -1,4 +1,4 @@
-"""EvalProfile 门槛注入实验：逐条证伪消融开关的门槛（G80–G81）。
+"""EvalProfile 与 todo 门槛注入实验：逐条证伪（G80–G83）。
 
 沿用既有框架（在真实仓库上改、跑、finally 还原），不另写 Repo。
 
@@ -6,6 +6,8 @@
 | --- | --- | --- | --- |
 | E68 | G80 显式关断压过默认替换 | sdk 的关断分支改成 ``if False:`` | "compaction_policy is None"红 |
 | E69 | G81 档位声明不是名义开关 | ``EvalProfile.b1`` 返回全开档 | b1 的 flags 断言红 |
+| E70 | G82 至多一条 running | todo 工具的冲突检查改成 ``if False:`` | "第二条 running 被拒"红 |
+| E71 | G83 steering 注入真的会发生 | loop 的注入分支改成 ``if True:``（恒 return []） | "第 4 轮前注入提醒"红 |
 
 **为什么 G80 的注入"确定性会红"**
 
@@ -20,6 +22,18 @@
     字段全开——报告里每一行都写着 B1，实际跑的是 B2。那条红很便宜，
     但它钉住的是"名字必须等于配置"这件事本身。
 
+**为什么需要 G82**
+
+    "同一时刻至多一条 running"是星辰需求「按计划**依次**执行」的机器化。
+    删掉它不会崩：两条 running 各自都能 update，清单照常读写——
+    只有"依次性"悄悄消失，评测里的长任务变成并行乱序。静默失效是最贵的一种。
+
+**为什么需要 G83**
+
+    steering 的全部价值在"提醒真的会出现"。删掉注入分支后 loop 照常跑、
+    计数照常加——只是永远不提醒，防跑偏闸变成摆设。测试断言
+    "第 4 轮前 produced 里必须有提醒"，注入后立即红。
+
 用法
     export PYTHONPATH=scripts
     ./.venv/Scripts/python.exe scripts/gate_injection_eval.py
@@ -33,9 +47,13 @@ from gate_injection_batch24 import RESULTS, Repo, experiment
 
 SDK = "core/sigma/sdk.py"
 PROFILE = "core/sigma/eval_profile.py"
+TODO = "core/sigma_tools/todo.py"
+LOOP = "core/sigma_agent/loop.py"
 
 OFF_TEST = "tests/test_eval_profile.py::test_interactive_session_explicit_compaction_off"
 B1_TEST = "tests/test_eval_profile.py::test_b1_disables_every_intervention"
+RUNNING_TEST = "tests/test_todo_tool.py::test_update_rejects_second_running"
+STEER_TEST = "tests/test_todo_steering.py::test_reminder_injected_after_interval"
 
 
 def _inject_e68(repo: Repo) -> None:
@@ -65,9 +83,37 @@ def _inject_e69(repo: Repo) -> None:
     )
 
 
+def _inject_e70(repo: Repo) -> None:
+    """E70 / G82：「至多一条 running」检查被删。
+
+    后果：清单照常读写、不崩不报错，但"依次执行"静默消失——
+    长任务评测里两条任务并行乱序，trace 的可解释性没了。
+    """
+    repo.patch(
+        TODO,
+        "            if params.status == \"running\":",
+        "            if False:  # 注入：至多一条 running 的检查被删",
+    )
+
+
+def _inject_e71(repo: Repo) -> None:
+    """E71 / G83：steering 注入被删（恒 return []）。
+
+    后果：计数照常加、loop 照常跑，但提醒永远不出现——
+    防跑偏闸变成摆设，且没有任何报错。
+    """
+    repo.patch(
+        LOOP,
+        "        if self._todo_steer_interval <= 0 or self._todo_stall < self._todo_steer_interval:\n            return []",
+        "        if True:  # 注入：steering 注入被删\n            return []",
+    )
+
+
 def main() -> int:
     experiment("G80", "显式关断压过默认替换与显式策略", OFF_TEST, _inject_e68)
     experiment("G81", "档位声明不是名义开关（b1 必须真关）", B1_TEST, _inject_e69)
+    experiment("G82", "至多一条 running（依次执行的机器化）", RUNNING_TEST, _inject_e70)
+    experiment("G83", "steering 提醒真的会发生", STEER_TEST, _inject_e71)
 
     print()
     print("=" * 78)

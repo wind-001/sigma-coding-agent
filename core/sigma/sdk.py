@@ -67,6 +67,7 @@ from sigma_tools.edit import EditTool
 from sigma_tools.grep import GrepTool
 from sigma_tools.read import ReadTool
 from sigma_tools.skill import LoadSkillTool
+from sigma_tools.todo import TodoTool
 from sigma_tools.web_fetch import WebFetchTool
 from sigma_tools.web_search import WebSearchTool
 from sigma_tools.write import WriteTool
@@ -87,11 +88,13 @@ SYSTEM_PROMPT = """你是一个在本地工作区里干活的编程助手。
 - edit：精确替换文件中的一段文本（修改已有文件时优先用它）
 - bash：执行 bash 命令（列目录、建目录、运行测试等）
 - grep：按正则搜索文件内容，返回 文件:行号:文本
+- todo：任务清单（.sigma/todo.json）。长任务先 create 拆解计划，每完成一步 update 状态
 
 工作方式：
 1. 先看清楚再动手——不确定文件内容时先 read，不要凭猜测写。
 2. 一次只做一件必要的事，不要把多步操作合成一次调用。
-3. 完成后用一两句话说明你做了什么。
+3. 长任务（3 步以上）先用 todo create 拆解成清单，按清单依次执行、逐步 update。
+4. 完成后用一两句话说明你做了什么。
 
 注意：
 - 相对路径基于工作区根目录解析。
@@ -239,6 +242,10 @@ def default_registry(
     registry.register(EditTool())
     registry.register(BashTool())
     registry.register(GrepTool())
+    # todo **恒注册**（P4 任务清单）：它的文件是工具自己的账本（.sigma/todo.json），
+    # 不依赖任何外部服务或配置，"没有条件"的情况不存在——所以没有开关。
+    # SYSTEM_PROMPT 里的 todo 工具行与本行必须同源（批次 7 教训）。
+    registry.register(TodoTool())
     if web_search:
         if not tavily_api_key:
             raise ValueError(
@@ -357,6 +364,7 @@ class InteractiveSession:
         shadow_git_dir: Path | None = None,
         enable_checkpoint: bool = True,
         skills_root: Path | None = None,
+        todo_steer_interval: int = 10,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -452,6 +460,7 @@ class InteractiveSession:
             emit=emit,
             observer=observer,
             checkpoint=self._checkpoint,
+            todo_steer_interval=todo_steer_interval,
         )
 
     async def send(self, task: str) -> TurnResult:
@@ -583,6 +592,7 @@ async def run_task(
     shadow_git_dir: Path | None = None,
     enable_checkpoint: bool = True,
     skills_root: Path | None = None,
+    todo_steer_interval: int = 10,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -619,5 +629,6 @@ async def run_task(
         shadow_git_dir=shadow_git_dir,
         enable_checkpoint=enable_checkpoint,
         skills_root=skills_root,
+        todo_steer_interval=todo_steer_interval,
     )
     return await session.send(task)

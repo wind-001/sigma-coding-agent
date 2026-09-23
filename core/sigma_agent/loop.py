@@ -67,6 +67,7 @@ from sigma_ai.messages import (
     TextBlock,
     ToolCallBlock,
     Usage,
+    UserMessage,
 )
 from sigma_ai.tool_calls import AssembledCall, ToolCallAssembler
 
@@ -118,6 +119,7 @@ class AgentLoop:
         emit: Callable[[str], None] | None = None,
         observer: LoopObserver | None = None,
         checkpoint: ShadowCheckpoint | None = None,
+        todo_steer_interval: int = 10,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -138,6 +140,19 @@ class AgentLoop:
         # 观测是**旁听**：为 None 时 loop 的行为与加观测之前完全一致
         # （门槛 G33：226 个既有用例就是这条的证据）。
         self._observer = observer
+        # steering 计数（星辰需求，2026-09-23）：连续 N 轮没碰 todo 工具就在
+        # 下一轮前注入一条提醒，防长任务跑偏（"多轮 turn 塞满 context 后偏移目标"）。
+        #
+        # 计数器放在 loop 实例上**跨 run_turn 保持**：跑偏恰恰发生在"多条任务、
+        # 很多轮"之后——每次 send 清零等于没有 steering。loop 实例由
+        # InteractiveSession 持有，生命周期与会话一致，正好。
+        #
+        # 判据只看**工具名**（"todo"），不 import sigma_tools：
+        # loop 层与工具层是兄弟层，格式知识留在工具层，这里只需要知道名字。
+        # **不要求调用成功**——模型试图看计划（哪怕参数错了）即是有意识，
+        # 拼装失败的调用 name 为 None，自然不会被误判为"碰过"。
+        self._todo_steer_interval = todo_steer_interval
+        self._todo_stall = 0
 
     def _notify(self, event: LoopEvent) -> None:
         """向观察者发一个事件。没有观察者时这是一次空调用。"""
@@ -178,6 +193,10 @@ class AgentLoop:
         total_usage: Usage | None = None
 
         for round_index in range(1, self._max_rounds + 1):
+            # steering 注入（P4 任务清单的防跑偏闸）。在 _to_llm **之前**追加进
+            # produced，模型本轮就能看到；produced 随 TurnResult 返回后被
+            # sdk 追加回会话树——提醒既被看到、也被持久化，恢复会话后仍可见。
+            produced.extend(self._todo_steer_if_due())
             # 第 2 步 transformContext：P1 没有钩子体系（属 P3），此处跳过。
             # 保留这个注释是为了让 P3 接手时能一眼看到接入点在哪。
             llm_messages = self._to_llm(messages, produced)  # 第 3 步
@@ -188,6 +207,9 @@ class AgentLoop:
             total_usage = _add_usage(total_usage, assistant.usage)
 
             if not calls:  # 第 8 步：模型不再要工具 → 完成
+                # 这一轮它什么工具都没调，自然也没碰 todo——计一笔。
+                # （跨 send 累计正是 steering 的意义：跑偏发生在很多轮之后。）
+                self._todo_stall += 1
                 finished = TurnResult(
                     status="completed",
                     messages=produced,
@@ -200,6 +222,7 @@ class AgentLoop:
 
             # 第 5、6 步：校验参数并执行完整批次
             results = await self._execute_batch(calls)
+            self._count_todo_touch(calls)
 
             # 第 7 步：逐个追加工具结果。
             # ``strict=True`` 要求数量严格相等——少一个立刻抛，不静默放过。
@@ -241,6 +264,55 @@ class AgentLoop:
         )
         self._notify(_turn_end(stopped))
         return stopped
+
+    # ------------------------------------------------------------------
+    # steering（P4 任务清单的防跑偏闸）
+    # ------------------------------------------------------------------
+
+    def _todo_steer_if_due(self) -> list[AgentMessage]:
+        """连续 N 轮没碰 todo 工具时，产出一条提醒消息（并清零计数）。
+
+        返回列表（通常 0 或 1 条）由调用方 extend 进 ``produced``——
+        走尾部 user 消息，**不进常驻区、不改前缀**（D4 缓存不破，
+        与压缩摘要降级 user 是同一模式）。
+
+        提醒**不带清单内容**：清单的格式知识在工具层，loop 只认工具名；
+        模型自己调 ``todo list`` 拿全文——判断"要不要看内容"是它的活
+        （计算型归代码：计数；推断型归模型：看不看）。
+        """
+        if self._todo_steer_interval <= 0 or self._todo_stall < self._todo_steer_interval:
+            return []
+        # 注册表里没有 todo 工具就不提醒——否则模型会去调一个不存在的工具，
+        # 然后拿到"未注册的工具"错误，那一轮的预算就白花了
+        # （与"工具行与注册表必须同源"是同一条纪律的 loop 侧版本）。
+        if "todo" not in self._registry.names():
+            return []
+        self._todo_stall = 0
+        return [
+            LlmMessageWrapper(
+                timestamp=self._clock(),
+                message=UserMessage(
+                    content=(
+                        f"[任务清单提醒] 已连续 {self._todo_steer_interval} 轮未查看任务清单。"
+                        "在继续之前，先调用 todo(action=\"list\") 确认当前进度与下一步，"
+                        "防止长任务跑偏。"
+                    ),
+                    timestamp=self._clock(),
+                ),
+            )
+        ]
+
+    def _count_todo_touch(self, calls: list[AssembledCall]) -> None:
+        """本轮调过 todo（任何动作、不要求成功）→ 清零；否则 +1。"""
+        if any(item.name == "todo" for item in calls):
+            self._todo_stall = 0
+        else:
+            self._todo_stall += 1
+
+    @property
+    def todo_stall(self) -> int:
+        """当前已连续多少轮没碰 todo。测试与观测用。"""
+        return self._todo_stall
 
     # ------------------------------------------------------------------
     # 第 3 步：agent 层 → LLM 层
