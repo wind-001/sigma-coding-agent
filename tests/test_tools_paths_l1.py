@@ -107,17 +107,62 @@ def test_error_message_gives_a_way_out(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------
 
 
+def _is_real_link(link: Path, target: Path) -> bool:
+    """链接是否**真的生效**——判据是"行为"，不是"类型"。
+
+    链接的用途是让 ``resolve()`` 跨过去，所以验的是
+    ``link.resolve() == target.resolve()``，而不是 ``is_symlink()``。
+
+    用 ``is_symlink()`` 会把 Windows junction（``mklink /J``）一并误判成"没建成"
+    ——它的 reparse tag 是 mount point 而不是 symlink，``is_symlink()`` 返回 False，
+    但 ``resolve()`` 照样会跨过去。那样会把一条**能测**的用例错判成"测不了"。
+    """
+    try:
+        return link.resolve() == target.resolve()
+    except OSError:
+        return False
+
+
 def _make_dir_link(link: Path, target: Path) -> bool:
     """建一个目录链接。Windows 上 symlink 要权限，用 junction 兜底。
 
     返回是否建成——建不成时用例应当 skip，而不是假装通过。
     **"测不了"和"通过了"必须分开**，否则这一层就变成名义边界。
+
+    ⚠️ **"建成"必须靠验证，不能靠"调用没抛"**（2026-09-23 踩到）。
+
+    本机沙箱下 ``os.symlink`` **不抛异常**，但建出来的是一个**真实目录**
+    （沙箱把 symlink 换成了 mkdir）。原来的实现直接 ``return True``，于是：
+
+        守卫失效 → 测试往下跑 → "escape" 其实在界内 → 不抛 PathEscapesWorkspace
+        → **假红**：报"该拒绝的没拒绝"，而真相是链接压根没建。
+
+    它还会**随环境翻转**：同一台机器 50 分钟前是绿的（那次跑在沙箱外），
+    CI（Linux）一直是绿的 → 症状是"本地红、CI 绿"，很容易被误判成代码坏了。
+
+    ⚠️ **第二层修正：别把"能测"的当成"测不了"**。
+
+    第一版修法是"验证不过就返回 False"，结果两条用例在本机变成永久 skip。
+    但实测 ``mklink /J`` 在这台机器上 ``returncode = 0``——**junction 是能建的**。
+    挡住它的是 ``os.symlink`` 那个假成功：``created=True`` 让 junction 分支
+    根本没机会跑，而那个**假目录还占着位置**，junction 会因"目标已存在"失败。
+    所以要先把它清掉再兜底。**"测不了就 skip"是底线，不是偷懒的理由。**
     """
     try:
         os.symlink(target, link, target_is_directory=True)
-        return True
+        if _is_real_link(link, target):
+            return True
     except (OSError, NotImplementedError):
         pass
+
+    # 走到这里有两种情况：① symlink 抛了（没权限）；② symlink "成功"但没建成链接。
+    # ② 留下的那个**真实目录**必须先清掉，否则下面 mklink 会因为目标已存在而失败。
+    if link.is_dir() and not link.is_symlink():
+        try:
+            link.rmdir()
+        except OSError:
+            return False
+
     if os.name == "nt":
         import subprocess
 
@@ -126,7 +171,9 @@ def _make_dir_link(link: Path, target: Path) -> bool:
             capture_output=True,
             check=False,
         )
-        return done.returncode == 0
+        if done.returncode == 0 and _is_real_link(link, target):
+            return True
+
     return False
 
 
