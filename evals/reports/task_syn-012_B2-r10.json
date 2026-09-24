@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-24T00:57:32",
+  "task": "syn-012",
+  "title": "任务队列的四处缺陷（状态机 / 重试计数 / 出队方向 / id 恢复）",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-012",
+    "eval_profile": "B2-r10",
+    "status": "stopped",
+    "rounds": 10,
+    "tool_calls": 16,
+    "tool_failures": 3,
+    "prompt_tokens": 56079,
+    "completion_tokens": 1146,
+    "wall_clock_s": 9.398,
+    "error": null
+  },
+  "verdict": {
+    "passed": false,
+    "reason": "判定命令 exit 1",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-012\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 1,
+      "summary": "        q = TaskQueue.load(Storage(path))\n        fresh = q.add(\"新任务\")\n>       assert fresh.id not in {\"t1\", \"t3\"}\nE       AssertionError: assert 't1' not in {'t1', 't3'}\nE        +  where 't1' = Task(id='t1', title='新任务', priority=0, state='pending', attempts=0).id\ntests\\test_taskq.py:143: AssertionError\n=========================== short test summary info ===========================\nFAILED tests\\test_taskq.py::test_claim_picks_highest_priority - AssertionErro...\nFAILED tests\\test_taskq.py::test_claim_same_priority_fifo_numeric - Assertion...\nFAILED tests\\test_taskq.py::test_save_then_load_roundtrip - AssertionError: a...\nFAILED tests\\test_taskq.py::test_load_then_add_no_id_collision - AssertionErr...\n4 failed, 9 passed in 3.89s"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T19:30:41",
+  "task": "syn-011",
+  "title": "Markdown 渲染器的三处跨模块缺陷（inline / blocks / renderer）",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-011",
+    "eval_profile": "B2-r30",
+    "status": "completed",
+    "rounds": 25,
+    "tool_calls": 31,
+    "tool_failures": 0,
+    "prompt_tokens": 224217,
+    "completion_tokens": 4015,
+    "wall_clock_s": 88.549,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-011\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": ".................                                                        [100%]\n17 passed in 0.27s"
+    }
+  }
+}

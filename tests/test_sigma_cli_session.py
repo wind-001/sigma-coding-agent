@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sigma import sdk
 from sigma.cli import (
     DEFAULT_SESSIONS_DIR,
@@ -33,6 +35,7 @@ from sigma_session.sessions import (
     list_sessions,
     new_session_id,
     session_path,
+    session_previews,
 )
 from sigma_session.store import JsonlStore
 from sigma_session.tree import SessionTree
@@ -347,3 +350,250 @@ def test_two_sessions_get_two_files(tmp_path: Path) -> None:
     second_text = (tmp_path / "乙.jsonl").read_text(encoding="utf-8")
     assert "甲的任务" in first_text and "甲的任务" not in second_text
     assert "乙的任务" in second_text and "乙的任务" not in first_text
+
+
+# ---------------------------------------------------------------------------
+# P5：会话列表的可辨认性（session_previews）
+# ---------------------------------------------------------------------------
+
+
+def test_preview_shows_first_user_message(tmp_path: Path) -> None:
+    """``SessionPreview`` 必须能取出**首条用户消息**。
+
+    这是 ``/sessions`` 可用性的全部：会话 id 是自动生成的
+    （``20260923-193929.812-a1b2``），光看一串数字认不出"这是我哪次对话"。
+
+    **这条测试曾经抓到过一个真 bug**：第一版 ``_first_user_text``
+    只挖了一层 dict（直接找 ``content``），而磁盘上的记录是
+    ``{message: {message: {...}}}`` 两层嵌套——于是**每条摘要都是 None**，
+    ``/sessions`` 全显示"（还没有用户消息）"。那个症状看起来像
+    "这功能还没做"，不像坏了。所以要断言**内容**，不能只断言"不为 None"。
+    """
+    root = tmp_path
+    root.mkdir(parents=True, exist_ok=True)
+    session = _session(root, "有话的", [_text("回答")])
+    import asyncio
+
+    asyncio.run(session.send("帮我看看 read 工具的实现"))
+
+    previews = session_previews(root)
+
+    assert len(previews) == 1
+    assert previews[0].first_user_text == "帮我看看 read 工具的实现"
+
+
+def test_preview_truncates_long_first_message(tmp_path: Path) -> None:
+    """超长首条消息**截断到 40 字 + …**：一行放得下才叫列表。"""
+    root = tmp_path
+    root.mkdir(parents=True, exist_ok=True)
+    session = _session(root, "长话", [_text("回答")])
+    import asyncio
+
+    asyncio.run(session.send("字" * 100))
+
+    preview = session_previews(root)[0]
+
+    assert preview.first_user_text is not None
+    assert preview.first_user_text.endswith("…")
+    # 40 个"字" + 省略号
+    assert len(preview.first_user_text) == 41
+
+
+def test_preview_skips_broken_file(tmp_path: Path) -> None:
+    """**坏文件跳过，不拖垮整个列表**（与 ``list_sessions`` / ``load`` 同源）。
+
+    会话目录里的文件是**用户数据**——一个写了一半的文件（进程被 kill）
+    不该让 ``/sessions`` 整个报错。代价只是少显示一行。
+
+    同时钉住"坏行跳过"：好行在坏行**后面**也要读到，
+    否则"从第一行往后读、遇到坏的停下"这种写法会通过。
+    """
+    root = tmp_path
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "坏.jsonl").write_text(
+        "这不是 JSON\n"
+        '{"id": "n1", "parent_id": null, "message": {"timestamp": "t", "role": "llm",'
+        ' "message": {"role": "user", "content": "坏文件里的好行", "timestamp": "t"}}}\n',
+        encoding="utf-8",
+    )
+    session = _session(root, "好", [_text("答")])
+    import asyncio
+
+    asyncio.run(session.send("正常会话的首条"))
+
+    by_id = {preview.id: preview for preview in session_previews(root)}
+
+    assert set(by_id) == {"坏", "好"}, "坏文件把整个列表拖垮了"
+    assert by_id["坏"].message_count == 1, "坏行没有被跳过"
+    assert by_id["坏"].first_user_text == "坏文件里的好行"
+    assert by_id["好"].first_user_text == "正常会话的首条"
+
+
+def test_preview_compresses_whitespace(tmp_path: Path) -> None:
+    """多行 / 多空格的输入压成一行：摘要里带换行会把列表打散。"""
+    root = tmp_path
+    root.mkdir(parents=True, exist_ok=True)
+    session = _session(root, "多行", [_text("答")])
+    import asyncio
+
+    asyncio.run(session.send("第一行\n第二行\t缩进"))
+
+    assert session_previews(root)[0].first_user_text == "第一行 第二行 缩进"
+
+
+def test_preview_limit_truncates_before_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``limit`` **先截断再读盘** —— 读 100 个文件再丢掉 80 个是纯浪费。
+
+    断言方式是**数读盘次数**（monkeypatch ``open`` 太糙，改为数
+    ``_preview_one`` 被调几次）。它同时钉住"列表顺序沿用 ``list_sessions``"：
+    截断发生在那份倒序列表上，所以留下的必须是**最新的**几个。
+    """
+    from sigma_session import sessions as sessions_module
+
+    root = tmp_path
+    root.mkdir(parents=True, exist_ok=True)
+    for index in range(5):
+        _write(root / f"会话{index}{SESSION_SUFFIX}", 1_000_000 + index)
+
+    calls: list[str] = []
+    real = sessions_module._preview_one
+
+    def counting(info, *, max_records):  # type: ignore[no-untyped-def]
+        calls.append(info.id)
+        return real(info, max_records=max_records)
+
+    monkeypatch.setattr(sessions_module, "_preview_one", counting)
+
+    previews = session_previews(root, limit=2)
+
+    assert [p.id for p in previews] == ["会话4", "会话3"], "留下的不是最新的几个"
+    assert calls == ["会话4", "会话3"], (
+        f"读了不该读的文件：{calls}——截断必须发生在读盘之前"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P5：SessionManager（组装与切换）
+# ---------------------------------------------------------------------------
+
+
+def _manager(tmp_path: Path, *, session_id: str, sessions_root: Path | None = None):  # type: ignore[no-untyped-def]
+    """造一个离线 manager（provider 是 ``FakeProvider``，不碰网络）。"""
+    from sigma.cli import SessionBinding, SessionManager
+
+    root = sessions_root if sessions_root is not None else tmp_path / "sessions"
+    return SessionManager(
+        args=_args(),
+        workspace=tmp_path,
+        base_url="http://fake",
+        model="fake",
+        api_key="sk-test",
+        registry=__import__("sigma_agent.registry", fromlist=["ToolRegistry"]).ToolRegistry(),
+        system_prompt="",
+        sessions_root=root,
+        binding=SessionBinding(session_id, SessionTree(), resumed=False, previous_messages=0),
+        shadow_git_dir=None,
+        skills_root=None,
+        make_provider=lambda: FakeProvider.from_rounds([_text("好")]),
+    )
+
+
+def test_manager_switch_loads_history_into_the_new_session(tmp_path: Path) -> None:
+    """切换后**新会话的 context 里真的有旧内容**。
+
+    这与 ``/sessions`` 摘要、与 G61 都不同：这里测的是
+    ``SessionManager`` 这一个组件的契约——它必须 ``from_store``。
+    少了那一步的后果在 REPL 那一侧才看得见（G87），
+    而在这一层就钉住，坏掉时能立刻指到是哪一步少做了。
+    """
+    import asyncio
+
+    root = tmp_path / "sessions"
+    other = _session(root, "另一个", [_text("旧回答")])
+    asyncio.run(other.send("旧任务"))
+
+    manager = _manager(tmp_path, session_id="当前")
+
+    outcome = manager.switch_to("另一个")
+
+    assert outcome.ok and outcome.switched
+    assert outcome.messages == 2
+    dumped = "".join(
+        m.model_dump_json() for m in manager.current.context.build_messages()
+    )
+    assert "旧任务" in dumped and "旧回答" in dumped
+
+
+def test_manager_switch_to_missing_file_is_not_ok(tmp_path: Path) -> None:
+    """不存在的 id → ``ok=False``，且**当前会话不动**。
+
+    "失败时把当前会话换掉"是最坏的失败形态：用户以为自己在旧上下文里，
+    实际拿到了一个空的。所以失败路径**必须**不产生副作用。
+    """
+    manager = _manager(tmp_path, session_id="当前")
+
+    outcome = manager.switch_to("查无此会话")
+
+    assert outcome.ok is False
+    assert manager.current_id == "当前", "切换失败却改了当前会话"
+
+
+def test_manager_switch_to_self_reloads_without_switching(tmp_path: Path) -> None:
+    """切到当前会话：``ok=True`` 但 ``switched=False`` —— **不是错误**。
+
+    用户这么敲通常是想"重来一遍"（把内存里未落盘的改动丢掉）。
+    报错会让他以为命令拼错了。
+
+    这里手工建一个**存在的**空文件（不用 ``JsonlStore.append([])``——
+    它对空列表直接 return，不建文件，于是测试会因为"文件不存在"而红，
+    而那是测试自己的构造错误，不是被测量的问题）。
+    """
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"当前{SESSION_SUFFIX}").write_text("", encoding="utf-8")
+    manager = _manager(tmp_path, session_id="当前")
+
+    outcome = manager.switch_to("当前")
+
+    assert outcome.ok is True
+    assert outcome.switched is False
+
+
+def test_manager_switch_accepts_file_suffix(tmp_path: Path) -> None:
+    """``/switch abc.jsonl`` 与 ``/switch abc`` 是同一个会话。
+
+    用户在 ``/sessions`` 里看到的是 id，从资源管理器里看到的是文件名——
+    两种写法都得认，否则他要手工删掉后缀，而那不是他能预期的事。
+    """
+    import asyncio
+
+    root = tmp_path / "sessions"
+    asyncio.run(_session(root, "有后缀", [_text("答")]).send("任务"))
+    manager = _manager(tmp_path, session_id="当前")
+
+    outcome = manager.switch_to("有后缀.jsonl")
+
+    assert outcome.ok is True
+    assert manager.current_id == "有后缀"
+
+
+def test_manager_switch_rejects_path_traversal(tmp_path: Path) -> None:
+    """``../../`` 这类 id **不能探测会话目录之外的文件**。
+
+    ``switch_to`` 的第一件事是 ``path.is_file()``——那已经是一次
+    越界的存在性探测。净化发生在拼路径**之前**，所以探测范围被钉在目录内。
+
+    这条不能只断言"切换失败"：失败是必然的（外面没有那个会话），
+    要断言的是**探测没有越界**——用一个确实存在于目录外的文件来证明。
+    """
+    outside = tmp_path / "机密.txt"
+    outside.write_text("不该被看到", encoding="utf-8")
+    manager = _manager(tmp_path, session_id="当前")
+
+    outcome = manager.switch_to("../机密.txt")
+
+    assert outcome.ok is False, "越界路径被当成了合法会话"
+    # 净化后的 id 只应保留目录内的那一段，绝不能含 ..
+    assert ".." not in outcome.session_id

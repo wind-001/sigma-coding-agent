@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T17:52:44",
+  "task": "syn-004",
+  "title": "二分查找的两处边界（index_of / insertion_point）",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-004",
+    "eval_profile": "B2-no-todo",
+    "status": "completed",
+    "rounds": 9,
+    "tool_calls": 10,
+    "tool_failures": 2,
+    "prompt_tokens": 31240,
+    "completion_tokens": 1778,
+    "wall_clock_s": 21.684,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-004\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": "...........                                                              [100%]\n11 passed in 0.04s"
+    }
+  }
+}

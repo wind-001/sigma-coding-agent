@@ -1,6 +1,6 @@
 # 任务评测：syn-001 —— 按显示宽度折行（东亚宽度）（档位 B2）
 
-> 生成时间 2026-09-23T12:41:42 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
+> 生成时间 2026-09-23T17:33:00 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
 
 ## 判定
 
@@ -11,12 +11,12 @@
 | 指标 | 值 |
 | --- | --- |
 | status | `completed` |
-| 轮数 | 9 |
-| 工具调用 | 9 |
+| 轮数 | 10 |
+| 工具调用 | 10 |
 | 工具失败 | 0 |
-| prompt token | 32422 |
-| completion token | 1431 |
-| wall-clock | 18.013s |
+| prompt token | 41273 |
+| completion token | 1522 |
+| wall-clock | 70.33s |
 
 ## 证据（为什么这么判）
 

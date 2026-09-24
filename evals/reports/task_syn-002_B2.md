@@ -1,6 +1,6 @@
 # 任务评测：syn-002 —— 金额分摊不丢账（最大余数法）（档位 B2）
 
-> 生成时间 2026-09-23T12:42:01 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
+> 生成时间 2026-09-23T17:53:06 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
 
 ## 判定
 
@@ -14,9 +14,9 @@
 | 轮数 | 7 |
 | 工具调用 | 8 |
 | 工具失败 | 1 |
-| prompt token | 22737 |
-| completion token | 1113 |
-| wall-clock | 16.122s |
+| prompt token | 26143 |
+| completion token | 1138 |
+| wall-clock | 17.273s |
 
 ## 证据（为什么这么判）
 

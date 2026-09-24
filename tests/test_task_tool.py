@@ -26,7 +26,7 @@ from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult, TurnResult
 from sigma_ai.base import NeverCancelled
 from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock
+from sigma_ai.messages import TextBlock, Usage
 
 from sigma_tools.task import MAX_RESULT_CHARS, TaskParams, TaskTool
 
@@ -47,20 +47,26 @@ class _FakeFactory:
         rounds: int = 3,
         status: str = "completed",
         error: Exception | None = None,
+        usage: Usage | None = None,
     ) -> None:
         self.delay = delay
         self.text = text
         self.rounds = rounds
         self.status = status
         self.error = error
+        self.usage = usage
         self.calls: list[str] = []
+        self.max_rounds_seen: list[int] = []
         self.active = 0
         self.peak = 0
 
     async def __call__(
-        self, description: str, ctx: ToolContext, sub_session_id: str
+        self, description: str, ctx: ToolContext, sub_session_id: str,
+        max_rounds: int = 0,
     ) -> TurnResult:
         self.calls.append(sub_session_id)
+        # 记录派发方给的轮数预算——三档预算的断言就看它。
+        self.max_rounds_seen.append(max_rounds)
         self.active += 1
         self.peak = max(self.peak, self.active)
         try:
@@ -69,7 +75,11 @@ class _FakeFactory:
             if self.error is not None:
                 raise self.error
             return TurnResult(
-                status=self.status, messages=[], text=self.text, rounds=self.rounds
+                status=self.status,
+                messages=[],
+                text=self.text,
+                rounds=self.rounds,
+                usage=self.usage,
             )
         finally:
             self.active -= 1
@@ -86,10 +96,17 @@ def _tool(factory: _FakeFactory, *, max_concurrent: int = 3) -> TaskTool:
 
 
 async def _dispatch(
-    tool: TaskTool, tmp_path: Path, description: str = "调查 X"
+    tool: TaskTool,
+    tmp_path: Path,
+    description: str = "调查 X",
+    *,
+    difficulty: str = "medium",
 ) -> ToolResult:
     return await tool.run(
-        TaskParams(action="dispatch", description=description), _ctx(tmp_path)
+        TaskParams(
+            action="dispatch", description=description, difficulty=difficulty
+        ),
+        _ctx(tmp_path),
     )
 
 
@@ -174,6 +191,30 @@ async def test_drain_marks_delivered_idempotent(tmp_path: Path) -> None:
     assert len(first) == 1
     assert await tool.wait_and_drain() == []
     assert tool.drain_completed() == []
+
+
+async def test_report_includes_token_usage(tmp_path: Path) -> None:
+    """D-A1（P4-批次2）：子 agent 的 token 用量必须随回报回传——
+    否则 A/B 评测的成本指标只统计到主 agent（编排者），两臂真实花费不可见。"""
+    factory = _FakeFactory(
+        text="结论",
+        usage=Usage(prompt_tokens=1234, completion_tokens=56, cached_tokens=100),
+    )
+    tool = _tool(factory)
+    await _dispatch(tool, tmp_path)
+    body = _user_texts(await tool.wait_and_drain())[0]
+    assert "1234+56" in body
+    assert "cached 100" in body
+
+
+async def test_report_without_usage_byte_identical(tmp_path: Path) -> None:
+    """usage=None（回放/假工厂默认路径）时回报文本与加 D-A1 之前逐字节一致。"""
+    factory = _FakeFactory(text="结论", rounds=7)
+    tool = _tool(factory)
+    await _dispatch(tool, tmp_path)
+    body = _user_texts(await tool.wait_and_drain())[0]
+    assert "已完成（7 轮）：" in body
+    assert "token" not in body
 
 
 async def test_status_reports_states(tmp_path: Path) -> None:
@@ -425,3 +466,59 @@ async def test_write_batch_unaffected_without_lock(tmp_path: Path) -> None:
     )
     await loop.run_turn([])
     assert probe.seen_locked == [None]
+
+
+# ---------------------------------------------------------------------------
+# 难度档位 → 轮数预算（G89 的靶子）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("difficulty", "expected"), [("low", 10), ("medium", 20), ("high", 30)]
+)
+async def test_difficulty_selects_round_budget(
+    tmp_path: Path, difficulty: str, expected: int
+) -> None:
+    """**G89 的靶子**：难度档位真的决定子会话的轮数预算。
+
+    注入（``for_level`` 恒返回 high）后：low 档也会拿到 30 → 本用例红。
+    断言落在"工厂收到的值"上——那是唯一能证明预算真的被传下去的地方。
+    """
+    factory = _FakeFactory()
+    tool = _tool(factory)
+    await _dispatch(
+        tool, tmp_path, "查一下", **{"difficulty": difficulty}
+    )
+    await tool.wait_and_drain()
+    assert factory.max_rounds_seen == [expected]
+
+
+async def test_default_difficulty_is_medium(tmp_path: Path) -> None:
+    """不指定难度 = medium（20 轮）——与主任务默认轮数一致，行为不漂移。"""
+    factory = _FakeFactory()
+    tool = _tool(factory)
+    await _dispatch(tool, tmp_path, "查一下")
+    await tool.wait_and_drain()
+    assert factory.max_rounds_seen == [20]
+
+
+async def test_dispatch_receipt_shows_budget(tmp_path: Path) -> None:
+    """预算必须对模型可见：它才知道"这个子任务被给了多少轮"，
+    也才可能在 low 档跑不完时用 high 重派。"""
+    tool = _tool(_FakeFactory())
+    result = await _dispatch(tool, tmp_path, "复杂修复", difficulty="high")
+    text = result.content[0].text  # type: ignore[union-attr]
+    assert "轮数预算 30" in text
+    assert "难度 high" in text
+
+
+async def test_unknown_difficulty_rejected_by_schema(tmp_path: Path) -> None:
+    """档位名由 Literal 约束：拼错的档位在参数校验层就被拒，不进信箱。"""
+    tool = _tool(_FakeFactory())
+    with pytest.raises(Exception):
+        await tool.run(
+            TaskParams.model_construct(
+                action="dispatch", description="x", difficulty="ultra"
+            ),
+            _ctx(tmp_path),
+        )

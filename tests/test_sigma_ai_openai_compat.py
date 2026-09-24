@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -664,3 +665,109 @@ async def test_stream_is_async_iterable_not_coroutine() -> None:
         signal=_NeverCancelled(),
     )
     assert hasattr(stream, "__aiter__")
+
+
+# ---------------------------------------------------------------------------
+# 流式超时：防「一直有心跳但不出内容」的挂死（2026-09-23 实测缺陷）
+# ---------------------------------------------------------------------------
+
+
+def _stream_handler(chunks: bytes, *, pause_s: float, pause_after: int):
+    """造一个**会在中途停住**的流式 handler。
+
+    ``pause_after`` 之前正常吐数据；之后停 ``pause_s`` 秒再吐完剩下的数据。
+    两条超时用例共用它：一个验证"停太久被空闲闸砍掉"，
+    一个验证"慢慢滴答被总时长闸砍掉"。
+    """
+
+    async def _gen():  # type: ignore[no-untyped-def]
+        yield chunks
+        await asyncio.sleep(pause_s)
+        yield b"data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_gen(),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    return handler
+
+
+async def _collect_events(provider: OpenAICompatProvider) -> list[Any]:
+    return [
+        event
+        async for event in provider.stream(
+            [UserMessage(content="hi", timestamp=ts(1))],
+            [],
+            model="m",
+            signal=_NeverCancelled(),
+        )
+    ]
+
+
+async def test_idle_timeout_cuts_a_stalled_stream() -> None:
+    """**G87 的靶子**：SSE 停住超过空闲上限 → 必须收到**可见**的超时错误。
+
+    为什么 ``httpx.Timeout`` 挡不住（对应模块常量处的注释）：读超时管的是
+    单次读，心跳一响就重置。这里验的是**空闲闸**——停了 0.5 s、空闲上限
+    0.1 s，必须被砍掉。
+
+    注入后（空闲闸失效）会发生什么：流在 0.5 s 后正常吐完 DONE →
+    **没有 ErrorEvent** → 断言红。不会 hang，是确定性红。
+    """
+    transport = httpx.MockTransport(_stream_handler(b"", pause_s=0.5, pause_after=0))
+    provider = OpenAICompatProvider(
+        base_url="https://example.invalid/v1",
+        api_key="sk-test",
+        client=httpx.AsyncClient(transport=transport),
+        stream_idle_timeout_s=0.1,
+        stream_total_timeout_s=30.0,
+    )
+    events = await _collect_events(provider)
+    errors = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1, f"应恰好一条超时错误事件，实际 {errors}"
+    assert errors[0].error.code == ErrorCode.TRANSIENT
+    assert "空闲超时" in errors[0].error.message
+
+
+async def test_total_timeout_guards_slow_drip() -> None:
+    """**G88 的靶子**：一直"有数据、每次都不算超时"的流被整条时长闸砍掉。
+
+    空闲闸防不住这种：每个 chunk 都在空闲上限内到达，但整条流永远不结束
+    （2026-09-23 挂死 1 小时的那些连接正是这种形状）。所以 handler 用的是
+    **快速滴答**（每 5 ms 一行），让"单行不超时、整条超时"这个条件成立。
+
+    注入后（总闸失效）流会正常走完 40 行 → 没有 ErrorEvent → 断言红（不 hang）。
+    """
+
+    async def _drip():  # type: ignore[no-untyped-def]
+        for _ in range(40):
+            await asyncio.sleep(0.005)
+            yield b'data: {"choices":[]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=_drip(), headers={"content-type": "text/event-stream"}
+        )
+
+    provider = OpenAICompatProvider(
+        base_url="https://example.invalid/v1",
+        api_key="sk-test",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        stream_idle_timeout_s=5.0,
+        stream_total_timeout_s=0.05,
+    )
+    events = await _collect_events(provider)
+    errors = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1, f"应恰好一条整体超时错误事件，实际 {errors}"
+    assert "整体超时" in errors[0].error.message
+
+
+async def test_normal_stream_has_no_timeout_error() -> None:
+    """回归：正常（一次吐完）的流不受两个闸影响——不能误伤。"""
+    provider, _ = _provider()
+    events = await _collect(provider)
+    assert not [e for e in events if isinstance(e, ErrorEvent)]

@@ -68,7 +68,12 @@ from sigma_tools.edit import EditTool
 from sigma_tools.grep import GrepTool
 from sigma_tools.read import ReadTool
 from sigma_tools.skill import LoadSkillTool
-from sigma_tools.task import SubAgentFactory, TaskTool
+from sigma_tools.task import (
+    MAX_RESULT_CHARS,
+    SubAgentFactory,
+    SubAgentRounds,
+    TaskTool,
+)
 from sigma_tools.todo import TodoTool
 from sigma_tools.web_fetch import WebFetchTool
 from sigma_tools.web_search import WebSearchTool
@@ -82,7 +87,16 @@ if TYPE_CHECKING:
     from sigma_ai.base import BaseProvider
 
 
-SYSTEM_PROMPT = """你是一个在本地工作区里干活的编程助手。
+#: todo 工具的工具行。todo 是**默认恒注册**的核心工具（见 :func:`default_registry`），
+#: 所以它在默认提示词里——``SYSTEM_PROMPT = 基座 + 本行``（见下方构造）。
+#: ``build_system_prompt(todo=False)`` 是评测 A/B 的"无 todo"消融档（P4-批次2 D-A2）：
+#: 提示词与注册表必须同源（批次 7 教训），所以这一行必须能从提示词里拿掉。
+TODO_TOOL_LINE = (
+    "- todo：任务清单（.sigma/todo.json）。长任务先 create 拆解计划，每完成一步 update 状态；"
+    "执行中发现后续划分或难度判断不对，用 revise 重排未开始的 pending 部分\n"
+)
+
+_SYSTEM_PROMPT_HEAD = """你是一个在本地工作区里干活的编程助手。
 
 可用工具：
 - read：读取文本文件，支持行范围（start_line / end_line）
@@ -90,19 +104,46 @@ SYSTEM_PROMPT = """你是一个在本地工作区里干活的编程助手。
 - edit：精确替换文件中的一段文本（修改已有文件时优先用它）
 - bash：执行 bash 命令（列目录、建目录、运行测试等）
 - grep：按正则搜索文件内容，返回 文件:行号:文本
-- todo：任务清单（.sigma/todo.json）。长任务先 create 拆解计划，每完成一步 update 状态
+"""
 
-工作方式：
+#: 「工作方式」第 3 条分有/无 todo 两版（P4-批次2 D-A2）：无 todo 消融档保留
+#: "拆解"建议、去掉工具引用——不换文案的话，提示词会让模型去调一个不存在的
+#: 工具（与工具行同源是同一条纪律，规则正文也不能豁免）。
+#: 「计划随执行进化」（P4-批次4）：开工时的拆解基于当时的信息，执行到中途
+#: 对剩下部分的理解更深——所以第 3 条要**明说可以改后续**。不说的话，
+#: 模型会把第一版清单当圣旨，被自己开工时的无知锁死（工具里有 revise 但
+#: 提示词不提 = 能力存在却无人使用，与"提示词指向不存在的工具"同样是不同源）。
+_TODO_RULE_LINE = (
+    "3. 长任务（3 步以上）先用 todo create 拆解成清单，按清单依次执行、逐步 update；"
+    "**执行中若发现后续划分或难度判断不对，用 todo revise 重排未开始的部分**——"
+    "最初那版只是基于当时信息的推测，不是定稿。\n"
+)
+_GENERIC_RULE_LINE = "3. 长任务（3 步以上）先拆解成小步骤，按步骤依次执行。\n"
+
+_SYSTEM_PROMPT_RULES_HEAD = """工作方式：
 1. 先看清楚再动手——不确定文件内容时先 read，不要凭猜测写。
 2. 一次只做一件必要的事，不要把多步操作合成一次调用。
-3. 长任务（3 步以上）先用 todo create 拆解成清单，按清单依次执行、逐步 update。
-4. 完成后用一两句话说明你做了什么。
+"""
+
+_SYSTEM_PROMPT_RULES_TAIL = """4. 完成后用一两句话说明你做了什么。
 
 注意：
 - 相对路径基于工作区根目录解析。
 - write 不会自动创建父目录；建目录请用 bash 的 mkdir -p。
 - bash 的命令没有任何过滤，执行前确认它符合当前任务。
 """
+
+
+def _rules_section(todo: bool) -> str:
+    """「工作方式」整段。``todo=False`` 只换第 3 条，其余逐字节不变。"""
+    return (
+        _SYSTEM_PROMPT_RULES_HEAD
+        + (_TODO_RULE_LINE if todo else _GENERIC_RULE_LINE)
+        + _SYSTEM_PROMPT_RULES_TAIL
+    )
+
+
+SYSTEM_PROMPT = _SYSTEM_PROMPT_HEAD + TODO_TOOL_LINE + "\n" + _rules_section(True)
 
 
 #: 联网工具的工具行。**只在启用时拼进系统提示词**——它进常驻区，
@@ -142,10 +183,15 @@ TASK_TOOL_LINE = (
 #: 子 agent 提示词的前缀（角色行）。正文复用 :func:`build_system_prompt` 的产物——
 #: 子会话的 registry 是主 registry 的克隆，提示词必须与它同源（批次 7 教训），
 #: 不另写一份会漂移的静态文案。
+#:
+#: 总结上限必须写进子提示词（P4-批次2 D-A5）：截断发生在主 agent 侧，
+#: 子 agent 若不知情，"请写得更精炼"的补救永远晚一步——**约束要告诉被约束者**。
+#: 引用 ``MAX_RESULT_CHARS`` 常量而不是抄写数字：两处同源，改上限不用记得改文案。
 SUB_SYSTEM_PROMPT_PREFIX = (
     "你是被主 agent 派来执行单个子任务的执行者。\n"
     "你的上下文里没有主对话历史，只依据任务描述独立干活。"
-    "完成后用一段自包含的总结收尾：结论、关键文件路径、没做完的部分如实说明。\n\n"
+    "完成后用一段自包含的总结收尾：结论、关键文件路径、没做完的部分如实说明；"
+    f"总结控制在 {MAX_RESULT_CHARS} 字符以内，超出会被截断。\n\n"
 )
 
 #: 调研纪律（批次 8）。它是 **Guide**（pi 笔记 13.2：前馈控制），
@@ -170,6 +216,7 @@ def build_system_prompt(
     web_fetch: bool = False,
     skills: bool = False,
     task: bool = False,
+    todo: bool = True,
 ) -> str:
     """按启用的工具集生成系统提示词。
 
@@ -185,7 +232,15 @@ def build_system_prompt(
     而那时提示词里也就不该有这一行。
 
     ``task`` 同理：只在 ``enable_sub_agent`` 的主会话里为 True。
+
+    ``todo`` 与其他开关方向相反：**默认开**（todo 恒注册是产品决策），
+    ``todo=False`` 是评测 A/B 的"无 todo"消融档（P4-批次2 D-A2）——
+    工具行与「工作方式」第 3 条一起换掉，注册表侧的同源开关是
+    ``default_registry(todo=False)``。默认路径返回 ``SYSTEM_PROMPT`` 本身
+    （逐字节一致由 test_system_prompt_is_byte_identical_when_disabled 钉住）。
     """
+    head = _SYSTEM_PROMPT_HEAD + (TODO_TOOL_LINE if todo else "")
+    rules_section = _rules_section(todo)
     tool_lines: list[str] = []
     if web_search:
         tool_lines.append(WEB_SEARCH_TOOL_LINE)
@@ -196,7 +251,7 @@ def build_system_prompt(
     if task:
         tool_lines.append(TASK_TOOL_LINE)
     if not tool_lines:
-        return SYSTEM_PROMPT
+        return head + "\n" + rules_section
 
     block = "".join(tool_lines)
     # 调研纪律**只在联网时**加：它是给联网工具用的操作规程，
@@ -209,9 +264,7 @@ def build_system_prompt(
         numbered = "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, start=1))
         block += "\n调研纪律（联网时按这个顺序做）：\n" + numbered + "\n"
 
-    marker = "\n工作方式："
-    head, sep, tail = SYSTEM_PROMPT.partition(marker)
-    return f"{head}\n{block}{sep}{tail}"
+    return f"{head}\n{block}\n{rules_section}"
 
 
 #: 联网搜索的额度账本落点。**在用户级配置目录**（仓库外）：
@@ -250,6 +303,7 @@ def default_registry(
     web_fetch: bool = False,
     firecrawl_api_key: str | None = None,
     skills: Sequence[SkillMeta] = (),
+    todo: bool = True,
 ) -> ToolRegistry:
     """内置工具集：read / write / edit / bash / grep 全部就位。
 
@@ -271,10 +325,13 @@ def default_registry(
     registry.register(EditTool())
     registry.register(BashTool())
     registry.register(GrepTool())
-    # todo **恒注册**（P4 任务清单）：它的文件是工具自己的账本（.sigma/todo.json），
-    # 不依赖任何外部服务或配置，"没有条件"的情况不存在——所以没有开关。
+    # todo **默认注册**（P4 任务清单）：它的文件是工具自己的账本（.sigma/todo.json），
+    # 不依赖任何外部服务或配置，"没有条件"的情况不存在——所以产品路径上没有开关。
     # SYSTEM_PROMPT 里的 todo 工具行与本行必须同源（批次 7 教训）。
-    registry.register(TodoTool())
+    # 唯一的例外是评测：``todo=False`` 是 A/B 的"无 todo"消融档（P4-批次2 D-A2），
+    # 提示词侧的同源开关是 ``build_system_prompt(todo=False)``——两个开关必须一起用。
+    if todo:
+        registry.register(TodoTool())
     if web_search:
         if not tavily_api_key:
             raise ValueError(
@@ -394,12 +451,19 @@ class InteractiveSession:
         enable_checkpoint: bool = True,
         skills_root: Path | None = None,
         todo_steer_interval: int = 10,
+        enable_todo: bool = True,
         enable_sub_agent: bool = False,
         sub_agent_max_concurrent: int = 3,
-        sub_agent_max_rounds: int = 50,
+        sub_agent_rounds: SubAgentRounds | None = None,
         signal: CancelToken | None = None,
         tool_lock: asyncio.Lock | None = None,
     ) -> None:
+        """``sub_agent_rounds``：子 agent 的轮数预算**三档**（low/medium/high）。
+
+        原来是一个固定值 50——没有凭据，且单次子任务的成本上限被抬到
+        ~450k token。改成三档后由**派发的模型**按难度选（默认 medium=20，
+        与主任务默认轮数一致）。详见 :class:`sigma_tools.task.SubAgentRounds`。
+        """
         self._provider = provider
         self._model = model
         self._session_id = session_id
@@ -409,7 +473,17 @@ class InteractiveSession:
         self._emit = emit
         self._observer = observer
         self._shadow_git_dir = shadow_git_dir
-        self._registry = registry if registry is not None else default_registry()
+        self._registry = (
+            registry if registry is not None else default_registry(todo=enable_todo)
+        )
+        if not enable_todo:
+            if "todo" in self._registry.names():
+                raise ValueError(
+                    "registry 里已注册 todo 工具，与 enable_todo=False 冲突。"
+                    "无 todo 消融档请用 default_registry(todo=False) 或自行剔除，"
+                    "提示词侧用 build_system_prompt(todo=False) 保持同源。"
+                )
+            todo_steer_interval = 0
         self._clock = _real_clock
         # 压缩策略：不传就用保守窗口的默认值（见 DEFAULT_CONTEXT_WINDOW_TOKENS）。
         # **默认开**而不是默认关：压缩是长会话能不能跑下去的前提，
@@ -493,11 +567,13 @@ class InteractiveSession:
             # 子会话由工厂传入主会话的锁（tool_lock 参数）；主会话自己没有时新建。
             if self._tool_lock is None:
                 self._tool_lock = asyncio.Lock()
+            rounds = (
+                sub_agent_rounds if sub_agent_rounds is not None else SubAgentRounds()
+            )
             task_tool = TaskTool(
-                factory=self._make_sub_agent_factory(
-                    self._tool_lock, sub_agent_max_rounds
-                ),
+                factory=self._make_sub_agent_factory(self._tool_lock, rounds),
                 max_concurrent=sub_agent_max_concurrent,
+                rounds=rounds,
             )
             self._registry.register(task_tool)
             self._mailbox_drain = task_tool.drain_completed
@@ -527,14 +603,14 @@ class InteractiveSession:
             emit=emit,
             observer=observer,
             checkpoint=self._checkpoint,
-            todo_steer_interval=todo_steer_interval,
+            todo_steer_interval=todo_steer_interval,  # enable_todo=False 时已置 0
             tool_lock=self._tool_lock,
             mailbox_drain=self._mailbox_drain,
             mailbox_wait=self._mailbox_wait,
         )
 
     def _make_sub_agent_factory(
-        self, tool_lock: asyncio.Lock, sub_max_rounds: int
+        self, tool_lock: asyncio.Lock, rounds: SubAgentRounds
     ) -> SubAgentFactory:
         """造子 agent 工厂（闭包捕获主会话的组装知识，每次 dispatch 调用一次）。
 
@@ -546,16 +622,21 @@ class InteractiveSession:
         2. **todo 换独立账本**——共享会让"至多一条 running"被静默破坏。
         """
         async def factory(
-            description: str, ctx: ToolContext, sub_session_id: str
+            description: str, ctx: ToolContext, sub_session_id: str,
+            max_rounds: int,
         ) -> TurnResult:
             sub_registry = ToolRegistry()
             for name in self._registry.names():
                 if name in ("task", "todo"):
                     continue
                 sub_registry.register(self._registry.get(name))
-            sub_registry.register(
-                TodoTool(relative_path=f".sigma/todo-{sub_session_id}.json")
-            )
+            # 子 agent 的 todo 换独立账本（主清单不被子触碰，"至多一条 running"
+            # 各自成立）；**但只在主会话有 todo 时才注册**——无 todo 消融档
+            # （enable_todo=False，P4-批次2 D-A2）不能经子会话把 todo 偷渡回来。
+            if "todo" in self._registry.names():
+                sub_registry.register(
+                    TodoTool(relative_path=f".sigma/todo-{sub_session_id}.json")
+                )
             sub_names = sub_registry.names()
             sub_session = InteractiveSession(
                 provider=self._provider,
@@ -569,8 +650,11 @@ class InteractiveSession:
                     web_search="web_search" in sub_names,
                     web_fetch="web_fetch" in sub_names,
                     skills="load_skill" in sub_names,
+                    todo="todo" in sub_names,
                 ),
-                max_rounds=sub_max_rounds,
+                # 轮数预算由派发方按难度档位给（low/medium/high）——
+                # 子会话不自定预算（见 SubAgentRounds 的取值依据）。
+                max_rounds=max_rounds,
                 observer=self._observer,
                 emit=self._emit,
                 session_id=sub_session_id,
@@ -720,9 +804,10 @@ async def run_task(
     enable_checkpoint: bool = True,
     skills_root: Path | None = None,
     todo_steer_interval: int = 10,
+    enable_todo: bool = True,
     enable_sub_agent: bool = False,
     sub_agent_max_concurrent: int = 3,
-    sub_agent_max_rounds: int = 50,
+    sub_agent_rounds: SubAgentRounds | None = None,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -734,6 +819,10 @@ async def run_task(
     ``enable_compaction=False`` 是评测用的**显式消融开关**（B1 档，见
     :mod:`sigma.eval_profile`）：关掉自动压缩。它与 ``enable_checkpoint``
     同构——评测要能声明"无 harness 干预"档，否则 B1 对照无从成立。
+
+    ``enable_todo=False`` 同理（P4-批次2 D-A2）：todo 工具 A/B 的"无 todo"
+    对照臂。调用方须同步传 ``system_prompt=build_system_prompt(todo=False)``
+    保持提示词与注册表同源（评测运行器 task_runner.py 就是这么做的）。
 
     时间戳用真实时钟。若要让执行**确定**（回放测试要求两次逐字节一致），
     调用方应自行构造 ``AgentLoop`` 并注入固定 ``clock`` ——
@@ -760,8 +849,9 @@ async def run_task(
         enable_checkpoint=enable_checkpoint,
         skills_root=skills_root,
         todo_steer_interval=todo_steer_interval,
+        enable_todo=enable_todo,
         enable_sub_agent=enable_sub_agent,
         sub_agent_max_concurrent=sub_agent_max_concurrent,
-        sub_agent_max_rounds=sub_agent_max_rounds,
+        sub_agent_rounds=sub_agent_rounds,
     )
     return await session.send(task)

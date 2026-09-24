@@ -45,7 +45,11 @@ from sigma_tools._paths import PathEscapesWorkspace, resolve_write_path
 from sigma_tools.truncate import truncate_output
 
 DEFAULT_TIMEOUT_S = 60
-MAX_TIMEOUT_S = 600
+#: 超时上限。600 → 1800（P4-批次2，D-A4）：真实模型跑一条评测任务
+#: （多轮对话 + 判定）超过 10 分钟是常态，600 s 会让"一条任务一次 bash 调用"
+#: 的评测编排必死。上限**保留但有界放大**——不设上限会让挂起的命令把
+#: loop 永久卡死（见模块 docstring「超时必须」）。
+MAX_TIMEOUT_S = 1800
 
 
 class BashParams(BaseModel):

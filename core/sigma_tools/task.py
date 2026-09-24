@@ -22,6 +22,12 @@
     结果会永远留在信箱里且没有任何一步报错。loop 的收尾兜底
     （``AgentLoop._drain_or_wait_mailbox``）保证：**run_turn 的结束条件 =
     模型不再调工具 且 信箱没有未回报内容 且 没有在跑的子任务**。
+
+为什么回报里带 token 用量（P4-批次2，D-A1）
+    子会话的 ``TurnResult.usage`` 曾经只到 ``_run_sub`` 为止——A/B 评测的成本指标
+    于是只统计到主 agent（编排者），两臂真实花费不可见。用量与结论**写进同一条
+    回报文本**：主 agent 是评测数据的第一个消费者，成本必须与结论一起被看到
+    （与 stopped 前缀"结果可信度与结果同行"同一条纪律）。
 """
 from __future__ import annotations
 
@@ -35,14 +41,58 @@ from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
 from sigma_agent.base import BaseTool
 from sigma_agent.types import ToolContext, ToolResult, TurnResult
 from sigma_ai import stamps
-from sigma_ai.messages import TextBlock, UserMessage
+from sigma_ai.messages import TextBlock, Usage, UserMessage
 
 #: 单个子任务结果回传进主上下文的字符上限（约 1k token）。
 #: 超过它说明"总结没写好"，而不是主上下文该装下它——截断且**可见**（丢弃必须可见）。
 MAX_RESULT_CHARS = 4000
 
-SubAgentFactory = Callable[[str, ToolContext, str], Awaitable[TurnResult]]
-"""工厂签名：``(description, 主 ctx, 派生 session_id) -> 子会话 TurnResult``。
+
+class SubAgentRounds(BaseModel):
+    """子 agent 的轮数预算：三档，由**派发的模型**按任务难度选。
+
+    三档取值与依据（全部来自本项目实测，不是拍脑袋）
+        low    = 10  覆盖"取信息、读文件给结论"这类窄子任务。依据：修 bug 类
+                     短任务实测最短 7 轮（syn-002）／A/B 试水 7–9 轮；10 = 7 × 1.4。
+        medium = 20  默认档，覆盖短 bug 修复（实测 7–16 轮，syn-001…010 的 B2 臂）。
+                     20 = 实测最大 16 × 1.25，且与主任务默认 max_rounds 对齐。
+        high   = 30  覆盖复杂子任务。依据：两条复杂任务实测 23 / 25 轮完成
+                     （syn-012 / syn-011），30 = 25 × 1.2。**低于 23 会重演
+                     syn-011 在 r20 的失败形状**——修到只剩 1 处 bug 被掐断。
+
+    为什么不再保留原来的固定 50
+        50 轮 × 实测每轮 3–9k prompt = 单次子任务上限约 450k token，而
+        r20 → r30 的边际收益已经归零（两条复杂任务 23 / 25 轮就完成了）。
+        50 是无凭据的虚高；30 有实测支撑，且省下的是真金白银。
+
+    为什么判断难度的是模型而不是代码
+        代码只能看描述长度之类的表面特征——那是循环论证（"长描述=难"没有
+        证据）。**派发的模型是唯一知道任务难度的一方**：它刚拆完计划。
+        低档猜错了也不致命：子会话跑不满会 stopped，回报里带"未正常收尾"
+        注记，主 agent 可以立刻用 high 重派——闭环是通的。
+    """
+
+    low: int = 10
+    medium: int = 20
+    high: int = 30
+
+    def for_level(self, level: str) -> int:
+        """按档位名取轮数。认不出的档位**不猜**——直接报错。"""
+        table: dict[str, int] = {
+            "low": self.low,
+            "medium": self.medium,
+            "high": self.high,
+        }
+        try:
+            return table[level]
+        except KeyError:  # pragma: no cover - Literal 已约束，防御性
+            raise KeyError(f"未知难度档位：{level!r}") from None
+
+SubAgentFactory = Callable[[str, ToolContext, str, int], Awaitable[TurnResult]]
+"""工厂签名：``(description, 主 ctx, 派生 session_id, max_rounds) -> 子会话 TurnResult``。
+
+``max_rounds`` 由派发方按难度档位给出（见 :class:`SubAgentRounds`）——
+轮数预算是成本闸，不能让子会话自己决定。
 
 由产品壳（sigma.sdk.InteractiveSession）注入：组装子会话需要 provider、keys、
 skills 目录、shadow_git_dir——全是产品壳的知识，sigma_tools 反依赖 sigma 层会成环。
@@ -60,6 +110,10 @@ class TaskParams(BaseModel):
         default="",
         description="dispatch 必填：自包含的子任务描述（子 agent 看不到主对话）。",
     )
+    difficulty: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description="子任务难度→轮数预算：low=10 轮（取信息）、medium=20、high=30（多步修复）。",
+    )
 
 
 @dataclass
@@ -72,6 +126,7 @@ class _SubTaskState:
     rounds: int = 0
     result_text: str = ""
     error: str = ""
+    usage: Usage | None = None  # 子会话的 token 用量，随回报回传（D-A1）
     delivered: bool = False
     task: asyncio.Task[None] | None = field(default=None, repr=False)
 
@@ -90,10 +145,15 @@ class TaskTool(BaseTool):
     read_only = True
 
     def __init__(
-        self, factory: SubAgentFactory, *, max_concurrent: int = 3
+        self,
+        factory: SubAgentFactory,
+        *,
+        max_concurrent: int = 3,
+        rounds: SubAgentRounds | None = None,
     ) -> None:
         self._factory = factory
         self._max_concurrent = max_concurrent
+        self._rounds = rounds if rounds is not None else SubAgentRounds()
         # Semaphore 惰性创建：构造发生在事件循环外（InteractiveSession.__init__），
         # 惰性绑定当前 loop，测试之间也不串。
         self._semaphore: asyncio.Semaphore | None = None
@@ -132,8 +192,9 @@ class TaskTool(BaseTool):
         self._tasks[sub_id] = state
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self._max_concurrent)
+        max_rounds = self._rounds.for_level(params.difficulty)
         state.task = asyncio.create_task(
-            self._run_sub(state, description, ctx, full_sub_id)
+            self._run_sub(state, description, ctx, full_sub_id, max_rounds)
         )
         pending = sum(1 for st in self._tasks.values() if st.pending)
         return ToolResult(
@@ -141,6 +202,7 @@ class TaskTool(BaseTool):
                 TextBlock(
                     text=(
                         f"已派发子任务 #{sub_id}（后台执行中，完成后自动回报）。"
+                        f"轮数预算 {max_rounds}（难度 {params.difficulty}）。"
                         f"当前 {pending} 个未完成（并发上限 {self._max_concurrent}，"
                         "超出的会排队）。你可以继续其他步骤，"
                         f"用 task(status) 查进度。"
@@ -152,19 +214,23 @@ class TaskTool(BaseTool):
                 "sub_id": sub_id,
                 "sub_session_id": full_sub_id,
                 "pending": pending,
+                "difficulty": params.difficulty,
+                "max_rounds": max_rounds,
             },
         )
 
     async def _run_sub(
         self, state: _SubTaskState, description: str, ctx: ToolContext,
-        full_sub_id: str,
+        full_sub_id: str, max_rounds: int,
     ) -> None:
         """后台协程：限流 → 跑子会话 → 结果进信箱。异常也进信箱（不静默丢）。"""
         assert self._semaphore is not None  # _dispatch 里必然已创建
         async with self._semaphore:
             state.state = "running"
             try:
-                result = await self._factory(description, ctx, full_sub_id)
+                result = await self._factory(
+                    description, ctx, full_sub_id, max_rounds
+                )
             except asyncio.CancelledError:
                 state.state = "failed"
                 state.error = "子任务被取消"
@@ -174,6 +240,7 @@ class TaskTool(BaseTool):
                 state.error = f"{type(exc).__name__}: {exc}"
                 return
         state.rounds = result.rounds
+        state.usage = result.usage
         if result.status == "stopped":
             # 结果可信度必须与结果本身一起交给模型："跑不起来"≠"任务失败"的镜像。
             state.result_text = (
@@ -218,9 +285,21 @@ class TaskTool(BaseTool):
             if len(text) > MAX_RESULT_CHARS:
                 text = (
                     text[:MAX_RESULT_CHARS]
-                    + "\n…（子任务结果超过 4000 字符已截断，结论请让子任务写得更精炼）"
+                    + f"\n…（子任务结果超过 {MAX_RESULT_CHARS} 字符已截断，结论请让子任务写得更精炼）"
                 )
-            body = f"[子任务回报] #{state.id}「{desc_head}」已完成（{state.rounds} 轮）：\n{text}"
+            # 用量与结论同行（D-A1）：usage 为 None（回放/假工厂）时保持原文本，
+            # 逐字节不变。
+            usage_text = ""
+            if state.usage is not None:
+                usage_text = (
+                    f"，token {state.usage.prompt_tokens}"
+                    f"+{state.usage.completion_tokens}"
+                    f"（cached {state.usage.cached_tokens}）"
+                )
+            body = (
+                f"[子任务回报] #{state.id}「{desc_head}」"
+                f"已完成（{state.rounds} 轮{usage_text}）：\n{text}"
+            )
         now = stamps.now()
         return LlmMessageWrapper(
             timestamp=now, message=UserMessage(content=body, timestamp=now)

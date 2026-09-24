@@ -148,3 +148,77 @@ def test_flags_default_open() -> None:
     profile = EvalProfile()
     assert profile.compaction is True
     assert profile.checkpoint is True
+
+
+# ---------------------------------------------------------------------------
+# todo / sub_agent 消融字段（P4-批次2，D-A2 / D-A3）
+# ---------------------------------------------------------------------------
+
+
+def test_ablation_fields_defaults() -> None:
+    """todo 默认开、sub_agent 默认关——与 sdk 的默认值逐字段一致，
+    B1/B2 的语义不因新字段而改变。"""
+    profile = EvalProfile()
+    assert profile.todo is True
+    assert profile.sub_agent is False
+    assert EvalProfile.b1().todo is True
+    assert EvalProfile.b2().sub_agent is False
+
+
+def test_build_system_prompt_todo_line_follows_flag() -> None:
+    """提示词与注册表同源：todo 行只在 todo=True 时出现；
+    「工作方式」第 3 条也不能留着指向不存在的工具。"""
+    assert sdk.TODO_TOOL_LINE.strip() in sdk.build_system_prompt()
+    without = sdk.build_system_prompt(todo=False)
+    assert sdk.TODO_TOOL_LINE.strip() not in without
+    assert "todo create" not in without
+    # 默认路径必须保持逐字节一致（D4 常驻区稳定的硬要求）
+    assert sdk.build_system_prompt() == sdk.SYSTEM_PROMPT
+
+
+def test_default_registry_without_todo() -> None:
+    assert "todo" not in sdk.default_registry(todo=False).names()
+    assert "todo" in sdk.default_registry().names()
+
+
+async def test_enable_todo_false_default_registry_path(tmp_path: Path) -> None:
+    """不传 registry 时 enable_todo=False 必须决定默认注册表——否则开关是假的。"""
+    provider = FakeProvider.from_rounds([_text_round("照常回答")])
+    session = sdk.InteractiveSession(
+        provider=provider,
+        workspace_root=tmp_path,
+        model="fake",
+        enable_todo=False,
+    )
+    assert "todo" not in session._registry.names()
+    result = await session.send("任务")
+    assert result.text == "照常回答"
+
+
+async def test_enable_todo_false_rejects_registry_with_todo(tmp_path: Path) -> None:
+    """与 enable_sub_agent 的撞车检查同一条纪律：不一致在构造时炸，
+    不留"提示词说没有、注册表里有"的运行期断点。"""
+    provider = FakeProvider.from_rounds([_text_round("x")])
+    with pytest.raises(ValueError, match="todo"):
+        sdk.InteractiveSession(
+            provider=provider,
+            workspace_root=tmp_path,
+            model="fake",
+            registry=sdk.default_registry(),  # 带 todo
+            enable_todo=False,
+        )
+
+
+async def test_run_task_passes_enable_todo_through(tmp_path: Path) -> None:
+    """run_task 的接线不能断——评测运行器就是从这个入口传档位的。"""
+    provider = FakeProvider.from_rounds([_text_round("done")])
+    result = await sdk.run_task(
+        "任务",
+        provider=provider,
+        workspace_root=tmp_path,
+        model="fake",
+        enable_todo=False,
+        system_prompt=sdk.build_system_prompt(todo=False),
+    )
+    assert result.text == "done"
+

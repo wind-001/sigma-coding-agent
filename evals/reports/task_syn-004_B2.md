@@ -1,6 +1,6 @@
 # 任务评测：syn-004 —— 二分查找的两处边界（index_of / insertion_point）（档位 B2）
 
-> 生成时间 2026-09-23T12:42:59 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
+> 生成时间 2026-09-23T18:11:25 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
 
 ## 判定
 
@@ -11,12 +11,12 @@
 | 指标 | 值 |
 | --- | --- |
 | status | `completed` |
-| 轮数 | 8 |
-| 工具调用 | 9 |
+| 轮数 | 16 |
+| 工具调用 | 20 |
 | 工具失败 | 1 |
-| prompt token | 27002 |
-| completion token | 1574 |
-| wall-clock | 17.34s |
+| prompt token | 83622 |
+| completion token | 3468 |
+| wall-clock | 35.599s |
 
 ## 证据（为什么这么判）
 

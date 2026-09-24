@@ -1,6 +1,6 @@
 # 任务评测：syn-003 —— 单行 CSV 解析（RFC 4180 引号规则）（档位 B2）
 
-> 生成时间 2026-09-23T12:42:39 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
+> 生成时间 2026-09-23T18:06:18 ｜ 判定器 `PytestJudge` ｜ 档位 **B2**
 
 ## 判定
 
@@ -11,12 +11,12 @@
 | 指标 | 值 |
 | --- | --- |
 | status | `completed` |
-| 轮数 | 14 |
-| 工具调用 | 14 |
-| 工具失败 | 1 |
-| prompt token | 56973 |
-| completion token | 1914 |
-| wall-clock | 34.83s |
+| 轮数 | 9 |
+| 工具调用 | 9 |
+| 工具失败 | 0 |
+| prompt token | 37757 |
+| completion token | 1713 |
+| wall-clock | 21.596s |
 
 ## 证据（为什么这么判）
 
@@ -27,6 +27,6 @@
   "tests_restored_to": "tests",
   "tests_were_modified": false,
   "exit_code": 0,
-  "summary": "........                                                                 [100%]\n8 passed in 0.03s"
+  "summary": "........                                                                 [100%]\n8 passed in 0.04s"
 }
 ```

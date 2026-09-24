@@ -19,6 +19,23 @@
     改标题 = 语义上重建计划。两个写入口都能改同一字段，"现在清单里到底是什么"
     就要靠约定保证——约定会漏。要改标题：create + overwrite=true 全量重建。
     与 edit「多匹配必须拒绝」同源：**有歧义宁可报错，不要猜**。
+
+为什么要有第四个动作 ``revise``（星辰 2026-09-24）
+    开工时的拆解是**基于当时信息的推测**；执行到第 3 步时，模型对剩下部分的
+    理解比开工时深得多——后续任务的划分与难度都会变。若清单只能"照最初版本
+    执行完"，模型就被自己开工时的无知锁死了。
+
+    ``revise`` 只换**未完成部分**（pending），已完成与正在跑的一条都不碰：
+
+    - completed 是**已发生的事实**，改写它等于伪造历史；
+    - running 是**正在做的事**，凭空让它消失会让"至多一条 running"失去意义；
+    - 只有 pending 是"尚未发生的计划"，也是唯一可被新信息推翻的部分。
+
+    为什么不是扩展 create / update
+        create = 全量重建（要 ``overwrite=true``，语义是推翻重来，会抹掉历史）；
+        update = 改单条（不能增删、不能重排）。
+        revise 是**第三个语义**，凑进任意一个都让"我到底在改什么"靠约定保证，
+        而约定会漏——与上面"title 不给 update"是同一条判据。
 """
 
 from __future__ import annotations
@@ -42,16 +59,20 @@ TODO_RELATIVE = ".sigma/todo.json"
 Status = Literal["pending", "running", "completed"]
 _ALL_STATUSES: tuple[str, ...] = ("pending", "running", "completed")
 
+#: 难度档位名。**与子 agent 的轮数预算同词汇**（``SubAgentRounds``）——
+#: 清单里标了难度的任务，派给 sub_agent 时直接用同一档，不用重新猜。
+Difficulty = Literal["low", "medium", "high"]
+
 
 class TodoParams(BaseModel):
-    """三个动作共用一个参数模型，按 ``action`` 区分必填。schema 进常驻区（D4），说明必须短。"""
+    """四个动作共用一个参数模型，按 ``action`` 区分必填。schema 进常驻区（D4），说明必须短。"""
 
-    action: Literal["create", "update", "list"] = Field(
-        description="create=重建清单；update=改单条；list=查看。"
+    action: Literal["create", "update", "revise", "list"] = Field(
+        description="create=建清单；update=改单条；revise=重排后续 pending；list=查看。"
     )
     goal: str = Field(default="", description="create 必填：总体目标。")
     items: list[str] = Field(
-        default_factory=list, description="create 必填：任务标题列表（≥1 条），初始均 pending。"
+        default_factory=list, description="create/revise 必填：任务标题列表（≥1 条）。"
     )
     overwrite: bool = Field(
         default=False, description="create 时清单已存在则报错；确认重建传 true。"
@@ -62,6 +83,11 @@ class TodoParams(BaseModel):
     )
     detail: str | None = Field(
         default=None, description="update 可选：补充说明。"
+    )
+    difficulty: list[Difficulty] | None = Field(
+        default=None,
+        description="create/revise 可选：与 items 按位置对应的难度（low/medium/high）；"
+        "长度必须与 items 一致。",
     )
 
 
@@ -83,10 +109,35 @@ def _render(data: _TodoData) -> str:
     lines = [f"目标: {data.goal}", f"进度: {done}/{total} completed, {running} running"]
     for it in data.items:
         line = f"  [{it['status']:<9}] #{it['id']} {it['title']}"
+        if it.get("difficulty"):
+            line += f" 【{_DIFFICULTY_LABEL[it['difficulty']]}】"
         if it["detail"]:
             line += f" — {it['detail']}"
         lines.append(line)
     return "\n".join(lines)
+
+
+#: 渲染用的难度标签。写中文而不是原样印 low/medium/high——看清单的是模型，
+#: 中文标签在一行里更好扫，且不会与英文标题混在一起看错。
+_DIFFICULTY_LABEL = {"low": "低", "medium": "中", "high": "高"}
+
+
+def _zip_difficulty(
+    items: list[str], difficulty: list[Difficulty] | None
+) -> list[str | None]:
+    """把难度按位置配到标题上。**长度不一致直接报错**——
+
+    平行数组是脆弱设计（两列对不上就全错），校验必须在这里做死：
+    宁可让这一调用失败，也不要让"第 3 条的难度"悄悄落在第 2 条上。
+    """
+    if difficulty is None:
+        return [None] * len(items)
+    if len(difficulty) != len(items):
+        raise ValueError(
+            f"difficulty 有 {len(difficulty)} 条，items 有 {len(items)} 条，"
+            "必须一一对应（不传 difficulty 则全部不标）。"
+        )
+    return [cast(str, level) for level in difficulty]
 
 
 def _check_transition(old: str, new: str, task_id: int) -> str | None:
@@ -116,8 +167,10 @@ class TodoTool(BaseTool):
     name = "todo"
     description = (
         "任务清单（.sigma/todo.json）。长任务先 create 拆解，"
-        "每完成一步 update 状态，同时只允许一条 running。"
-        "流转：pending→running→completed；completed→pending 为返工。"
+        "每完成一步 update 状态，同时只允许一条 running；"
+        "执行中发现后续划分或难度判断不对，用 revise 重排未开始的 pending 部分"
+        "（已完成与正在跑的不动）。流转：pending→running→completed；"
+        "completed→pending 为返工。items 可配 difficulty（low/medium/high）。"
     )
     read_only = False
 
@@ -161,6 +214,8 @@ class TodoTool(BaseTool):
                 return self._create(params, ctx)
             if params.action == "update":
                 return self._update(params, ctx)
+            if params.action == "revise":
+                return self._revise(params, ctx)
             return self._list(ctx)
         except ValueError as exc:
             # 损坏文件 / 数据形状不对：给模型看原因，不吞掉。
@@ -201,13 +256,22 @@ class TodoTool(BaseTool):
                 is_error=True,
             )
 
+        levels = _zip_difficulty(params.items, params.difficulty)
         data = _TodoData(
             goal=params.goal.strip(),
             updated_at=stamps.now(),
             next_id=len(params.items) + 1,
             items=[
-                {"id": index, "title": title.strip(), "detail": "", "status": "pending"}
-                for index, title in enumerate(params.items, start=1)
+                {
+                    "id": index,
+                    "title": title.strip(),
+                    "detail": "",
+                    "status": "pending",
+                    "difficulty": level,
+                }
+                for index, (title, level) in enumerate(
+                    zip(params.items, levels, strict=False), start=1
+                )
                 if title.strip()
             ],
         )
@@ -223,6 +287,91 @@ class TodoTool(BaseTool):
         return ToolResult(
             content=[TextBlock(text=f"{note}任务清单（{len(params.items)} 条，全部 pending）：\n" + _render(data))],
             details={"action": "create", "items": len(params.items), "overwritten": existing is not None},
+        )
+
+    def _revise(self, params: TodoParams, ctx: ToolContext) -> ToolResult:
+        """重排**后续**（pending）任务：保留已完成与正在跑的，只换未开始的部分。
+
+        这是"计划随执行进化"的落点。开工时的拆解基于当时的信息，
+        执行到中途模型对剩下部分的理解更深——后续任务的划分与难度都该能改。
+        """
+        data = self._load(ctx)
+        if data is None:
+            return ToolResult(
+                content=[
+                    TextBlock(
+                        text="还没有任务清单。先 todo(action=\"create\", goal=..., items=[...]) 建计划。"
+                    )
+                ],
+                details={"action": "revise", "missing_file": True},
+                is_error=True,
+            )
+        if not params.items:
+            return ToolResult(
+                content=[TextBlock(text="revise 需要 items（新的后续任务，≥1 条）。")],
+                details={"action": "revise", "missing": "items"},
+                is_error=True,
+            )
+        levels = _zip_difficulty(params.items, params.difficulty)
+
+        kept = [it for it in data.items if it["status"] != "pending"]
+        replaced = [it for it in data.items if it["status"] == "pending"]
+        if not replaced:
+            return ToolResult(
+                content=[
+                    TextBlock(
+                        text="没有可调整的后续任务（清单里没有 pending 条目）。"
+                        "当前清单：\n" + _render(data)
+                    )
+                ],
+                details={"action": "revise", "no_pending": True},
+                is_error=True,
+            )
+
+        fresh: list[dict[str, Any]] = []
+        for title, level in zip(params.items, levels, strict=False):
+            if not title.strip():
+                continue
+            fresh.append(
+                {
+                    "id": data.next_id,
+                    "title": title.strip(),
+                    "detail": "",
+                    "status": "pending",
+                    "difficulty": level,
+                }
+            )
+            data.next_id += 1
+        if not fresh:
+            return ToolResult(
+                content=[TextBlock(text="items 里没有有效标题（不能全是空白）。")],
+                details={"action": "revise", "missing": "items"},
+                is_error=True,
+            )
+
+        # 顺序 = 执行顺序：已完成 + 正在跑 + 新的后续。
+        data.items = kept + fresh
+        data.updated_at = stamps.now()
+        self._save(ctx, data)
+
+        # 丢弃必须可见：被换掉的那些条目要逐条报出来，不能悄悄消失。
+        dropped = "、".join(f"#{it['id']} {it['title']}" for it in replaced)
+        return ToolResult(
+            content=[
+                TextBlock(
+                    text=(
+                        f"已重排后续任务：替换 {len(replaced)} 条（{dropped}），"
+                        f"新增 {len(fresh)} 条。已完成与正在跑的 {len(kept)} 条未改动。\n"
+                        + _render(data)
+                    )
+                )
+            ],
+            details={
+                "action": "revise",
+                "replaced": len(replaced),
+                "added": len(fresh),
+                "kept": len(kept),
+            },
         )
 
     def _update(self, params: TodoParams, ctx: ToolContext) -> ToolResult:

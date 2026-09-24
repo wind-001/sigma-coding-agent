@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-23T12:42:39",
+  "generated_at": "2026-09-23T18:06:18",
   "task": "syn-003",
   "title": "单行 CSV 解析（RFC 4180 引号规则）",
   "kind": "synthetic",
@@ -7,12 +7,12 @@
     "task_id": "syn-003",
     "eval_profile": "B2",
     "status": "completed",
-    "rounds": 14,
-    "tool_calls": 14,
-    "tool_failures": 1,
-    "prompt_tokens": 56973,
-    "completion_tokens": 1914,
-    "wall_clock_s": 34.83,
+    "rounds": 9,
+    "tool_calls": 9,
+    "tool_failures": 0,
+    "prompt_tokens": 37757,
+    "completion_tokens": 1713,
+    "wall_clock_s": 21.596,
     "error": null
   },
   "verdict": {
@@ -24,7 +24,7 @@
       "tests_restored_to": "tests",
       "tests_were_modified": false,
       "exit_code": 0,
-      "summary": "........                                                                 [100%]\n8 passed in 0.03s"
+      "summary": "........                                                                 [100%]\n8 passed in 0.04s"
     }
   }
 }

@@ -1,0 +1,33 @@
+{
+  "id": "syn-011",
+  "kind": "synthetic",
+  "title": "Markdown 渲染器的三处跨模块缺陷（inline / blocks / renderer）",
+  "description": "工作区里的 mdrender 是一个 Markdown → HTML 渲染器（4 个模块：blocks 块级解析 / inline 行内解析 / renderer 渲染与转义）。它现在有三处 bug，分布在三个不同模块：\n\n1. 行内解析：粗体（**…**）被斜体（*…*）的处理破坏——`**粗体**` 会渲染成 `<em>*粗体</em>*` 而不是 `<strong>粗体</strong>`；\n2. 块级解析：**两层**嵌套列表正常，但**三层**嵌套（缩进 4 空格）会把第三层错误地挂到与第二层同级——嵌套必须保持树形；\n3. HTML 转义：`&` 没有被转义（`AT&T` 原样输出），且 `&` 必须最先转义，否则实体本身会被二次转义。\n\n请修好这三处，让 tests/ 下的测试全部通过。注意：三个 bug 有交互（转义与行内解析、列表与转义都有组合用例），修完一处要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import mdrender` 会失败）。\n- 只改工作区内的文件；保持各模块现有职责划分（不要把逻辑全塞进一个文件）。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "7 failed, 10 passed in 0.88s",
+    "failed_tests": [
+      "tests/test_mdrender.py::test_bold",
+      "tests/test_mdrender.py::test_bold_and_italic_mixed",
+      "tests/test_mdrender.py::test_escape_ampersand",
+      "tests/test_mdrender.py::test_escape_inside_list_item",
+      "tests/test_mdrender.py::test_three_level_nesting",
+      "tests/test_mdrender.py::test_list_item_with_inline_marks",
+      "tests/test_mdrender.py::test_full_document"
+    ],
+    "recorded_at": "2026-09-23T19:00:00.000",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：三处修复后 17 passed。"
+  }
+}

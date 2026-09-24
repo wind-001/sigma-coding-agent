@@ -16,6 +16,22 @@ from sigma import cli as cli_module
 from sigma.cli import EXIT_HARNESS_ERROR, main
 
 
+def _fake_repl(entered: list[int]):  # type: ignore[no-untyped-def]
+    """造一个替换 ``run_repl`` 的假函数。
+
+    **形参名要与真实签名一致（P5 起是 ``manager``）**：写 ``session``
+    不会让测试变红（Python 不看形参名），但下一个人读到这里会以为
+    REPL 拿到的是会话对象——而这正是 P5 改掉的约定（现在拿到的是 manager，
+    因为 ``/switch`` 要能把整个会话换掉）。
+    """
+
+    async def fake_repl(manager: object) -> int:
+        entered.append(1)
+        return 0
+
+    return fake_repl
+
+
 def test_without_prompt_on_non_interactive_stdin_prints_help(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -29,12 +45,8 @@ def test_without_prompt_on_non_interactive_stdin_prints_help(
     """
     entered: list[int] = []
 
-    async def fake_repl(session: object) -> int:
-        entered.append(1)
-        return 0
-
     monkeypatch.setattr(cli_module, "stdin_is_interactive", lambda: False)
-    monkeypatch.setattr(cli_module, "run_repl", fake_repl)
+    monkeypatch.setattr(cli_module, "run_repl", _fake_repl(entered))
     # 密钥也要假造：若依赖真实 ~/.sigma/.env，缺 key 时会先返回 2，
     # 于是"没进 REPL"这个断言**无论如何都成立**——那就是一条假绿
     monkeypatch.setattr(
@@ -79,12 +91,8 @@ def test_explicit_interactive_flag_bypasses_stdin_detection(
     """``-i`` 的价值：Git Bash / 管道里 stdin 判不出控制台，靠它显式进入。"""
     entered: list[int] = []
 
-    async def fake_repl(session: object) -> int:
-        entered.append(1)
-        return 0
-
     monkeypatch.setattr(cli_module, "stdin_is_interactive", lambda: False)
-    monkeypatch.setattr(cli_module, "run_repl", fake_repl)
+    monkeypatch.setattr(cli_module, "run_repl", _fake_repl(entered))
     monkeypatch.setattr(
         cli_module, "resolve_api_key", lambda **kwargs: ("sk-test", "测试注入")
     )

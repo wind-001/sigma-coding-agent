@@ -27,6 +27,12 @@
 用法
     ./.venv/Scripts/python.exe evals/task_runner.py --task syn-001 --profile B2
     ./.venv/Scripts/python.exe evals/task_runner.py --task syn-001 --check-only
+
+消融开关（P4-批次2 D-A3）
+    --no-todo    去掉 todo 工具（注册表 + 提示词行 + steering 三处同源关断），
+                 档位名加 -no-todo 后缀；todo A/B 的对照臂 = B2 对 B2-no-todo。
+    --sub-agent  主会话启用 task 工具（可派 sub_agent），档位名加 -sub 后缀。
+    两者对 B0（无工具单轮档）无意义，搭配使用会直接报错。
 """
 
 from __future__ import annotations
@@ -131,9 +137,18 @@ async def _run_agent(
             provider=provider,
             workspace_root=workspace,
             model=model,
+            max_rounds=profile.max_rounds,
             project_instructions="",
+            # 提示词与注册表同源（批次 7 教训）：todo / task 两行都按档位拼。
+            # 默认档（todo=True, task=False）下 build_system_prompt() == SYSTEM_PROMPT，
+            # 与之前逐字节一致。
+            system_prompt=sdk.build_system_prompt(
+                todo=profile.todo, task=profile.sub_agent
+            ),
             enable_compaction=profile.compaction,
             enable_checkpoint=profile.checkpoint,
+            enable_todo=profile.todo,
+            enable_sub_agent=profile.sub_agent,
         )
     finally:
         await provider.aclose()
@@ -262,11 +277,29 @@ async def _run_b0(
 
 
 async def run_one(
-    task_id: str, *, check_only: bool, model: str | None, profile_name: str
+    task_id: str,
+    *,
+    check_only: bool,
+    model: str | None,
+    profile_name: str,
+    no_todo: bool = False,
+    sub_agent: bool = False,
+    max_rounds: int | None = None,
 ) -> int:
     task_dir = DATASETS / "synthetic" / task_id
     if not task_dir.is_dir():
         print(f"[错误] 找不到任务目录：{task_dir}", file=sys.stderr)
+        return 2
+
+    if profile_name == "B0" and (no_todo or sub_agent or max_rounds is not None):
+        # 宁可报错，不要静默跑一份名不副实的报告
+        # （B0 无工具单轮，消融开关对它无意义）。放在 check_only 之前：
+        # 免费通路也不能逃过一致性检查。
+        print(
+            "[错误] B0 是无工具单轮档，--no-todo / --sub-agent / --max-rounds "
+            "对它无意义。",
+            file=sys.stderr,
+        )
         return 2
 
     spec = _load_spec(task_dir)
@@ -298,6 +331,23 @@ async def run_one(
             return _report(spec, task_result, verdict, profile_name)
 
         profile = _PROFILES[profile_name]()
+        if no_todo or sub_agent or max_rounds is not None:
+            # 消融后缀进档位名（P4-批次2 D-A3 / 轮数扫描）：档位名进报告文件名
+            # 与每行数据——没有它，两个月后没人说得清那份 JSON 是在什么配置下
+            # 产生的，不同轮数上限的报告也会互相覆盖。
+            suffix = ""
+            updates: dict[str, object] = {}
+            if no_todo:
+                suffix += "-no-todo"
+                updates["todo"] = False
+            if sub_agent:
+                suffix += "-sub"
+                updates["sub_agent"] = True
+            if max_rounds is not None:
+                suffix += f"-r{max_rounds}"
+                updates["max_rounds"] = max_rounds
+            updates["name"] = profile.name + suffix
+            profile = profile.model_copy(update=updates)
         try:
             result = await _run_agent(
                 spec,
@@ -322,7 +372,7 @@ async def run_one(
                 error=f"{type(exc).__name__}: {exc}",
             )
             verdict = JudgeVerdict(passed=False, reason="agent 抛异常", evidence={})
-            return _report(spec, task_result, verdict, profile_name)
+            return _report(spec, task_result, verdict, profile.name)
 
         elapsed = time.monotonic() - started
         usage = result.usage
@@ -343,7 +393,7 @@ async def run_one(
               f"{task_result.wall_clock_s}s")
 
         verdict = judge.judge(workspace, task_result)
-        return _report(spec, task_result, verdict, profile_name)
+        return _report(spec, task_result, verdict, profile.name)
 
 
 def _report_check_only(spec: TaskSpec, verdict: JudgeVerdict, profile_name: str) -> int:
@@ -458,9 +508,35 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只复验『初始状态确实失败』，不调模型、不花钱",
     )
+    parser.add_argument(
+        "--no-todo",
+        action="store_true",
+        help="消融：去掉 todo 工具（注册表 + 提示词行 + steering 三处同源关断）；"
+        "档位名加 -no-todo 后缀，报告不覆盖原档位",
+    )
+    parser.add_argument(
+        "--sub-agent",
+        action="store_true",
+        help="消融：主会话启用 task 工具（可派 sub_agent）；档位名加 -sub 后缀",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=None,
+        help="轮数上限扫描（默认 20，即 run_task 缺省）；显式传入时档位名加 -rN 后缀，"
+        "报告不覆盖其他轮数档",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(
-        run_one(args.task, check_only=args.check_only, model=args.model, profile_name=args.profile)
+        run_one(
+            args.task,
+            check_only=args.check_only,
+            model=args.model,
+            profile_name=args.profile,
+            no_todo=args.no_todo,
+            sub_agent=args.sub_agent,
+            max_rounds=args.max_rounds,
+        )
     )
 
 

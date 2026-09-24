@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from sigma_ai.base import NeverCancelled
 from sigma_ai.fake import FakeProvider
 from sigma_ai.messages import TextBlock
 
+from sigma_tools.task import SubAgentRounds, TaskParams
 from sigma_tools.todo import TodoTool
 
 
@@ -200,3 +202,68 @@ async def test_dispatch_runs_sub_session_and_reports_back(tmp_path: Path) -> Non
 
     # 4) 上下文隔离：子会话的请求里没有主会话的任务文本
     assert "主任务：调查 X" not in provider.seen_message_texts[1]
+
+
+# ---------------------------------------------------------------------------
+# 轮数预算三档：端到端（预算真的被子会话执行）
+# ---------------------------------------------------------------------------
+
+
+async def test_sub_session_round_budget_is_enforced(tmp_path: Path) -> None:
+    """给 1 轮预算，子会话就只能跑 1 轮——**行为级**断言，不看私有属性。
+
+    为什么要有这条（而不是只测 TaskTool 传了什么）
+        "派发方传了 max_rounds"与"子会话真的按它跑"是两件事：
+        中间隔着工厂闭包与 InteractiveSession 的构造。少接一次线，
+        三档预算就变成名义开关——名字叫 low，实际还是跑满 50 轮。
+    """
+    # 一个"永远要工具"的 round：不设预算它会一直跑下去
+    always_call = _call_round("c1", "todo", action="list")
+    session, _ = _session(
+        tmp_path, [always_call] * 8, enable_sub_agent=True
+    )
+    factory = session._make_sub_agent_factory(asyncio.Lock(), SubAgentRounds())
+    ctx = ToolContext(
+        session_id="sess-main", workspace_root=tmp_path, signal=NeverCancelled()
+    )
+    result = await factory("做一件很长的活", ctx, "sess-main-sa1", max_rounds=1)
+    assert result.status == "stopped", "1 轮预算跑不完 → 必须以 stopped 收场"
+    assert result.rounds == 1
+
+
+async def test_high_budget_allows_more_rounds(tmp_path: Path) -> None:
+    """对照：预算给 3 轮就能跑 3 轮——证明上面那条不是"永远 stopped"。"""
+    always_call = _call_round("c1", "todo", action="list")
+    session, _ = _session(
+        tmp_path, [always_call] * 8, enable_sub_agent=True
+    )
+    factory = session._make_sub_agent_factory(asyncio.Lock(), SubAgentRounds())
+    ctx = ToolContext(
+        session_id="sess-main", workspace_root=tmp_path, signal=NeverCancelled()
+    )
+    result = await factory("做一件很长的活", ctx, "sess-main-sa1", max_rounds=3)
+    assert result.rounds == 3
+
+
+async def test_dispatch_passes_level_budget_to_sub_session(tmp_path: Path) -> None:
+    """low 档（10 轮）经真工厂传到子会话：子会话的轮数上限 = 10。
+
+    取证方式：给一个"永远要工具"的 provider，子会话跑满预算后回来，
+    rounds 必须等于该档位的预算值。
+    """
+    always_call = _call_round("c1", "todo", action="list")
+    session, _ = _session(
+        tmp_path, [always_call] * 20, enable_sub_agent=True
+    )
+    tool = session._registry.get("task")
+    ctx = ToolContext(
+        session_id="sess-main", workspace_root=tmp_path, signal=NeverCancelled()
+    )
+    await tool.run(
+        TaskParams(action="dispatch", description="长活", difficulty="low"), ctx
+    )
+    messages = await tool.wait_and_drain()  # type: ignore[attr-defined]
+    assert len(messages) == 1
+    # 回报里带轮数：low 档预算 10 → 子会话最多跑满 10 轮
+    body = messages[0].message.content  # type: ignore[union-attr]
+    assert "（10 轮" in body, f"low 档应给 10 轮预算，实际回报：{body[:80]}"

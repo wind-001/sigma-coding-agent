@@ -70,6 +70,7 @@ import sys
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
 SDK = "core/sigma/sdk.py"
+PROVIDER = "core/sigma_ai/openai/provider.py"
 PROFILE = "core/sigma/eval_profile.py"
 TODO = "core/sigma_tools/todo.py"
 LOOP = "core/sigma_agent/loop.py"
@@ -82,6 +83,10 @@ STEER_TEST = "tests/test_todo_steering.py::test_reminder_injected_after_interval
 SUB_E2E_TEST = "tests/test_sub_agent.py::test_dispatch_runs_sub_session_and_reports_back"
 TRUNCATE_TEST = "tests/test_task_tool.py::test_result_truncated_with_visible_marker"
 TAILWAIT_TEST = "tests/test_task_tool.py::test_loop_waits_for_pending_subtasks_before_finishing"
+TOTAL_TO_TEST = "tests/test_sigma_ai_openai_compat.py::test_total_timeout_guards_slow_drip"
+IDLE_TO_TEST = "tests/test_sigma_ai_openai_compat.py::test_idle_timeout_cuts_a_stalled_stream"
+BUDGET_TEST = "tests/test_task_tool.py::test_difficulty_selects_round_budget"
+REVISE_TEST = "tests/test_todo_tool.py::test_revise_replaces_only_pending"
 
 
 def _inject_e68(repo: Repo) -> None:
@@ -181,6 +186,61 @@ def _inject_e74(repo: Repo) -> None:
     )
 
 
+def _inject_e75(repo: Repo) -> None:
+    """E75 / G87：流式响应的**整体时长闸**被删。
+
+    后果正是 2026-09-23 那次事故：一个连接"一直有心跳但不出内容"，
+    httpx 的读超时每次都被心跳重置 → 挂死 1 小时零产出，而同一时刻
+    其他连接每轮 4 s 完成。**一条卡死会让整轮评测无限挂起。**
+    """
+    repo.patch(
+        PROVIDER,
+        "                    if elapsed_s > self._total_timeout_s:",
+        "                    if False:  # 注入：整体时长闸被删",
+    )
+
+
+def _inject_e76(repo: Repo) -> None:
+    """E76 / G88：流式响应的**空闲闸**被删（wait_for 不设上限）。
+
+    与 G87 互补：G87 防"慢速滴答"，本条防"彻底停住"。少任何一个，
+    都还有一种挂起形状能绕过。
+    """
+    repo.patch(
+        PROVIDER,
+        "                            timeout=self._idle_timeout_s,",
+        "                            timeout=None,  # 注入：空闲闸被删",
+    )
+
+
+def _inject_e77(repo: Repo) -> None:
+    """E77 / G89：难度档位被绕过（一律按 high 给预算）。
+
+    后果：low 档名存实亡——"省 token"的预算设计变成名义开关，
+    模型以为派了个便宜的子任务，实际拿到 30 轮预算。这类缺陷不报错，
+    只在月底账单上显形。
+    """
+    repo.patch(
+        TASK,
+        "            return table[level]",
+        "            return self.high  # 注入：档位表被绕过，一律 high",
+    )
+
+
+def _inject_e78(repo: Repo) -> None:
+    """E78 / G90：``revise`` 不再保护已完成与正在跑的条目。
+
+    后果：模型中途重排计划时，把**已经做完的记录**和**正在做的那条**一起换掉
+    ——历史被伪造、"至多一条 running"的语义也被破坏（正在跑的那条凭空消失）。
+    这类缺陷不报错：清单照常读写，只是"事实"变成了"当前想法的投影"。
+    """
+    repo.patch(
+        TODO,
+        '        kept = [it for it in data.items if it["status"] != "pending"]',
+        '        kept = []  # 注入：已完成与正在跑的也不再保留',
+    )
+
+
 def main() -> int:
     experiment("G80", "显式关断压过默认替换与显式策略", OFF_TEST, _inject_e68)
     experiment("G81", "档位声明不是名义开关（b1 必须真关）", B1_TEST, _inject_e69)
@@ -189,6 +249,10 @@ def main() -> int:
     experiment("G84", "子 registry 无 task（递归禁止=构造上排除）", SUB_E2E_TEST, _inject_e72)
     experiment("G85", "超长回报截断且截断可见", TRUNCATE_TEST, _inject_e73)
     experiment("G86", "收尾兜底等在跑的子任务（结果不丢）", TAILWAIT_TEST, _inject_e74)
+    experiment("G87", "流式整体时长闸（防慢速滴答挂死）", TOTAL_TO_TEST, _inject_e75)
+    experiment("G88", "流式空闲闸（防彻底停住挂死）", IDLE_TO_TEST, _inject_e76)
+    experiment("G89", "难度档位真的决定轮数预算", BUDGET_TEST, _inject_e77)
+    experiment("G90", "revise 只换 pending（不动已完成/正在跑）", REVISE_TEST, _inject_e78)
 
     print()
     print("=" * 78)

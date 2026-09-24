@@ -1,0 +1,34 @@
+{
+  "id": "syn-012",
+  "kind": "synthetic",
+  "title": "任务队列的四处缺陷（状态机 / 重试计数 / 出队方向 / id 恢复）",
+  "description": "工作区里的 taskq 是一个带优先级与 JSON 持久化的迷你任务队列（models 状态机 / queue 队列 / storage 持久化）。它现在有四处 bug：\n\n1. 状态机：`blocked` 是文档里承诺的合法状态，但 `VALID_STATES` 里没有它——加载一份含 blocked 任务的存储文件会直接抛 ValueError；blocked 的任务也不该被 claim 取走；\n2. 重试计数：`apply_failure` 忘了把 `attempts` 加一——任务失败后永远回 pending 重试，永远到不了 failed（约定：fail 满 3 次置 failed）；\n3. 出队方向：`claim` 的排序把优先级弄反了——数字大的应该先出队，现在数字小的先出；同优先级要按 id **数字**先进先出（t2 早于 t10，不是字符串序）；\n4. id 恢复：`load` 之后新增任务的 id 会与已有 id 冲突（存储里缺号时，如已有 t1、t3，新增会拿到重复的 id）。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：出队顺序的修复会同时影响多个用例，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import taskq` 会失败）。\n- 只改工作区内的文件；保持各模块现有职责划分。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "8 failed, 5 passed in 1.12s",
+    "failed_tests": [
+      "tests/test_taskq.py::test_claim_picks_highest_priority",
+      "tests/test_taskq.py::test_claim_same_priority_fifo_numeric",
+      "tests/test_taskq.py::test_fail_once_back_to_pending_with_count",
+      "tests/test_taskq.py::test_fail_three_times_gives_up",
+      "tests/test_taskq.py::test_failed_task_never_claimed_again",
+      "tests/test_taskq.py::test_save_then_load_roundtrip",
+      "tests/test_taskq.py::test_load_blocked_state_survives",
+      "tests/test_taskq.py::test_load_then_add_no_id_collision"
+    ],
+    "recorded_at": "2026-09-23T19:05:00.000",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：四处修复后 13 passed。"
+  }
+}

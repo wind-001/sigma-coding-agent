@@ -32,6 +32,7 @@ import asyncio
 import io
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -63,12 +64,17 @@ from sigma_agent.agent_messages import (
     ToolResultAgentMessage,
 )
 from sigma_agent.types import TurnResult
+from sigma_ai.base import BaseProvider
 from sigma_ai.openai import OpenAICompatProvider
 from sigma_ai.registry import builtin_providers
 from sigma_session.sessions import (
+    SESSION_SUFFIX,
+    SessionPreview,
     list_sessions,
     latest_session_id,
     new_session_id,
+    session_path,
+    session_previews,
 )
 from sigma_session.store import JsonlStore
 from sigma_session.tree import SessionTree
@@ -420,14 +426,88 @@ def resolve_session(args: argparse.Namespace, sessions_root: Path) -> SessionBin
     return SessionBinding(session_id, tree, store.exists(), len(tree))
 
 
+#: ``/sessions`` 一次列几个（详规 D-S5）。20 行足够覆盖"最近几次"，
+#: 再多就要滚动屏幕、而每一行都要读一次盘（4 KB）。
+SESSIONS_LIST_LIMIT = 20
+
+
+@dataclass(frozen=True)
+class SwitchOutcome:
+    """``SessionManager.switch_to`` 的结果。
+
+    **为什么要有这个类型而不是返回 ``bool``**：REPL 要打印三种不同的回执——
+    "切过去了（续上 N 条）"、"切过去了（本来就是它，重来了）"、
+    "没这个会话（报错，但**列表已经显示过，不再重复打一遍**）"。
+    只回 ``bool`` 的话，REPL 得自己去判断"是不是当前会话"，
+    那等于把 manager 的状态复制一份到 REPL 里——两份状态必然漂移。
+    """
+
+    ok: bool
+    session_id: str
+    messages: int
+    switched: bool
+
+
+def replace_binding_count(binding: SessionBinding, messages: int) -> SessionBinding:
+    """换掉 ``previous_messages``，其余原样。
+
+    单独一个函数只为让 ``switch_to`` 里那句"先建树、再数长度"读起来是一条直线——
+    树必须先建出来才能 ``len()``，而 ``SessionBinding`` 是 frozen 的。
+    """
+    return SessionBinding(
+        session_id=binding.session_id,
+        tree=binding.tree,
+        resumed=binding.resumed,
+        previous_messages=messages,
+    )
+
+
 def shadow_git_dir_for(sessions_root: Path, session_id: str) -> Path:
     """本会话的影子库路径（D5 的 L2）。
 
     **与会话文件同层扁平放置**：``<sessions>/<id>.shadow.git``——
     这样 ``--continue`` 续上一个会话时，天然续上它的 checkpoint 历史。
     """
-    safe = session_id.replace("/", "_").replace("\\", "_")
+    safe = _safe_session_id(session_id)
     return sessions_root / f"{safe}.shadow.git"
+
+
+def _safe_session_id(session_id: str) -> str:
+    """把用户敲进来的 id 净化成"能当文件名用的 id"。
+
+    **为什么要有这个函数，而不是让 ``/switch`` 自己拼路径**：
+    ``/switch`` 的输入**是人手敲的**（还可能从别处粘过来）。
+    ``../../secret`` 这类 id 在净化之前会拼出一个会话目录之外的路径，
+    而 ``switch_to`` 的第一件事就是 ``path.is_file()``——
+    那已经是一次**越界的文件存在性探测**了。先净化再拼，探测范围就被钉在目录内。
+
+    **判据必须与 ``JsonlStore.path`` 逐字一致**（``/`` ``\\`` → ``_``），
+    不能用 ``Path(...).name`` 那种"取末段"的写法——那会把 ``a/b`` 变成 ``b``，
+    而 ``JsonlStore`` 会把它存成 ``a_b.jsonl``。两份净化一旦不一致，
+    症状是**切换到一个永远不存在的会话**：影子库路径对不上、
+    ``--rollback`` 找不到快照，而 ``path.is_file()`` 又确实返回 False
+    （``a/b.jsonl`` 会去找子目录），排查时看起来像"文件丢了"。
+    （这条是实测出来的——第一版就是 ``Path(...).name``，当场被
+    ``test_cli_shadow_dir_is_next_to_session_file`` 抓住。）
+
+    ``..`` 单独挡一道（**不能靠"把点都换成下划线"**）：
+    会话 id 本身就含点（``20260923-110000.000-bbbb`` 里的毫秒位），
+    把点全换掉会把**每一个真实 id 都改成不存在的名字**——
+    症状是"所有 `/switch` 都说没这个会话"，而会话明明在列表里
+    （第一版就是这么错的，被 ``test_manager_switch_accepts_file_suffix``
+    与三条 REPL 切换测试当场抓住）。
+
+    所以这里只处理**真的想上跳**的形状：``..`` 整段替换掉即可——
+    替换之后没有分隔符残留，``Path(root) / "a_b"`` 不可能走出目录。
+
+    ``.jsonl`` 后缀也在这里剥掉：``/switch abc.jsonl`` 与 ``/switch abc``
+    应当是同一个会话——用户在 ``/sessions`` 里看到的是 id，
+    但从资源管理器里看到的是文件名，两种写法都得认。
+    """
+    safe = session_id.replace("/", "_").replace("\\", "_").replace("..", "_")
+    if safe.endswith(SESSION_SUFFIX):
+        safe = safe[: -len(SESSION_SUFFIX)]
+    return safe
 
 
 def run_rollback(
@@ -557,6 +637,197 @@ async def _run_once(
         await provider.aclose()
 
 
+class SessionManager:
+    """交互模式里"当前用哪个会话"的唯一持有者（P5 详规 D-S2）。
+
+    **为什么需要它，而不是把开关散在 REPL 里**
+        `/switch` 不是"改一个字符串变量"——它要换掉**整棵 ``SessionTree``**、
+        换掉 ``shadow_git_dir``、换掉时间戳，也就是**重造一个
+        ``InteractiveSession``**（D-S1 方案 A）：
+        ``InteractiveSession`` 的构造参数有二十来个，散在 REPL 里意味着
+        每新增一个参数就要在 REPL 里补一次，而**漏补不会报错**——
+        症状是"切换之后 checkpoint 不记录了 / 技能没了"，看起来像随机故障。
+        所以组装参数收在这里**一次性**持有，REPL 只发号施令。
+
+    **分层**（D-S2）：解析在 ``repl.py``、组装在本类、列表在
+    ``sigma_session.sessions``。REPL 不碰 ``JsonlStore`` 与 ``SessionTree``。
+
+    **为什么不是就地改现有的 ``InteractiveSession``**（方案 B 被否）
+        会话对象里绑了 ``provider`` / ``registry`` / ``context`` / ``checkpoint`` /
+        ``todo`` 等一堆状态，其中 ``checkpoint`` 与 ``todo`` 是**构造时**决定的。
+        就地改 = 在 ``sdk.py`` 上开一堆 setter，每个 setter 都是一个
+        "改完之后哪些状态没跟着改"的坑。重建则**只有一条路径**，
+        与"只有一处组装，不会漂移"是同一条判据。
+        代价是切换时重扫一次技能索引——可忽略，切换是人手动触发的低频动作。
+
+    **``todo`` 账本刻意不随会话切换**：它在 ``<workspace>/.sigma/todo.json``，
+    是**工作区级**的（详规 D-S4）。换会话而 todo 跟着换，会让"我列了五条待办、
+    切个会话回来全没了"——而待办本来就是跨会话的工作记忆。
+    """
+
+    def __init__(
+        self,
+        *,
+        args: argparse.Namespace,
+        workspace: Path,
+        base_url: str,
+        model: str,
+        api_key: str,
+        registry: ToolRegistry,
+        system_prompt: str,
+        sessions_root: Path,
+        binding: SessionBinding,
+        shadow_git_dir: Path | None,
+        skills_root: Path | None,
+        make_provider: Callable[[], BaseProvider] | None = None,
+    ) -> None:
+        self._args = args
+        self._workspace = workspace
+        self._base_url = base_url
+        self._model = model
+        self._api_key = api_key
+        self._registry = registry
+        self._system_prompt = system_prompt
+        self._sessions_root = sessions_root
+        self._shadow_git_dir = shadow_git_dir
+        self._skills_root = skills_root
+        self._binding = binding
+        #: provider 的**造法**可注入：测试要离线跑（``FakeProvider``），
+        #: 而默认路径要真造 ``OpenAICompatProvider``。注入的是"造法"不是
+        #: "实例"，因为 provider **整个进程只造一个**——切换会话时不重建它
+        #: （重建等于把连接池丢掉，而切换跟 provider 无关）。
+        self._make_provider = make_provider or (
+            lambda: _make_provider(args, base_url, api_key)
+        )
+        self._provider = self._make_provider()
+        self._session = self._build(binding, shadow_git_dir)
+
+    # -- 组装 ---------------------------------------------------------------
+
+    def _build(
+        self, binding: SessionBinding, shadow_git_dir: Path | None
+    ) -> InteractiveSession:
+        """按一份 binding 造会话。
+
+        影子库路径**由 binding 的 session_id 现算**，不用 ``self._shadow_git_dir``：
+        那个字段是**启动时**那一个会话的路径，切换后必须换成新会话的。
+        直接用启动时的值会让新会话把快照写进旧会话的影子库——
+        于是 ``sigma --rollback`` 在新会话里回滚出旧会话的状态，
+        而工作区配对检查（``recorded_workspace``）**挡不住这个**，因为两者同工作区。
+        """
+        return InteractiveSession(
+            provider=self._provider,
+            workspace_root=self._workspace,
+            model=self._model,
+            max_rounds=self._args.max_rounds,
+            temperature=self._args.temperature,
+            registry=self._registry,
+            system_prompt=self._system_prompt,
+            observer=TerminalRenderer(),
+            session_id=binding.session_id,
+            tree=binding.tree,
+            shadow_git_dir=shadow_git_dir,
+            skills_root=self._skills_root,
+            enable_sub_agent=self._args.sub_agent,
+        )
+
+    # -- 查询 ---------------------------------------------------------------
+
+    @property
+    def current(self) -> InteractiveSession:
+        """当前会话。**每次调用都取最新**——REPL 不能缓存它。"""
+        return self._session
+
+    @property
+    def current_id(self) -> str:
+        return self._binding.session_id
+
+    @property
+    def sessions_root(self) -> Path:
+        return self._sessions_root
+
+    def list(self) -> list[SessionPreview]:
+        """最近 20 个会话的预览（``/sessions`` 的数据源）。
+
+        **不缓存**：用户随时可能在另一个终端里跑了 ``sigma -p``，
+        缓存会让 ``/sessions`` 少显示一个刚产生的会话——
+        而"我刚跑的那个会话在哪"正是他会敲这条命令的原因。
+        """
+        return session_previews(self._sessions_root, limit=SESSIONS_LIST_LIMIT)
+
+    # -- 切换 ---------------------------------------------------------------
+
+    def new(self) -> str:
+        """开一个新会话并立即生效。返回新 id。
+
+        ``SessionTree(store=...)``（带 store 的空树）而不是 ``SessionTree()``：
+        前者让新会话一下笔就落到新文件上——两条路都通，但带 store 的那种
+        不必在第一次 write 时再决定"写到哪"。
+        """
+        session_id = new_session_id()
+        store = JsonlStore(self._sessions_root, session_id)
+        binding = SessionBinding(
+            session_id=session_id,
+            tree=SessionTree(store=store),
+            resumed=False,
+            previous_messages=0,
+        )
+        self._binding = binding
+        self._session = self._build(binding, self._shadow_dir_for(session_id))
+        return session_id
+
+    def switch_to(self, session_id: str) -> SwitchOutcome:
+        """切到指定会话，**历史与 checkpoint 都接上**（详规 D-S4）。
+
+        ``SessionTree.from_store`` 是这里的关键动作：它把磁盘上的 JSONL
+        读成一棵有历史的消息树。少了它，切换就变成"只换了个 id 的空会话"——
+        **症状是模型突然忘了刚才说的一切**，而它照样能答，
+        看起来只是"这次答得不好"。G87 就是钉这条的。
+
+        切到当前会话是**合法**的（返回 ``switched=False``）：用户可能只是想
+        "重来一遍"（把内存里未落盘的状态丢掉）。这不是错误，不该报错。
+        """
+        safe = _safe_session_id(session_id)
+        path = session_path(self._sessions_root, safe)
+        if not path.is_file():
+            return SwitchOutcome(ok=False, session_id=safe, messages=0, switched=False)
+
+        binding = SessionBinding(
+            session_id=safe,
+            tree=SessionTree.from_store(JsonlStore(self._sessions_root, safe)),
+            resumed=True,
+            previous_messages=0,
+        )
+        messages = len(binding.tree)
+        binding = replace_binding_count(binding, messages)
+        switched = safe != self._binding.session_id
+        self._binding = binding
+        self._session = self._build(binding, self._shadow_dir_for(safe))
+        return SwitchOutcome(ok=True, session_id=safe, messages=messages, switched=switched)
+
+    def _shadow_dir_for(self, session_id: str) -> Path | None:
+        if self._shadow_git_dir is None:
+            return None
+        return shadow_git_dir_for(self._sessions_root, session_id)
+
+    # -- 生命周期 -----------------------------------------------------------
+
+    async def aclose(self) -> None:
+        """关掉 provider。**provider 归 manager 所有，会话只是借用**——
+        所以切换时不能关它（关了就再也发不出请求），只能在这里关一次。
+
+        ``aclose`` 是**可选**能力（``BaseProvider`` 上没有它，
+        ``FakeProvider`` 也没有），所以这里按"有没有"调用，而不是
+        ``assert`` 一个基类字段。代价是拼错方法名不会在类型层被发现——
+        所以下面那行断言把它钉住（拼错时 AttributeError 立刻暴露，
+        而不是静默地永远不关连接）。
+        """
+        closer = getattr(self._provider, "aclose", None)
+        if closer is None:
+            return
+        await closer()
+
+
 async def _run_interactive(
     args: argparse.Namespace,
     workspace: Path,
@@ -568,30 +839,33 @@ async def _run_interactive(
     system_prompt: str,
     tree: SessionTree,
     session_id: str,
+    sessions_root: Path,
     shadow_git_dir: Path | None = None,
     skills_root: Path | None = None,
 ) -> int:
-    """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。"""
-    provider = _make_provider(args, base_url, api_key)
-    session = InteractiveSession(
-        provider=provider,
-        workspace_root=workspace,
+    """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。
+
+    组装搬进了 :class:`SessionManager`（P5 详规 D-S2）；本函数只剩
+    "造 manager → 跑 REPL → 收尾"三件事。
+    """
+    binding = SessionBinding(session_id, tree, resumed=False, previous_messages=0)
+    manager = SessionManager(
+        args=args,
+        workspace=workspace,
+        base_url=base_url,
         model=model,
-        max_rounds=args.max_rounds,
-        temperature=args.temperature,
+        api_key=api_key,
         registry=registry,
         system_prompt=system_prompt,
-        observer=TerminalRenderer(),
-        session_id=session_id,
-        tree=tree,
+        sessions_root=sessions_root,
+        binding=binding,
         shadow_git_dir=shadow_git_dir,
         skills_root=skills_root,
-        enable_sub_agent=args.sub_agent,
     )
     try:
-        return await run_repl(session)
+        return await run_repl(manager)
     finally:
-        await provider.aclose()
+        await manager.aclose()
 
 
 def _report_web_tool(
@@ -755,6 +1029,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  会话    新建 {binding.session_id}")
     else:
         print(f"  会话    {binding.session_id}（新）")
+    if not args.prompt:
+        # 只在交互模式打：一次性模式没有 REPL，列命令会让用户以为能敲。
+        # **不列全清单**（那是 `/help` 的事）——横幅里只放"存在斜杠命令"这件事，
+        # 否则每加一个命令就要改两处文案，而漏改的那处会慢慢过期。
+        print("  交互    /help 看命令（/sessions 列会话、/switch 切会话、/new 开新的）")
     print()
     # 安全边界现状（P3-批次1 起**与代码同源**，不再是"什么都没有"）。
     # 这一段的每一句都要能在代码里指到对应实现，否则它又会变回"文档里的边界"。
@@ -801,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
                 system_prompt=system_prompt,
                 tree=binding.tree,
                 session_id=binding.session_id,
+                sessions_root=sessions_root,
                 shadow_git_dir=shadow_dir,
                 skills_root=skills_root,
             )

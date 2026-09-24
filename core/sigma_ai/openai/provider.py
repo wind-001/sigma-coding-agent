@@ -33,7 +33,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -69,6 +71,28 @@ if TYPE_CHECKING:
     from sigma_ai.messages import LlmMessage
 
 
+#: 一次流式请求的**空闲**上限（秒）：SSE 两行之间超过这个间隔就断开。
+#:
+#: 为什么 ``httpx.Timeout`` 挡不住挂死
+#:     ``httpx.Timeout(120.0)`` 约束的是**单次读**操作——SSE 每收到一个
+#:     chunk（含心跳）就重置计时。模型侧只要定期发心跳，120 s 的读超时
+#:     **永远不会触发**：实测（2026-09-23 晚间 DeepSeek 高峰）有两个连接
+#:     挂死 1 小时零产出，而同一时刻其他连接每轮 4 s 完成。
+#:     「读超时」能防"半天没动静"，防不住"一直有心跳但不出内容"。
+#:
+#: 为什么取 60 而不是更小
+#:     厂商心跳间隔常见 15–30 s；正常首 token <5 s、高峰 <30 s。60 s 是
+#:     心跳间隔的 2–4 倍——不误伤正常请求，又能在一个心跳周期内没数据时止损。
+STREAM_IDLE_TIMEOUT_S: float = 60.0
+
+#: 一次流式请求的**整条时长**上限（秒）：无论如何到点就断。
+#:
+#: 依据：本次轮数扫描的实测单轮耗时 3–30 s（r20/r30 每轮约 4 s完成
+#: 20–25 轮任务），单轮最坏 ~90 s；300 s 是它的 3 倍以上。它防的是
+#: "慢速滴答"——每次都来一点数据、永远不结束的那种挂起。
+STREAM_TOTAL_TIMEOUT_S: float = 300.0
+
+
 class OpenAICompatProvider(BaseProvider):
     """OpenAI 兼容协议的 provider。
 
@@ -87,6 +111,9 @@ class OpenAICompatProvider(BaseProvider):
         api_key: 可为空（本地 Ollama / vLLM 通常不校验）。
         client: 注入的 httpx client。**测试用 ``MockTransport`` 从这里进**，
             不需要真实网络。
+        stream_idle_timeout_s: 流式两行之间的空闲上限（默认见模块常量）。
+            **测试要传小值**——否则"验超时"的用例要真等一分钟。
+        stream_total_timeout_s: 一次流式请求的整条时长上限。
     """
 
     def __init__(
@@ -96,12 +123,16 @@ class OpenAICompatProvider(BaseProvider):
         api_key: str | None = None,
         client: httpx.AsyncClient | None = None,
         provider_name: str = "openai-compat",
+        stream_idle_timeout_s: float = STREAM_IDLE_TIMEOUT_S,
+        stream_total_timeout_s: float = STREAM_TOTAL_TIMEOUT_S,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._provider_name = provider_name
         self._owns_client = client is None
         self._client = client if client is not None else httpx.AsyncClient()
+        self._idle_timeout_s = stream_idle_timeout_s
+        self._total_timeout_s = stream_total_timeout_s
 
     async def aclose(self) -> None:
         """关闭自建的 client。外部注入的 client 由调用方负责。"""
@@ -202,7 +233,47 @@ class OpenAICompatProvider(BaseProvider):
                     yield ErrorEvent(error=payload)
                     return
 
-                async for line in response.aiter_lines():
+                # 读循环改成**显式 anext + 两个闸**（不能只靠 httpx 的读超时）：
+                # 挂死时 ``async for`` 会一直 await 在 anext 上，循环体里的
+                # 时间检查**根本执行不到**——所以超时必须套在 await 外面。
+                started_at = time.monotonic()
+                line_iter = response.aiter_lines()
+                while True:
+                    elapsed_s = time.monotonic() - started_at
+                    if elapsed_s > self._total_timeout_s:
+                        yield ErrorEvent(
+                            error=ProviderErrorPayload(
+                                code=ErrorCode.TRANSIENT,
+                                message=(
+                                    f"流式响应整体超时（>{self._total_timeout_s:.0f}s "
+                                    "未结束）"
+                                ),
+                            )
+                        )
+                        return
+                    try:
+                        # **只传空闲上限**（不传"剩余总时长"）：若把两者取 min，
+                        # 总时长将尽时 wait_for 的超时会趋近 0，于是"总时长耗尽"
+                        # 被误报成"空闲超时"——两个闸的语义必须互不污染。
+                        line = await asyncio.wait_for(
+                            line_iter.__anext__(),
+                            timeout=self._idle_timeout_s,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except (asyncio.TimeoutError, TimeoutError):
+                        # 丢弃必须可见：挂起不是"没发生"，是一条被砍掉的响应。
+                        yield ErrorEvent(
+                            error=ProviderErrorPayload(
+                                code=ErrorCode.TRANSIENT,
+                                message=(
+                                    f"流式响应空闲超时（>{self._idle_timeout_s:.0f}s "
+                                    "没有新数据）"
+                                ),
+                            )
+                        )
+                        return
+
                     signal.raise_if_cancelled()
 
                     try:

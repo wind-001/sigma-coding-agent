@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-23T19:31:58",
+  "task": "syn-012",
+  "title": "任务队列的四处缺陷（状态机 / 重试计数 / 出队方向 / id 恢复）",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "syn-012",
+    "eval_profile": "B2-r30",
+    "status": "completed",
+    "rounds": 23,
+    "tool_calls": 31,
+    "tool_failures": 0,
+    "prompt_tokens": 183178,
+    "completion_tokens": 2953,
+    "wall_clock_s": 66.651,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\syn-012\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": ".............                                                            [100%]\n13 passed in 2.47s"
+    }
+  }
+}
