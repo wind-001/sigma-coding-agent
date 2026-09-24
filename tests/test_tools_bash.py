@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -49,15 +50,24 @@ async def test_bash_nonzero_exit_is_error_with_stderr_in_content(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_bash_timeout_kills_command(tmp_path: Path) -> None:
-    """边界：超时**必须**生效——否则一条挂起命令让 loop 永久卡死（详规 3.5）。"""
+    """边界：超时**必须**生效——否则一条挂起命令让 loop 永久卡死（详规 3.5）。
+
+    为什么断言耗时上限：Windows 上若只 ``proc.kill()`` 杀 bash 本身，
+    孙进程（``sleep``）存活并持有管道句柄，``wait()`` 会被拖到孙进程
+    自然退出——测试依然"通过"但要跑 30+ s（假绿）。这里用 15 s 上限
+    （杀树实测 <3 s，留足慢机余量）把这种行为钉死为失败。
+    """
     tool = BashTool()
+    start = time.monotonic()
     result = await _run(
         tool, _ctx(tmp_path), command="sleep 30", timeout_s=1
     )
+    elapsed = time.monotonic() - start
 
     assert result.is_error
     assert "超时" in result.content[0].text
     assert result.details["timed_out"] is True
+    assert elapsed < 15, f"超时处理耗时 {elapsed:.1f}s：进程树没被及时杀掉（Windows 上疑似孙进程存活拖住了 wait）"
 
 
 @pytest.mark.asyncio

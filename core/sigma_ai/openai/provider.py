@@ -92,6 +92,29 @@ STREAM_IDLE_TIMEOUT_S: float = 60.0
 #: "慢速滴答"——每次都来一点数据、永远不结束的那种挂起。
 STREAM_TOTAL_TIMEOUT_S: float = 300.0
 
+#: 建连阶段（TCP / DNS / TLS 握手）的请求级上限（秒）。
+#:
+#: 为什么必须显式设而不能共用一个大标量
+#:     ``httpcore`` 的 DNS 解析（``getaddrinfo``）跑在**线程池**里，
+#:     不受 httpx 的 connect 超时约束（encode/httpcore 的已知行为）：
+#:     解析器卡住时，120 s 的 connect 超时永远等不到触发点。
+#:     2026-09-24 syn-012 挂死 8.5 h 零产出正是这个形状。
+#:     正常建连（含 TLS）实测 <5 s，15 s 已是 3 倍余量；
+#:     解析器卡死则由外层的任务级兜底闸（见下）砍掉。
+REQUEST_CONNECT_TIMEOUT_S: float = 15.0
+
+#: **任务级兜底**（秒）：整条请求（建连 → 发送 → 收流 → 结束）的总期限。
+#:
+#: 为什么是 360 而不是直接沿用总时长闸的 300
+#:     内层最坏合法路径 ≈ 总时长闸 300 s + 最后一次取行最多再等
+#:     空闲闸 60 s ≈ 360 s。取值**小于**它，内层闸本可自决的超时会被
+#:     外层抢报（两个闸的语义互相污染——与"空闲闸不掺总时长"是同一条
+#:     纪律）；取值**远大于**它，建连挂死要等太久才止损。
+#:     360 = 300 + 60 恰好覆盖内层最坏情况：超过它还没结束的请求，
+#:     只可能卡在内层两闸**覆盖不到的阶段**（DNS / TCP / TLS / 发送），
+#:     那正是要兜的形状。
+TASK_TOTAL_TIMEOUT_S: float = STREAM_TOTAL_TIMEOUT_S + STREAM_IDLE_TIMEOUT_S
+
 
 class OpenAICompatProvider(BaseProvider):
     """OpenAI 兼容协议的 provider。
@@ -114,6 +137,9 @@ class OpenAICompatProvider(BaseProvider):
         stream_idle_timeout_s: 流式两行之间的空闲上限（默认见模块常量）。
             **测试要传小值**——否则"验超时"的用例要真等一分钟。
         stream_total_timeout_s: 一次流式请求的整条时长上限。
+        task_total_timeout_s: 整条请求（含建连等读循环之前的阶段）的总期限。
+            **必须 ≥ 内层最坏合法路径（总闸 + 空闲闸）**，否则两个闸的
+            语义会互相污染。
     """
 
     def __init__(
@@ -125,6 +151,7 @@ class OpenAICompatProvider(BaseProvider):
         provider_name: str = "openai-compat",
         stream_idle_timeout_s: float = STREAM_IDLE_TIMEOUT_S,
         stream_total_timeout_s: float = STREAM_TOTAL_TIMEOUT_S,
+        task_total_timeout_s: float = TASK_TOTAL_TIMEOUT_S,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -133,6 +160,7 @@ class OpenAICompatProvider(BaseProvider):
         self._client = client if client is not None else httpx.AsyncClient()
         self._idle_timeout_s = stream_idle_timeout_s
         self._total_timeout_s = stream_total_timeout_s
+        self._task_total_timeout_s = task_total_timeout_s
 
     async def aclose(self) -> None:
         """关闭自建的 client。外部注入的 client 由调用方负责。"""
@@ -179,7 +207,33 @@ class OpenAICompatProvider(BaseProvider):
 
         return body
 
-    async def _aiter_stream(
+    def _request_timeout(self, timeout_s: float | None) -> httpx.Timeout:
+        """构造请求级超时：**四个阶段都必须有界**，重点是 connect。
+
+        为什么 connect 必须显式压小
+            ``httpcore`` 的 DNS 解析跑在线程池里，不受 httpx 超时约束——
+            标量超时（如 ``Timeout(120.0)``）对卡死的解析器无能为力。
+            显式给 connect / pool 设 ``REQUEST_CONNECT_TIMEOUT_S``，
+            再由外层任务级兜底闸做最后的保险（两者是纵深防御，不是重复）。
+
+        读超时为什么给总时长闸的值
+            单次读的挂死由**空闲闸**负责（语义更准、错误信息更有用），
+            httpx 的读超时只需要"存在且有界"，取总时长闸的值保证它
+            永远不会抢在空闲闸之前触发。
+        """
+        if timeout_s is not None:
+            # 调用方给了整体上限：connect 取它与建连上限的较小值，
+            # 保证任何阶段都不超过调用方的预算。
+            return httpx.Timeout(
+                timeout_s, connect=min(timeout_s, REQUEST_CONNECT_TIMEOUT_S)
+            )
+        return httpx.Timeout(
+            self._total_timeout_s,
+            connect=REQUEST_CONNECT_TIMEOUT_S,
+            pool=REQUEST_CONNECT_TIMEOUT_S,
+        )
+
+    async def _aiter_stream_raw(
         self,
         messages: list[LlmMessage],
         tools: list[dict[str, Any]],
@@ -223,7 +277,7 @@ class OpenAICompatProvider(BaseProvider):
                 url,
                 json=body,
                 headers=self._headers(),
-                timeout=timeout_s if timeout_s is not None else httpx.Timeout(120.0),
+                timeout=self._request_timeout(timeout_s),
             ) as response:
                 if response.status_code >= 400:
                     raw_text = (await response.aread()).decode(
@@ -329,6 +383,75 @@ class OpenAICompatProvider(BaseProvider):
             return
 
         yield StopEvent(stop_reason=stop_reason)  # type: ignore[arg-type]
+
+    async def _aiter_stream(
+        self,
+        messages: list[LlmMessage],
+        tools: list[dict[str, Any]],
+        *,
+        model: str,
+        signal: CancelToken,
+        sampling: SamplingParams | None,
+        options: StreamOptions | None,
+        timeout_s: float | None,
+    ) -> AsyncIterator[Any]:
+        """外层：**任务级兜底闸**（2026-09-24 syn-012 事故的修复）。
+
+        为什么必须有这一层
+            内层的两个闸（空闲 60 s / 总时长 300 s）都活在**读循环里**，
+            覆盖不到读循环之前的阶段：DNS 解析、TCP/TLS 建连、请求发出、
+            响应头到达。这些阶段挂死时，第一个事件永远不会产出——
+            syn-012 挂 8.5 h 零产出正是这个形状（同一时刻其他档位正常）。
+            而且httpcore 的 DNS 解析跑在线程池里，连请求级 connect
+            超时都约束不到它，所以还需要这一层任务级保险。
+
+        机制
+            不是"把整个生成器包进一个 ``wait_for``"（那样事件只能最后
+            一次性吐出，流式失去意义），而是给整条请求立一个 **deadline**，
+            每次等下一个事件时用**剩余预算**做 wait_for。效果等价于
+            整条请求被 wait_for 包住，同时保留增量产出。
+
+        为什么 wait_for 传"剩余预算"而不是固定值
+            传固定值 = 每个事件各有一份完整预算，无限慢滴永远砍不掉
+            （``test_task_level_deadline_covers_whole_request`` 钉死这一点）。
+            传剩余预算才是"整条请求的总期限"。
+
+        取消语义
+            ``wait_for`` 不会吞掉 inner 主动抛出的 ``CancelledError``
+            （取消令牌的语义原样穿透），只把**超时**归一化成
+            ``TRANSIENT`` 错误事件——遵循本项目"流式错误即事件、
+            不裸抛异常打断流"的既有约定。
+        """
+        inner = self._aiter_stream_raw(
+            messages,
+            tools,
+            model=model,
+            signal=signal,
+            sampling=sampling,
+            options=options,
+            timeout_s=timeout_s,
+        )
+        deadline = time.monotonic() + self._task_total_timeout_s
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    inner.__anext__(),
+                    timeout=deadline - time.monotonic(),
+                )
+            except StopAsyncIteration:
+                return
+            except (asyncio.TimeoutError, TimeoutError):
+                yield ErrorEvent(
+                    error=ProviderErrorPayload(
+                        code=ErrorCode.TRANSIENT,
+                        message=(
+                            f"任务级超时（整个请求 >{self._task_total_timeout_s:.0f}s "
+                            "未完成，可能卡在连接建立等读循环之前的阶段）"
+                        ),
+                    )
+                )
+                return
+            yield event
 
     def stream(
         self,

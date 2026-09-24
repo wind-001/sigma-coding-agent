@@ -28,12 +28,27 @@
 超时时拿不回部分输出的原因
     ``wait_for`` 取消 ``communicate()`` 后，再次调用它的行为没有保证。
     P1 选择"kill + 回收 + 明确告知超时"，不冒险读半截输出。
+
+为什么超时后要杀**整棵进程树**而不是 ``proc.kill()``
+    Windows 上 ``proc.kill()`` 是 TerminateProcess，只杀 bash 本身；
+    MSYS2 bash 会把命令（如 ``sleep``）作为**子进程**拉起，孙进程存活时
+    会继续持有 stdout/stderr 管道句柄——实测（2026-09，本机复现）
+    ``await proc.wait()`` 会一直阻塞到孙进程**自然退出**才返回
+    （``sleep 30`` + 1 s 超时 → wait 卡了 28 s）。
+    所以 Windows 用 ``taskkill /T /F /PID`` 杀树；POSIX 用
+    ``start_new_session=True`` + ``os.killpg`` 杀进程组。
+    即使杀树失败，回收等待也有上限（``KILL_GRACE_S``）：工具**必须返回**，
+    不能让"超时处理"自己变成新的挂起点。
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
+import signal
+import subprocess
+import sys
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
@@ -50,6 +65,46 @@ DEFAULT_TIMEOUT_S = 60
 #: 的评测编排必死。上限**保留但有界放大**——不设上限会让挂起的命令把
 #: loop 永久卡死（见模块 docstring「超时必须」）。
 MAX_TIMEOUT_S = 1800
+#: 杀树后回收进程的等待上限。杀进程是异步生效的，若 ``wait()`` 无上限，
+#: 万一进程没能立刻退出，超时处理会自己变成新的挂起点（Windows 实测：
+#: 孙进程持有管道句柄时 ``wait()`` 会被拖到孙进程退出，见模块 docstring）。
+KILL_GRACE_S = 5
+
+
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """杀掉 ``proc`` 及其全部子孙进程，然后补一刀杀 ``proc`` 本身兜底。
+
+    跨平台差异：Windows 的 TerminateProcess 只杀直接目标进程，杀树必须用
+    ``taskkill /T /F``；POSIX 则让 bash 成为新会话首进程后对整组 ``killpg``。
+    所有杀进程调用都吞异常：目标可能刚好自己退出了，这不该让工具报错。
+    """
+    if proc.returncode is not None:
+        return  # 已经退出并回收，无需再杀
+    if sys.platform == "win32":
+        try:
+            # taskkill 实测约 0.1~1 s，subprocess.run 会阻塞事件循环，
+            # 丢进线程池避免卡住 loop 上的其他协程。
+            await asyncio.to_thread(
+                subprocess.run,
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                check=False,
+            )
+        except OSError:  # pragma: no cover - taskkill 不可用的极端环境
+            pass
+    else:
+        try:
+            # 依赖创建时 start_new_session=True：bash 是会话首进程，
+            # 其 pid 即进程组 id，killpg 一次带走全部子孙。
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass  # 进程刚好退出 / 无权限，交给下面的直接杀兜底
+    # 无论杀树是否成功，都补一刀直接杀 bash 本身：杀树调用可能因为
+    # 进程刚好退出而"没杀到"，直接 kill 是幂等的兜底。
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
 
 
 class BashParams(BaseModel):
@@ -122,6 +177,15 @@ class BashTool(BaseTool):
                 is_error=True,
             )
 
+        # 让 bash 与本进程隔离开，超时才能"一次带走"它的全部子孙：
+        # - Windows：独立进程组，bash 树不接收针对本进程组的 CTRL 事件；
+        # - POSIX：新会话，bash 成为会话首进程，killpg 才杀得到整棵树。
+        proc_kwargs: dict[str, Any] = {}
+        if sys.platform == "win32":
+            proc_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            proc_kwargs["start_new_session"] = True
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 bash_path,
@@ -130,6 +194,7 @@ class BashTool(BaseTool):
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **proc_kwargs,
             )
         except OSError as exc:
             return ToolResult(
@@ -143,11 +208,16 @@ class BashTool(BaseTool):
                 proc.communicate(), timeout=params.timeout_s
             )
         except asyncio.TimeoutError:
-            # 必须回收子进程，否则留下僵尸；部分输出拿不回（见模块 docstring）
-            proc.kill()
+            # 必须杀**整棵树**并回收子进程，否则留下僵尸（Windows 上孙进程
+            # 持有管道句柄会把 wait 拖到天荒地老，见模块 docstring）。
+            # 部分输出拿不回（见模块 docstring「超时时拿不回部分输出的原因」）
+            await _kill_process_tree(proc)
             try:
-                await proc.wait()
-            except ProcessLookupError:  # pragma: no cover - 平台差异兜底
+                # 回收等待必须有上限：杀进程异步生效，无上限就可能挂起。
+                await asyncio.wait_for(proc.wait(), timeout=KILL_GRACE_S)
+            except asyncio.TimeoutError:
+                # 正常不会走到（taskkill /F 实测 <1 s 生效）；真走到也得返回，
+                # 工具自己不能变成新的挂起点。
                 pass
             return ToolResult(
                 content=[

@@ -771,3 +771,100 @@ async def test_normal_stream_has_no_timeout_error() -> None:
     provider, _ = _provider()
     events = await _collect(provider)
     assert not [e for e in events if isinstance(e, ErrorEvent)]
+
+
+# ---------------------------------------------------------------------------
+# 任务级兜底闸：防「连接建立阶段挂死」（2026-09-24 syn-012 事故，8.5 h 零产出）
+# ---------------------------------------------------------------------------
+
+
+class _ConnectHangingTransport(httpx.AsyncBaseTransport):
+    """模拟「请求发出前（connect/DNS/TLS 阶段）永久阻塞」的传输层。
+
+    为什么不用 ``MockTransport``：它的 handler 在连接池之后才被调用，
+    模拟不了"建连阶段"挂住。自定义 ``AsyncBaseTransport`` 挂在更下层，
+    ``await`` 一个永不 set 的 ``Event`` 即可确定性复现"第一个事件
+    永远不产出"的形状——与 8.5 h 零产出的事故同构。
+
+    修复前（无任务级兜底闸）：这个挂起**没有任何闸能砍掉它**——
+    空闲闸/总时长闸都在读循环里，根本执行不到。
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        await asyncio.Event().wait()  # 永不 set → 永久阻塞（可被 cancel 打断）
+        raise AssertionError("不可达：上面的 wait 只能被取消打断")  # pragma: no cover
+
+
+async def test_task_level_timeout_cuts_connect_phase_hang() -> None:
+    """**本次事故的靶子**：建连阶段挂死 → 任务级兜底闸必须砍掉并产出可见错误。
+
+    事故形状：8.5 h 零产出 = 一个事件都没有，唯一产出应是超时错误。
+    断言 ``len(events) == 1`` 钉住"零产出"这个特征。
+
+    测试自身的 5 s 护栏：修复前挂起无解，护栏把"真挂"变成秒级确定性红
+    （护栏超时 → asyncio.TimeoutError → 测试失败），满足"绝不允许真挂"。
+    """
+    provider = OpenAICompatProvider(
+        base_url="https://example.invalid/v1",
+        api_key="sk-test",
+        client=httpx.AsyncClient(transport=_ConnectHangingTransport()),
+        task_total_timeout_s=0.3,
+    )
+    events = await asyncio.wait_for(_collect_events(provider), timeout=5.0)
+
+    assert len(events) == 1, f"零产出形状：应只有超时错误一个事件，实际 {events}"
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].error.code == ErrorCode.TRANSIENT
+    assert events[0].error.retriable is True
+    assert "任务级超时" in events[0].error.message
+
+
+async def test_task_level_deadline_covers_whole_request() -> None:
+    """deadline 是**整条请求的总期限**，不是"每个事件各一份预算"。
+
+    造一个无限慢滴（每 10 ms 一行，空闲/总时长两闸都碰不到），
+    任务级兜底 0.2 s 必须到点砍掉。若实现错成"每个 __anext__ 各拿
+    完整预算"，无限滴答将永远砍不掉 → 5 s 护栏超时 → 确定性红。
+    """
+
+    async def _endless_drip():  # type: ignore[no-untyped-def]
+        while True:
+            await asyncio.sleep(0.01)
+            yield b'data: {"choices":[]}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=_endless_drip(), headers={"content-type": "text/event-stream"}
+        )
+
+    provider = OpenAICompatProvider(
+        base_url="https://example.invalid/v1",
+        api_key="sk-test",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        stream_idle_timeout_s=5.0,
+        stream_total_timeout_s=30.0,
+        task_total_timeout_s=0.2,
+    )
+    events = await asyncio.wait_for(_collect_events(provider), timeout=5.0)
+
+    errors = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1, f"应恰好一条任务级超时错误，实际 {errors}"
+    assert "任务级超时" in errors[0].error.message
+    assert isinstance(events[-1], ErrorEvent)  # 流以错误收尾，不再产出 StopEvent
+
+
+async def test_task_gate_does_not_disturb_normal_stream() -> None:
+    """回归：正常流穿过外层兜底闸时**原样透传**——不丢事件、不误报。"""
+    body = _sse(_chunk(content="ok"), _chunk(finish_reason="stop"))
+    transport = httpx.MockTransport(_Recorder(body).handler)
+    provider = OpenAICompatProvider(
+        base_url="https://example.invalid/v1",
+        api_key="sk-test",
+        client=httpx.AsyncClient(transport=transport),
+    )
+    events = await asyncio.wait_for(_collect_events(provider), timeout=5.0)
+
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    assert texts == ["ok"]
+    assert isinstance(events[-1], StopEvent)
+    assert not [e for e in events if isinstance(e, ErrorEvent)]
