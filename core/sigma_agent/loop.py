@@ -83,6 +83,25 @@ if TYPE_CHECKING:
 # agent 层只负责"这个调用该不该执行、失败了怎么办"。
 
 
+@dataclass(frozen=True)
+class _StreamedRound:
+    """一轮流式请求的结果：**连带"它是否干净"这件事一起返回**。
+
+    ``error_summary`` 是 2026-09-24 review 修复加的第三个字段——此前
+    ``_stream_model`` 只回 assistant 与 calls，错误**没有通道**传到 run_turn，
+    于是 ErrorEvent 只能落在 assistant.error_message 里当装饰。
+    返回值里没有它，调用方就"看不见"错误，也就无从把 status 报成 error。
+
+    判据：``None`` = 本轮干净（既无 ErrorEvent，也确实收到了 StopEvent）；
+    非 ``None`` = 本轮的响应不完整，已产的 partial 内容可以留着看，
+    但**不能当成"这一轮干完了"**（跑 Eval 的时候尤其致命）。
+    """
+
+    assistant: AssistantMessage
+    calls: list[AssembledCall]
+    error_summary: str | None = None
+
+
 @dataclass
 class _Planned:
     """一个准备执行的调用：位置 + 调用 + 校验过的参数 + 工具实例。"""
@@ -223,10 +242,32 @@ class AgentLoop:
             # 保留这个注释是为了让 P3 接手时能一眼看到接入点在哪。
             llm_messages = self._to_llm(messages, produced)  # 第 3 步
 
-            assistant, calls = await self._stream_model(llm_messages)  # 第 4 步
+            assistant_box = await self._stream_model(llm_messages)  # 第 4 步
+            assistant = assistant_box.assistant
+            calls = assistant_box.calls
             produced.append(_wrap(assistant))
             last_text = _text_of(assistant)
             total_usage = _add_usage(total_usage, assistant.usage)
+
+            # **错误必须透传成 status="error"**（2026-09-24 review 修复）。
+            # 在此之前 ErrorEvent 只被记进 assistant.error_message，控制流完全
+            # 不受影响——错误流没产出工具调用就走 ``not calls`` 分支返回
+            # "completed"。TurnResult.status 的 Literal 里有 "error"，但全函数
+            # **没有任何一条路径返回它**。后果是评测报告显示 completed，
+            # 而那一轮其实什么都没干成——评测假通过就是从这里来的。
+            # 放在工具批次**之前**判断：流已经不完整时，拼出来的工具参数
+            # 可能也是半截的，继续执行等于拿残缺数据行动（限流场景还会放大成本）。
+            if assistant_box.error_summary is not None:
+                errored = TurnResult(
+                    status="error",
+                    messages=produced,
+                    text=last_text,
+                    rounds=round_index,
+                    usage=total_usage,
+                    reason=assistant_box.error_summary,
+                )
+                self._notify(_turn_end(errored))
+                return errored
 
             if not calls:  # 第 8 步：模型不再要工具 → 尝试收尾
                 # 这一轮它什么工具都没调，自然也没碰 todo——计一笔。
@@ -389,11 +430,17 @@ class AgentLoop:
 
     async def _stream_model(
         self, messages: list[LlmMessage]
-    ) -> tuple[AssistantMessage, list[AssembledCall]]:
+    ) -> _StreamedRound:
         """消费事件流，聚合成一条 assistant 消息与解析后的工具调用。
 
         provider 层（``sigma_ai.openai``）明确把这个聚合留给 loop：
         它只保证"分片被正确按 index 归属"，拼成消息是这里的职责。
+
+        ⚠️ **返回值带上"本轮有没有错误"**（``_StreamedRound.error_summary``）。
+        聚合成消息不等于"这一轮成功"——stream 中途也可能吐 ErrorEvent
+        （截断 / 限流 / 鉴权失败），甚至压根没吐 StopEvent 就结束。
+        这两者在此之前都跟 text/usage 一起被塞进 assistant 消息里，
+        run_turn 拿到的东西**看起来和正常一轮没有区别**。
         """
         text_parts: list[str] = []
         text_signature: str | None = None
@@ -404,6 +451,11 @@ class AgentLoop:
         usage: Usage | None = None
         stop_reason: str = "stop"
         error_messages: list[str] = []
+        # 是否收到**结束信号**。没收到就流干了 = 响应被截断：
+        # stop_reason 的初值 "stop" 会让截断伪装成正常结束（#18）——
+        # OpenAICompatProvider 现在会为这种情况补发 ErrorEvent，
+        # 但**兜底要放在这一层**：换一个 provider 实现不该让这个信号丢回去。
+        saw_stop = False
 
         async for event in self._provider.stream(
             messages,
@@ -425,11 +477,23 @@ class AgentLoop:
             elif isinstance(event, UsageEvent):
                 usage = event.usage
             elif isinstance(event, StopEvent):
+                saw_stop = True
                 stop_reason = event.stop_reason
             elif isinstance(event, ErrorEvent):
                 error_messages.append(f"{event.error.code}: {event.error.message}")
 
         calls = assembler.finish()
+
+        error_summary: str | None = None
+        if error_messages:
+            error_summary = f"模型流式返回出错：{'; '.join(error_messages)}"
+        elif not saw_stop:
+            # 没有 ErrorEvent 也没有 StopEvent——连 finish 都没看到就流干了。
+            # 这种"干净的截断"是**最容易骗过所有断言**的一种：没异常、没报错、
+            # 类型全对，只是内容少了一截。
+            error_summary = (
+                "模型流在未收到结束事件前就结束了（响应被截断），本轮产出不完整"
+            )
 
         blocks: list[ContentBlock] = []
         text = "".join(text_parts)
@@ -450,7 +514,9 @@ class AgentLoop:
             error_message="; ".join(error_messages),
             timestamp=self._clock(),
         )
-        return assistant, calls
+        # partial 内容**保留**着返回（text / messages 都还在），只是它同时带着
+        # error_summary——"留下审计"和"如实定性"两件事都做，不二选一。
+        return _StreamedRound(assistant=assistant, calls=calls, error_summary=error_summary)
 
     # ------------------------------------------------------------------
     # 第 5、6 步：校验并执行整批

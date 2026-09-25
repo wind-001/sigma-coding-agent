@@ -43,3 +43,16 @@ def parse_sse_line(line: str) -> dict[str, Any] | None:
     return json.loads(data)  # type: ignore[no-any-return]
 
 
+def is_done_line(line: str) -> bool:
+    """判断一行是否是 ``data: [DONE]`` 终止行。
+
+    ``parse_sse_line`` 把 ``[DONE]`` 归一成 ``None``（与空行、注释同构），
+    调用方因此**无法区分**"正常终止"与"什么都没说"——而断流检测
+    （provider 的截断可见性）恰恰需要这个区分。所以终止信号单独开一个判据。
+    """
+    stripped = line.strip()
+    if not stripped.startswith("data:"):
+        return False
+    return stripped[len("data:") :].strip() == "[DONE]"
+
+

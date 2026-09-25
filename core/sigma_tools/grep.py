@@ -23,10 +23,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, cast
 from fnmatch import fnmatch
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -39,6 +39,21 @@ from sigma_tools.truncate import truncate_output
 MAX_LINE_CHARS = 240
 
 SKIP_DIRS = {".git"}
+
+#: 单文件匹配的超时（秒）——ReDoS 防护（2026-09-24 review 修复）。
+#: 模型给的正则直接编译，``(a+)+$`` 这类灾难性回溯在长行上是指数耗时；
+#: 同步匹配会**冻死整个事件循环**（bash 超时、信箱收集全部停摆）。
+#: 所以匹配放进线程池并加超时——超时跳过该文件、计数可见。
+DEFAULT_PER_FILE_TIMEOUT_S = 10.0
+
+
+def _search_lines(regex: re.Pattern[str], text: str) -> list[tuple[int, str]]:
+    """逐行匹配（同步、纯 CPU）——在线程池里跑，ReDoS 也冻不死事件循环。"""
+    return [
+        (line_no, line)
+        for line_no, line in enumerate(text.splitlines(), start=1)
+        if regex.search(line) is not None
+    ]
 
 
 class GrepParams(BaseModel):
@@ -64,6 +79,12 @@ class GrepTool(BaseTool):
         "可用 glob 参数（如 '*.py'）按文件名过滤。非 UTF-8 文件会被跳过并计数。"
     )
     read_only = True
+
+    def __init__(
+        self, *, per_file_timeout_s: float = DEFAULT_PER_FILE_TIMEOUT_S
+    ) -> None:
+        # 构造参数可注入：测试用 0.x 秒快速验证超时路径，生产用默认 10s。
+        self._per_file_timeout_s = per_file_timeout_s
 
     @property
     def params(self) -> type[BaseModel]:
@@ -104,6 +125,7 @@ class GrepTool(BaseTool):
         match_count = 0
         searched = 0
         skipped_binary = 0
+        skipped_timeout = 0
 
         for file_path in targets:
             # 只按名字跳过 .git——目录排除规则（.gitignore）是 P1 明确不做的
@@ -128,9 +150,17 @@ class GrepTool(BaseTool):
             # 输出统一用正斜杠：与 bash / read 的行号引用一致，
             # Windows 上也保持同一形态（模型不需要知道运行在哪个系统上）
             shown = rel.as_posix()
-            for line_no, line in enumerate(text.splitlines(), start=1):
-                if regex.search(line) is None:
-                    continue
+            try:
+                # 匹配放到线程池 + 超时：灾难性回溯的正则不再冻住事件循环；
+                # 超时的文件**跳过并计数**——"没搜到"与"搜了没有"必须分开。
+                matches = await asyncio.wait_for(
+                    asyncio.to_thread(_search_lines, regex, text),
+                    timeout=self._per_file_timeout_s,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                skipped_timeout += 1
+                continue
+            for line_no, line in matches:
                 match_count += 1
                 display = line.strip()[:MAX_LINE_CHARS]
                 suffix = " …" if len(line.strip()) > MAX_LINE_CHARS else ""
@@ -141,20 +171,27 @@ class GrepTool(BaseTool):
             "matches": match_count,
             "files_searched": searched,
             "files_skipped": skipped_binary,
+            "files_skipped_timeout": skipped_timeout,
         }
+
+        skip_tail = (
+            f"（另有 {skipped_binary} 个文件因非 UTF-8 或不可读被跳过）"
+            if skipped_binary
+            else ""
+        ) + (
+            f"（另有 {skipped_timeout} 个文件匹配超时（正则回溯过深）被跳过，"
+            "请简化 pattern 后重试）"
+            if skipped_timeout
+            else ""
+        )
 
         if match_count == 0:
             # 无匹配是合法结果，不是错误——模型据此换 pattern 或扩大范围
-            tail = (
-                f"（另有 {skipped_binary} 个文件因非 UTF-8 或不可读被跳过）"
-                if skipped_binary
-                else ""
-            )
             return ToolResult(
                 content=[
                     TextBlock(
                         text=f"没有匹配：pattern={params.pattern!r}，"
-                        f"共搜索 {searched} 个文件。{tail}"
+                        f"共搜索 {searched} 个文件。{skip_tail}"
                     )
                 ],
                 details=details,
@@ -163,12 +200,7 @@ class GrepTool(BaseTool):
         body = "\n".join(lines)
         result = truncate_output(body)
         details["truncated"] = result.truncated
-        tail_note = (
-            f"（另有 {skipped_binary} 个文件因非 UTF-8 或不可读被跳过）"
-            if skipped_binary
-            else ""
-        )
-        header = f"共 {match_count} 个匹配（{searched} 个文件）：{tail_note}"
+        header = f"共 {match_count} 个匹配（{searched} 个文件）：{skip_tail}"
         if result.truncated:
             header += (
                 "\n[结果被截断，请缩小 pattern、指定更精确的 path 或用 glob 过滤。]"

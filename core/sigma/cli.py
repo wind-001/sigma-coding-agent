@@ -418,7 +418,13 @@ def resolve_session(args: argparse.Namespace, sessions_root: Path) -> SessionBin
         if existing is not None:
             tree = SessionTree.from_store(JsonlStore(sessions_root, existing))
             return SessionBinding(existing, tree, True, len(tree))
-        return SessionBinding(new_session_id(), SessionTree(), False, 0)
+        # 空目录也要**带 store**（2026-09-24 review 修复）：``SessionTree()``
+        # 是纯内存树——这条分支起的会话全程不落盘，退出后 ``--continue``
+        # 永远找不到它，症状是"我刚才那个会话没了"。与下面正常新建路径
+        # （``SessionTree(store=store)``）必须同形。
+        new_id = new_session_id()
+        store = JsonlStore(sessions_root, new_id)
+        return SessionBinding(new_id, SessionTree(store=store), False, 0)
 
     session_id = args.session or new_session_id()
     store = JsonlStore(sessions_root, session_id)
@@ -714,6 +720,13 @@ class SessionManager:
         直接用启动时的值会让新会话把快照写进旧会话的影子库——
         于是 ``sigma --rollback`` 在新会话里回滚出旧会话的状态，
         而工作区配对检查（``recorded_workspace``）**挡不住这个**，因为两者同工作区。
+
+        ⚠️ 注册表传的是**克隆**（2026-09-24 review 修复）：``--sub-agent`` 时
+        ``InteractiveSession`` 会往注册表里注册 TaskTool，而所有会话此前共享
+        同一个 ``self._registry``——第二次 ``_build``（/switch、/new）必撞
+        ``DuplicateToolError``，REPL 当场终结。克隆后每个会话一份登记簿，
+        会话间互不影响；TaskTool 的信箱状态也天然随会话走，不会串。
+        工具实例仍共享（同一批对象），只有"谁注册了什么"这份账各自记。
         """
         return InteractiveSession(
             provider=self._provider,
@@ -721,7 +734,7 @@ class SessionManager:
             model=self._model,
             max_rounds=self._args.max_rounds,
             temperature=self._args.temperature,
-            registry=self._registry,
+            registry=self._registry.clone(),
             system_prompt=self._system_prompt,
             observer=TerminalRenderer(),
             session_id=binding.session_id,

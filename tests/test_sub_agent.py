@@ -20,15 +20,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, Field
 
 from sigma.sdk import InteractiveSession, build_system_prompt
-from sigma_agent.base import BaseTool
 from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult
+from sigma_agent.types import ToolContext
 from sigma_ai.base import NeverCancelled
 from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock
 
 from sigma_tools.task import SubAgentRounds, TaskParams
 from sigma_tools.todo import TodoTool

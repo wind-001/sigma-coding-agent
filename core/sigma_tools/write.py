@@ -84,7 +84,11 @@ class WriteTool(BaseTool):
         new_bytes = len(params.content.encode("utf-8"))
 
         try:
-            path.write_text(params.content, encoding="utf-8")
+            # 用 write_bytes 而不是 write_text：文本模式在 Windows 上会把 \n
+            # 静默转成 \r\n——模型写的是 LF（与 read/edit 看到的一致），
+            # 落盘变 CRLF 就是"文件字节被悄悄改变"，且上面的 new_bytes
+            # 统计会与实际落盘字节数不符（与 edit.py 的行尾保真同一条纪律）。
+            path.write_bytes(params.content.encode("utf-8"))
         except OSError as exc:
             return ToolResult(
                 content=[TextBlock(text=f"写入 {path} 失败：{exc}")],

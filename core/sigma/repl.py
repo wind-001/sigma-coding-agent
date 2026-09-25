@@ -138,8 +138,13 @@ def print_help() -> None:
     print("  exit / quit         退出（Ctrl+C 也一样）")
 
 
-async def _cmd_sessions(manager: SessionManager, index_map: dict[int, str]) -> None:
+async def _cmd_sessions(
+    manager: SessionManager, index_map: dict[int, str], argument: str
+) -> None:
     """``/sessions``：列最近 20 个会话，当前会话打 ``*``。
+
+    ``argument`` 是**统一签名**带上的、本命令不用的参数（见 ``_dispatch``）——
+    名为显式、实为忽略，比"分派处数参数"少一类崩溃。
 
     **同时刷新 ``index_map``**——这是序号引用的唯一来源。
     列表为空时**也要清空映射**：留着上一次的序号，会让
@@ -204,8 +209,12 @@ async def _cmd_switch(manager: SessionManager, index_map: dict[int, str], argume
         )
 
 
-async def _cmd_new(manager: SessionManager, index_map: dict[int, str]) -> None:
+async def _cmd_new(
+    manager: SessionManager, index_map: dict[int, str], argument: str
+) -> None:
     """``/new``：开新会话，**立即生效**。
+
+    ``argument`` 是统一签名带上的、本命令不用的参数（见 ``_dispatch``）。
 
     新 id 是生成的（不是"等你下一条输入时再建"）：用户敲完就应当在
     ``/sessions`` 里看到它——"我开了个新会话但它不在列表里"
@@ -216,7 +225,9 @@ async def _cmd_new(manager: SessionManager, index_map: dict[int, str]) -> None:
     print(f"已开新会话 {session_id}。")
 
 
-async def _cmd_help(manager: SessionManager, index_map: dict[int, str]) -> None:
+async def _cmd_help(
+    manager: SessionManager, index_map: dict[int, str], argument: str
+) -> None:
     print_help()
 
 
@@ -226,12 +237,13 @@ async def _cmd_help(manager: SessionManager, index_map: dict[int, str]) -> None:
 #: 别名与主名的行为必须完全一致，而分派处的 ``if`` 是最容易漏掉一处的地方
 #: （``/help`` 里列了别名、分派忘了接，用户就会得到"未知命令"）。
 #:
-#: 值的类型是 ``Callable[..., Awaitable[None]]`` 而不是 ``Callable[..., object]``：
-#: 分派那里要 ``await``，而 ``object`` 会让 mypy 报"await 一个 object"
-#: （实测：第一版就是这么写的，3 条 mypy 错里有 2 条来自这里）。
-#: 命令全部是协程，因为它们都可能要 await I/O——现在只有 ``/switch`` 会读盘，
-#: 但把签名统一成 async 让"加一个要读盘的命令"不必改分派层。
-CommandHandler = Callable[..., Awaitable[None]]
+#: **全部 handler 统一签名** ``(manager, index_map, argument)``（2026-09-24
+#: review 修复）：此前分派处按"argument 是否为空"数着传参——裸敲 ``/switch``
+#: 时 ``handler(manager, index_map)`` 少一个位置参数，当场 ``TypeError``，
+#: 而且异常从分派一路穿到 REPL 顶层，**终结整个会话**。
+#: ``_cmd_switch`` 里那个"参数为空 → 打用法提示"的分支成了永远走不到的死代码。
+#: 统一签名后，"有没有参数"是 handler 自己的事。
+CommandHandler = Callable[["SessionManager", dict[int, str], str], Awaitable[None]]
 
 COMMANDS: dict[str, tuple[CommandHandler, str]] = {
     "sessions": (_cmd_sessions, ""),
@@ -265,10 +277,9 @@ async def _dispatch(manager: SessionManager, index_map: dict[int, str], text: st
         return
     handler, _signature = entry
     argument = argument.strip()
-    if argument:
-        await handler(manager, index_map, argument)
-    else:
-        await handler(manager, index_map)
+    # 统一签名：**始终**传三个参数。"有没有参数"由 handler 自己判断
+    # （``_cmd_switch`` 的空参分支因此复活——它本来就是为此写的）。
+    await handler(manager, index_map, argument)
 
 
 async def run_repl(
@@ -299,7 +310,14 @@ async def run_repl(
         if not text:
             continue
         if text.startswith(COMMAND_PREFIX):
-            await _dispatch(manager, index_map, text)
+            try:
+                # 与下面的 send 同一条纪律：**错误要打印，但不要终结会话**。
+                # 此前分派不设防——命令 handler 里的任何异常（包括上面那个
+                # 裸 /switch 的 TypeError）会一路穿出 REPL 循环，
+                # 连带丢掉当前会话的内存状态（2026-09-24 review 修复）。
+                await _dispatch(manager, index_map, text)
+            except Exception as exc:
+                print(f"[命令失败，会话继续] {type(exc).__name__}: {exc}")
             continue
         if text.lower() in EXIT_WORDS:
             return 0

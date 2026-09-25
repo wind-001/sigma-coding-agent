@@ -36,7 +36,7 @@ import httpx
 import pytest
 from sigma_ai.base import CancelToken, SamplingParams, StreamOptions
 from sigma_ai.errors import ErrorCode
-from sigma_ai.events import ErrorEvent, StopEvent, TextDelta, UsageEvent
+from sigma_ai.events import ErrorEvent, StopEvent, TextDelta, ToolCallDelta, UsageEvent
 from sigma_ai.messages import (
     AssistantMessage,
     ImageBlock,
@@ -868,3 +868,84 @@ async def test_task_gate_does_not_disturb_normal_stream() -> None:
     assert texts == ["ok"]
     assert isinstance(events[-1], StopEvent)
     assert not [e for e in events if isinstance(e, ErrorEvent)]
+
+
+# ---------------------------------------------------------------------------
+# 协议层健壮性（2026-09-24 review 修复：错误即事件，不裸抛打断流）
+# ---------------------------------------------------------------------------
+
+
+async def test_non_dict_sse_data_becomes_error_event_and_stream_continues() -> None:
+    """``data: 123``（合法 JSON 但**不是对象**）必须变成 ErrorEvent，**不裸抛**。
+
+    修复前：``chunk.get("usage")`` 对 int 抛 AttributeError，裸穿出生成器，
+    违背本层"流式错误即事件"的约定。且坏行之后的正常内容不能丢。
+    """
+    body = (
+        b"data: 123\n\n"
+        + _sse(_chunk(content="before"), _chunk(finish_reason="stop"))
+    )
+    provider, _ = _provider(body=body)
+    events = await _collect_events(provider)
+
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    assert texts == ["before"]  # 坏行没吞掉后面的内容
+    errors = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1
+    assert errors[0].error.code is ErrorCode.INVALID_REQUEST
+    assert "不是 JSON 对象" in errors[0].error.message
+    assert isinstance(events[-1], StopEvent)
+
+
+async def test_tool_call_index_null_falls_back_to_zero() -> None:
+    """显式 ``"index": null`` 的分片按 index=0 装配，不得抛 TypeError。
+
+    ``.get("index", 0)`` 只在键**缺失**时给默认值——值为 null 时拿到 None，
+    ``int(None)`` 抛 TypeError 裸穿出生成器（修复前的真实缺陷）。
+    """
+    body = _sse(
+        _chunk(
+            tool_calls=[
+                {"index": None, "id": "c1", "function": {"name": "f", "arguments": "{}"}}
+            ]
+        ),
+        _chunk(finish_reason="tool_calls"),
+    )
+    provider, _ = _provider(body=body)
+    events = await _collect_events(provider)
+
+    deltas = [e for e in events if isinstance(e, ToolCallDelta)]
+    assert len(deltas) == 1
+    assert deltas[0].index == 0
+    assert isinstance(events[-1], StopEvent)
+
+
+def test_parse_usage_explicit_null_fields() -> None:
+    """usage 字段显式为 ``null`` 时按 0 计，不得抛 TypeError。
+
+    与 ``cached_tokens`` 的 ``or 0`` 防御对齐——同函数内防线必须一致。
+    """
+    usage = _parse_usage({"prompt_tokens": None, "completion_tokens": None})
+    assert usage.prompt_tokens == 0
+    assert usage.completion_tokens == 0
+    assert usage.cached_tokens == 0
+
+
+async def test_eof_without_finish_or_done_is_truncation_error() -> None:
+    """流在 finish_reason / [DONE] 之前 EOF = **被截断**，必须可见。
+
+    修复前：干净 EOF 被静默按 ``stop`` 收尾——半截 tool_call 参数在上层
+    拼出非法 JSON，而 stop_reason 却是 "stop"，症状完全不指向根因。
+    已产出的部分（TextDelta）必须保留——上层需要拿到"已经产出的部分"。
+    """
+    body = _sse(_chunk(content="half"), done=False)  # 无 finish_reason、无 [DONE]
+    provider, _ = _provider(body=body)
+    events = await _collect_events(provider)
+
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    assert texts == ["half"]
+    errors = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1
+    assert errors[0].error.code is ErrorCode.TRANSIENT
+    assert "截断" in errors[0].error.message
+    assert not [e for e in events if isinstance(e, StopEvent)]

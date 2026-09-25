@@ -66,6 +66,8 @@ MAX_URLS_PER_CALL = 2
 
 #: 单条正文的字符上限（只抓 1 条时）：放宽到接近整体 8 KB 预算——
 #: 精读的意义就是拿正文，单页时没必要提前收手；整体截断（truncate_output）兜底。
+#:
+#: ⚠ 这上限是**含**"本页被截断"说明文案的（见 ``_render``）——不是正文自己独享。
 MAX_BODY_CHARS = 8000
 
 #: 多条时的单条正文上限：**均分预算**，保证第二条不会消失。
@@ -259,7 +261,11 @@ class WebFetchTool(BaseTool):
             blocked=blocked,
             charged=charged,
         )
-        details["truncated"] = truncated.truncated
+        # 「有没有被截断」是**两级**的：把握整体的 truncate_output 会先砍一刀，
+        # 而每条正文可能早在 ``_render`` 里就被自己的上限砍过了。
+        # 只报前者会漏掉"工具自己已经砍过"的情况（details 是评测与复盘的事实来源）。
+        body_cut = any(record.get("truncated") for record in records)
+        details["truncated"] = truncated.truncated or body_cut
         details["total_bytes"] = truncated.total_bytes
         # is_error 的口径（与 web_search 不同，原因要说清楚）：
         # web_fetch 是"逐条报告"的工具——每条 URL 的成败都写在 content 里
@@ -408,13 +414,20 @@ class WebFetchTool(BaseTool):
                 )
 
         body = markdown.strip()
-        if len(body) > budget:
-            body = (
-                body[:budget]
-                + f"\n[... 本页正文较长，此处只保留前 {budget} 字符"
+        cut = len(body) > budget
+        if cut:
+            notice = (
+                f"[... 本页正文较长，此处只保留前 {budget} 字符"
                 "（框架单条上限；**重复抓取同一条不会拿到更多**）。"
-                "如需更聚焦的内容，请改用 web_search 缩小范围。]"
+                "如需更聚焦的内容，请改用 web_search 缩小范围。]\n"
             )
+            # 说明放在正文**前面**，不是后面——这不是排版偏好，是有实测凭据的：
+            # 挂在长正文后面时，段落总字节（~8300）会超过 truncate_output 的
+            # MAX_BYTES（8192），说明恰好是**最后一行**，整体截断第一个切的就是它
+            # （2026-09-24 实测：'单条上限' 不在输出里）——而它是唯一阻止模型
+            # "徒劳重抓一次、又扣一份额度"的信息。放在正文前面，它永远在
+            # 头部预算之内，不会被任何一刀切掉。成本控制是硬约束。
+            body = notice + body[:budget]
 
         section = f"[{index}] {title_text}\n    {source_text}\n{time_line}\n{body}"
         record: dict[str, Any] = {
@@ -424,6 +437,9 @@ class WebFetchTool(BaseTool):
             "published": published.isoformat() if published is not None else None,
             "stale": stale,
             "credits": SCRAPE_COST,
+            # 自查需要具备的能力："这条的内容被我砍过"要在**审计字段**里说出来，
+            # 不能只指望模型从正文里那句话读出来——评测与复盘看的是 details。
+            "truncated": cut,
         }
         return section, record
 

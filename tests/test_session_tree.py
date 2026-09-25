@@ -18,7 +18,6 @@ G48（树路径正确）、G49（环检测）、G53（追加幂等）。
 from __future__ import annotations
 
 import json
-import warnings
 from pathlib import Path
 
 import pytest
@@ -497,3 +496,30 @@ def test_sibling_branches_share_ancestor_not_each_other(tmp_path: Path) -> None:
     assert tree.path_to(left) == [root, common, left]
     assert tree.path_to(right) == [root, common, right]
     assert tree.children(common) == [left, right]
+
+
+def test_invalid_utf8_line_is_skipped_not_fatal(tmp_path: Path) -> None:
+    """文件里有**非法 UTF-8 字节** → 该行跳过并记行号，其余行照常读回。
+
+    修复前 ``load()`` 用严格 UTF-8 打开：崩溃写入留下的半个多字节字符在
+    迭代行时就抛 ``UnicodeDecodeError``，穿透到 CLI 顶层——整个会话加载不了，
+    与本模块"坏行跳过、能救多少救多少"的纪律直接矛盾
+    （``sessions.py`` 的 ``_preview_one`` 一直是 ``errors="replace"``）。
+    """
+    store = JsonlStore(tmp_path, "s1")
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    good = json.dumps(
+        {"id": "n1", "parent_id": None, "message": record_of(_msg("good")).message},
+        ensure_ascii=False,
+    )
+    # 第二行：被截断的 JSON + 一个非法多字节字符——
+    # replace 后变成 U+FFFD，JSON 结构已破，走 JSONDecodeError 跳过通道。
+    broken = b'{"id": "n2", "parent_id": null, "mess\xff'
+    store.path.write_bytes(good.encode("utf-8") + b"\n" + broken + b"\n")
+
+    with pytest.warns(BadLineSkipped) as record:
+        result = store.load()
+
+    assert result.skipped_lines == [2]
+    assert len(result.records) == 1
+    assert "2" in str(record[0].message), "warning 没带行号——它自己就成了新的无从排查"

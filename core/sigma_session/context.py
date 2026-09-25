@@ -383,7 +383,25 @@ class SessionContext:
         )
         path = self._tree.path_to(head)
         skip = len(messages) - len(kept)
-        keep_from = path[skip] if skip < len(path) else head
+        # **视图下标必须换算回原始路径下标**（2026-09-24 review 修复）：
+        # 已压缩过的视图是 [摘要, *full[skip_old:]]——摘要是**不在树上的
+        # 虚拟消息**，占视图下标 0；视图下标 i（i≥1）对应原始下标
+        # skip_old + i - 1。直接拿视图下标索引原始路径，第二次压缩时
+        # keep_from 会指向靠前得多的节点——第一次压掉的消息全部"复活"，
+        # 压缩白做、历史暴涨，而且完全静默（仅当上次恰好只压 1 条时碰巧正确）。
+        skip_old = 0
+        offset = 0
+        if self._summary is not None and self._keep_from is not None:
+            try:
+                skip_old = len(self._tree.path_to(self._keep_from)) - 1
+                offset = 1
+            except (TreeCorrupted, UnknownNode):
+                # 旧 keep_from 已不在树上：effective_history 遇到这种情况会
+                # 退回完整历史（无摘要视图），下标换算也按"无摘要"走。
+                skip_old = 0
+                offset = 0
+        raw_index = max(0, skip_old + skip - offset)
+        keep_from = path[raw_index] if raw_index < len(path) else head
         self.apply_compaction(outcome.summary, keep_from=keep_from)
         return outcome
 

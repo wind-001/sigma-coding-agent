@@ -54,6 +54,26 @@ def _detect_newline(raw: bytes) -> str:
     return "\n"
 
 
+def _has_mixed_newlines(raw: bytes) -> bool:
+    """文件里是否**同时存在多种行尾风格**（CRLF 与裸 LF / 裸 CR 共存）。
+
+    混合行尾在 Windows 上很常见（手工编辑 + 工具生成混杂）。它必须被
+    单独识别：``_detect_newline`` 只要看到一处 ``\\r\\n`` 就判整文件 CRLF，
+    写回时 ``replace("\\n", "\\r\\n")`` 会把原本 LF 的行也转成 CRLF——
+    一次只改一行的 edit 产生全文件行尾 diff，正是本模块 docstring 声明
+    要避免的"隐性 diff"（2026-09-24 review 修复）。
+    """
+    body = raw.replace(b"\r\n", b"")
+    styles: set[str] = set()
+    if len(body) != len(raw):
+        styles.add("crlf")
+    if b"\n" in body:
+        styles.add("lf")
+    if b"\r" in body:
+        styles.add("cr")
+    return len(styles) > 1
+
+
 class EditTool(BaseTool):
     """精确替换。属写工具，在批次执行时**严格顺序执行**（详规 3.8）。"""
 
@@ -105,6 +125,25 @@ class EditTool(BaseTool):
             return ToolResult(
                 content=[TextBlock(text=f"读取 {path} 失败：{exc}")],
                 details={"path": str(path)},
+                is_error=True,
+            )
+
+        if _has_mixed_newlines(raw):
+            # 混合行尾文件**拒绝编辑**——有歧义时宁可报错，不要猜
+            # （与多匹配拒绝同一条原则）。选一种风格还原会把另一种行尾
+            # 全量改写，产生本模块 docstring 要避免的全文件隐性 diff。
+            return ToolResult(
+                content=[
+                    TextBlock(
+                        text=(
+                            f"{path} 同时存在 CRLF 与 LF 两种行尾（混合行尾），"
+                            "edit 无法在不改写无关行的情况下还原，已拒绝。\n"
+                            "请先用 bash 统一行尾（例如全部转成 LF），"
+                            "或改用 write 整体重写该文件。"
+                        )
+                    )
+                ],
+                details={"path": str(path), "mixed_newlines": True},
                 is_error=True,
             )
 

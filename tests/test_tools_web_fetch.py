@@ -29,6 +29,7 @@ from sigma_tools._firecrawl_quota import (
     SCRAPE_COST,
     FirecrawlQuota,
 )
+from sigma_tools.truncate import MAX_BYTES
 from sigma_tools.web_fetch import MAX_URLS_PER_CALL, WebFetchTool
 
 NOW = 1000.0
@@ -597,17 +598,29 @@ async def test_metadata_publish_time_beats_body_date(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_long_body_is_truncated(tmp_path: Path) -> None:
-    """200 KB 正文 → 单条上限截断 + 整体截断，`details.truncated` 如实上报。"""
+    """200 KB 正文 → 单条上限截断，`details.truncated` 如实上报。
+
+    四条断言钉的是**四条不同的契约**（2026-09-24 重写）：
+
+    1. ``truncated`` 为真——哪怕这一刀是 **web_fetch 自己**砍的、
+       ``truncate_output`` 根本没触发，也必须上报（审计字段不看谁砍的）；
+    2. 输出**严格不超过** ``MAX_BYTES``——此前这条是假的：总行数 7 ≤ head_lines 40，
+       旧的 truncate 直接取"全部行"，8300 字节照样进上下文，12 个字说自己有 8 KB 上限；
+    3. 输出确实贴着上限（不是把正文砍成一点点）；
+    4. **"重抓也拿不到更多"这句必须活下来**——它是唯一阻止模型徒劳重抓
+       （白白再扣一份额度）的信息，所以它记在自己那条正文的预算里。
+    """
     calls: list[str] = []
     huge = "# Long\n\n" + "x" * 200_000
     tool = _tool(tmp_path, calls, bodies=[_payload(markdown=huge)])
 
     result = await _run(tool, _ctx(tmp_path), [GOOD_URL])
 
+    text = result.content[0].text
     assert result.details["truncated"] is True
-    assert result.details["total_bytes"] > 8000
-    assert len(result.content[0].text) < 9000
-    assert "单条上限" in result.content[0].text
+    assert len(text.encode("utf-8")) <= MAX_BYTES
+    assert result.details["total_bytes"] > 7000
+    assert "单条上限" in text
 
 
 @pytest.mark.asyncio

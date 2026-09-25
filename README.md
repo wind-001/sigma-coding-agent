@@ -271,6 +271,7 @@ scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
 | [`docs/decisions/`](docs/decisions/) | ADR：D1 语言 / D2 harness 边界 / D3 扩展层形态 / D4 常驻区预算 / D5 安全边界 / D6 不做容器 |
 | [`docs/plans/`](docs/plans/) | 各批次实施计划与验收记录（含门槛表、风险、实现中发现的问题） |
 | [`docs/pi-harness研究笔记.md`](docs/pi-harness研究笔记.md) | 参照对象 Pi Agent Harness 的调研笔记，带来源可信度分级 |
+| [`docs/技术债登记.md`](docs/技术债登记.md) | 已知技术债的登记册：**只收有凭据的债**（路径 + 现象 + 判据），清掉即删条 |
 | [`AGENTS.md`](AGENTS.md) | 本项目的开发约定（它同时是 sigma 自己的"项目说明"注入源） |
 
 ## 进度与未完成

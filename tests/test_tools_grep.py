@@ -110,3 +110,31 @@ async def test_grep_missing_path_is_error(ws: Path) -> None:
     tool = GrepTool()
     result = await _run(tool, _ctx(ws), pattern="x", path="no_such_dir")
     assert result.is_error
+
+
+@pytest.mark.asyncio
+async def test_grep_redos_pattern_times_out_visibly(ws: Path) -> None:
+    """ReDoS 防护（2026-09-24 review 修复）：灾难性回溯的正则不再冻死事件循环。
+
+    ``(a+)+$`` 对 ``"a"*24 + "b"`` 的失败匹配是指数回溯（本机实测 ~1.8s ≫ 0.2s）。
+    修复前：同步匹配直接卡住事件循环，这个用例**永不返回**（红 = 挂死）。
+    修复后：匹配进线程池 + 每文件超时，超时文件跳过且**计数可见**——
+    "没搜到"与"搜了没有"必须分开告诉模型。
+    """
+    (ws / "evil.txt").write_text("a" * 24 + "b\n", encoding="utf-8")
+    tool = GrepTool(per_file_timeout_s=0.2)
+    result = await _run(tool, _ctx(ws), pattern=r"(a+)+$")
+
+    assert not result.is_error
+    assert result.details["files_skipped_timeout"] == 1
+    assert "超时" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_grep_timeout_zero_when_regex_is_cheap(ws: Path) -> None:
+    """正常正则不受超时闸影响：files_skipped_timeout 恒为 0，匹配照常。"""
+    tool = GrepTool(per_file_timeout_s=5)
+    result = await _run(tool, _ctx(ws), pattern="find_me")
+
+    assert result.details["matches"] == 2
+    assert result.details["files_skipped_timeout"] == 0

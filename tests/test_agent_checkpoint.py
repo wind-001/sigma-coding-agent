@@ -394,3 +394,27 @@ def test_restore_without_snapshots_reports_failure(tmp_path: Path) -> None:
     report = cp.restore("deadbeef")
     assert report.ok is False
     assert report.note
+
+
+def test_restore_refused_when_pre_snapshot_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """自保快照失败 → **拒绝回滚**，工作区原样不动（2026-09-24 review 修复）。
+
+    mark 的保险丝语义（失败不阻断）在回滚场景是错的：``reset --hard``
+    删不掉未进快照的新增文件——快照失败还继续 reset，回滚不完整却报
+    ok=True（"看似回滚了"）。**回滚的优先级高于"不阻断"。**
+    """
+    ws = _ws(tmp_path)
+    cp = _cp(tmp_path)
+    base = cp.mark(label="baseline")
+    assert base is not None
+    (ws / "created_later.txt").write_text("新增的", encoding="utf-8")
+
+    monkeypatch.setattr(cp, "mark", lambda **kw: None)
+    report = cp.restore(base)
+
+    assert report.ok is False
+    assert "拒绝回滚" in report.note
+    # 工作区一个字节都不能动——与"工作区不匹配拒绝回滚"是同一条闸门纪律
+    assert (ws / "created_later.txt").exists()

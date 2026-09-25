@@ -597,3 +597,35 @@ def test_manager_switch_rejects_path_traversal(tmp_path: Path) -> None:
     assert outcome.ok is False, "越界路径被当成了合法会话"
     # 净化后的 id 只应保留目录内的那一段，绝不能含 ..
     assert ".." not in outcome.session_id
+
+
+# ---------------------------------------------------------------------------
+# F3 / F4（2026-09-24 review）：--continue 空目录要落盘 / 坏字节行可跳过
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_continue_on_empty_dir_persists_new_session(tmp_path: Path) -> None:
+    """``--continue`` 遇到空目录 → 开的新会话**必须落盘**。
+
+    修复前这条分支返回 ``SessionTree()``——纯内存树，会话全程不写盘，
+    退出后 ``--continue`` 永远找不到它。症状是"我刚才明明跑过一段对话"，
+    而磁盘上什么都没有（2026-09-24 review 修复）。
+    """
+    args = _args("--continue")
+    binding = resolve_session(args, tmp_path)
+    assert binding.resumed is False
+
+    session = sdk.InteractiveSession(
+        provider=FakeProvider.from_rounds([_text("好的")]),
+        workspace_root=tmp_path,
+        model="fake",
+        session_id=binding.session_id,
+        tree=binding.tree,
+        project_instructions="",
+    )
+    await session.send("空目录上的第一句话")
+
+    path = tmp_path / f"{binding.session_id}{SESSION_SUFFIX}"
+    assert path.exists(), "--continue 空目录分支起的会话没落盘"
+    assert "空目录上的第一句话" in path.read_text(encoding="utf-8")

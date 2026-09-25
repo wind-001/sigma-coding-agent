@@ -787,3 +787,91 @@ def test_registry_schema_order_is_stable() -> None:
     assert registry.names() == ["boom", "echo", "failing"]
     names_in_schema = [s["function"]["name"] for s in registry.schemas()]
     assert names_in_schema == ["boom", "echo", "failing"]
+
+
+# ---------------------------------------------------------------------------
+# B1（2026-09-24 review）：流以错误收场 → turn 必须 status="error"，
+# 不再伪装成 "completed"（评测假通过的数据源，见详规组 B）
+# ---------------------------------------------------------------------------
+
+
+def _error_event(code: str = "transient", message: str = "上游断了") -> dict[str, Any]:
+    return {"type": "error", "error": {"code": code, "message": message}}
+
+
+@pytest.mark.asyncio
+async def test_stream_error_becomes_status_error() -> None:
+    """流 = [文本, ErrorEvent, **无 StopEvent**] → run_turn 返回 status="error"。
+
+    修复前：ErrorEvent 只被记进 ``assistant.error_message``，控制流完全不受
+    影响——没有工具调用就走 ``not calls`` 分支返回 "completed"。
+    ``TurnResult.status`` 的 Literal 里写着 "error"，但全函数没有路径返回它。
+
+    partial 内容**保留**在 messages 里返回——"如实定性"与"留下审计"都要。
+    """
+    loop, _, _ = _make_loop(
+        [
+            [
+                {"type": "text_delta", "text": "我正在处", "text_signature": None},
+                _error_event(),
+            ]
+        ],
+        tools=[EchoTool()],
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "error"
+    assert "transient" in result.reason
+    # partial 内容不丢：文本还在产出的消息里
+    assert any("我正在处" in str(m) for m in result.messages)
+
+
+@pytest.mark.asyncio
+async def test_stream_error_with_tool_call_does_not_execute_it() -> None:
+    """错误流里拼出半截 tool_call → 同样 status="error"，且**不执行**该工具。
+
+    不做"带工具调用就继续"的灰色地带：流已不完整，工具参数可能拼错，
+    执行等于拿残缺数据行动（限流场景还会放大成本）。
+    """
+    tool = EchoTool()
+    loop, _, _ = _make_loop(
+        [
+            [
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": "call_1",
+                    "name": "echo",
+                    "arguments_delta": '{"message": "hi"',
+                    # 参数没给全、也没有 stop——流就死了
+                },
+                _error_event(),
+            ]
+        ],
+        tools=[tool],
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "error"
+    assert tool.seen == []  # 工具绝不能被执行
+    assert result.messages  # partial 内容仍保留在审计里
+
+
+@pytest.mark.asyncio
+async def test_stream_without_stop_event_is_error_not_completed() -> None:
+    """连 ErrorEvent 都没有、只是没收到 StopEvent 就流干了 → 同样是 error。
+
+    这种"干净的截断"是最容易骗过所有断言的一种：没异常、没报错、类型全对，
+    只是内容少了一截——修复前它会拿着初值 ``stop_reason="stop"`` 伪装成正常完成。
+    """
+    loop, _, _ = _make_loop(
+        [[{"type": "text_delta", "text": "半截回答", "text_signature": None}]],
+        tools=[EchoTool()],
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "error"
+    assert "截断" in result.reason or "结束" in result.reason

@@ -92,6 +92,42 @@ class ReadTool(BaseTool):
         lines = raw.splitlines()
         total_lines = len(lines)
 
+        # 行范围**越界必须报错**，不能静默返回空（2026-09-24 review 修复）：
+        # 切片对非法范围天然返回 []，模型无法区分"文件是空的"和
+        # "我给的行范围越界了"——两者的纠正动作完全不同，
+        # 静默空输出会让它基于"文件为空"的错误前提继续行动（比如直接 write 覆盖）。
+        if params.start_line is not None and params.start_line > total_lines:
+            return ToolResult(
+                content=[
+                    TextBlock(
+                        text=(
+                            f"start_line={params.start_line} 超出范围："
+                            f"{path} 一共只有 {total_lines} 行。"
+                            "请按总行数调整行范围后重试。"
+                        )
+                    )
+                ],
+                details={"path": str(path), "total_lines": total_lines},
+                is_error=True,
+            )
+        if (
+            params.start_line is not None
+            and params.end_line is not None
+            and params.start_line > params.end_line
+        ):
+            return ToolResult(
+                content=[
+                    TextBlock(
+                        text=(
+                            f"行范围颠倒：start_line={params.start_line} "
+                            f"> end_line={params.end_line}。请交换后重试。"
+                        )
+                    )
+                ],
+                details={"path": str(path), "total_lines": total_lines},
+                is_error=True,
+            )
+
         start_index = (params.start_line or 1) - 1
         end_index = params.end_line if params.end_line is not None else total_lines
         selected = lines[start_index:end_index]

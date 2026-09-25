@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from sigma.cli import SESSION_DIR_HINT, SessionBinding, SessionManager, build_parser
+from sigma.cli import SessionBinding, SessionManager, build_parser
 from sigma.repl import run_repl
 from sigma.sdk import InteractiveSession
 from sigma_agent.agent_messages import ToolResultAgentMessage
@@ -116,13 +116,16 @@ def _manager(
     *,
     session_id: str = ALPHA,
     rounds: list[list[dict[str, Any]]] | None = None,
+    argv: list[str] | None = None,
 ) -> SessionManager:
     """造一个可离线跑的 manager。
 
     ``make_provider`` 注入 ``FakeProvider``：``SessionManager`` 默认会真造
     ``OpenAICompatProvider``（要 base_url 与 key），测试里不该碰网络。
+    ``argv`` 传额外旗标（如 ``["--sub-agent"]``）——走真解析器，
+    免得手搓 Namespace 与真实字段对不上。
     """
-    args = build_parser().parse_args([])
+    args = build_parser().parse_args(argv or [])
     return SessionManager(
         args=args,
         workspace=tmp_path,
@@ -439,3 +442,86 @@ async def test_help_lists_all_commands(
     for name in ("sessions", "switch", "new", "help"):
         assert name in out, f"帮助里没列 {name}"
         assert name in COMMANDS, f"帮助里列了 {name}，但命令表里没有"
+
+
+# ---------------------------------------------------------------------------
+# F 组（2026-09-24 review）：--sub-agent 下的会话切换 / 裸命令 / 分派容错
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_switch_roundtrip_with_sub_agent(tmp_path: Path) -> None:
+    """``--sub-agent`` 下 /new → /switch 往返**不炸**，且两个会话的 task 工具独立。
+
+    修复前：``SessionManager`` 的所有会话共享同一个 registry，
+    ``InteractiveSession`` 在 ``enable_sub_agent=True`` 时往里注册 TaskTool——
+    第二次 ``_build`` 必撞 ``DuplicateToolError``，REPL 当场终结。
+    （``load_skill`` 有"已存在则跳过"，task 没有——两处不一致，取的是
+    "每会话一份克隆注册表"而不是"改成跳过"：共享一个 TaskTool 实例
+    会让两个会话的**信箱状态串味**，那是引入新 bug 的修法。）
+    """
+    root = tmp_path / "sessions"
+    await _write_session(root, BETA, [_text("乙的回答")])
+
+    manager = _manager(tmp_path, session_id=ALPHA, argv=["--sub-agent"])
+    task_first = manager.current._registry.get("task")  # type: ignore[attr-defined]
+
+    manager.new()
+    task_new = manager.current._registry.get("task")  # type: ignore[attr-defined]
+    outcome = manager.switch_to(BETA)
+    task_switched = manager.current._registry.get("task")  # type: ignore[attr-defined]
+
+    assert outcome.ok and outcome.switched
+    # 三个会话各持一个**独立的** TaskTool 实例——信箱、在跑任务都随会话走
+    assert task_first is not task_new
+    assert task_new is not task_switched
+
+
+@pytest.mark.asyncio
+async def test_bare_switch_prints_usage_and_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """裸敲 ``/switch`` → **打用法提示**，REPL 循环继续。
+
+    修复前：分派按"argument 是否为空"数着传参，``_cmd_switch`` 少收一个
+    位置参数当场 ``TypeError``，且异常从分派一路穿出 REPL——**终结整个会话**。
+    ``_cmd_switch`` 里那个空参提示分支成了死代码。
+    """
+    manager = _manager(tmp_path, session_id=ALPHA)
+    _feed(monkeypatch, ["/switch", "exit"])
+    assert await run_repl(manager) == 0
+
+    out = capsys.readouterr().out
+    assert "用法：/switch <序号|id>" in out
+    assert manager.current_id == ALPHA, "裸 /switch 不该换会话"
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_does_not_kill_repl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """命令 handler 抛异常 → **打印错误、REPL 不退出**，下一条命令照常工作。
+
+    与 send 的"错误要打印，但不要终结会话"是同一条纪律——分派层此前不设防。
+    """
+    from sigma.repl import COMMANDS
+
+    async def exploding(
+        manager: SessionManager, index_map: dict[int, str], argument: str
+    ) -> None:
+        raise RuntimeError("命令内部炸了")
+
+    COMMANDS["boom"] = (exploding, "")
+    try:
+        manager = _manager(tmp_path, session_id=ALPHA, rounds=[_text("好的")])
+        _feed(monkeypatch, ["/boom", "/new", "exit"])
+        assert await run_repl(manager) == 0
+    finally:
+        del COMMANDS["boom"]
+
+    out = capsys.readouterr().out
+    assert "命令失败" in out and "RuntimeError" in out
+    # 后续命令照常执行：/new 真的换了会话
+    assert manager.current_id != ALPHA

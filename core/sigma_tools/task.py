@@ -47,6 +47,12 @@ from sigma_ai.messages import TextBlock, Usage, UserMessage
 #: 超过它说明"总结没写好"，而不是主上下文该装下它——截断且**可见**（丢弃必须可见）。
 MAX_RESULT_CHARS = 4000
 
+#: 收尾兜底等待在跑子任务的总上限（秒）。
+#: 与流式总时长闸（provider 300 s）同量级、有实测凭据：单轮 3–30 s，
+#: 子会话 10–30 轮 ≈ 30–300 s。它是**最后一道闸**——子任务自己还有
+#: 轮数预算与流式双闸，正常路径根本碰不到它。
+MAILBOX_WAIT_TIMEOUT_S = 300.0
+
 
 class SubAgentRounds(BaseModel):
     """子 agent 的轮数预算：三档，由**派发的模型**按任务难度选。
@@ -268,12 +274,35 @@ class TaskTool(BaseTool):
                 messages.append(self._report_message(state))
         return messages
 
-    async def wait_and_drain(self) -> list[AgentMessage]:
-        """收尾兜底：有在跑的子任务就等它们全部结束，然后 drain。"""
+    async def wait_and_drain(
+        self, timeout_s: float = MAILBOX_WAIT_TIMEOUT_S
+    ) -> list[AgentMessage]:
+        """收尾兜底：有在跑的子任务就等它们结束（**有上限**），然后 drain。
+
+        等待必须有超时（2026-09-24 review 修复）：此前 ``gather`` 无上限，
+        一个死锁/失联的子任务会让主 loop 永久停在收尾处——轮数预算管不到
+        两轮之间，流式双闸管不到"等别人"的这段时间。
+
+        超时不是静默丢弃：未完成的子任务标记 ``failed`` 并照常 drain——
+        **主 agent 必须看得见**"有个子任务没回来"（丢弃必须可见）。
+        """
         pending = [st for st in self._tasks.values() if st.pending]
         running_tasks = [st.task for st in pending if st.task is not None]
         if running_tasks:
-            await asyncio.gather(*running_tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*running_tasks, return_exceptions=True),
+                    timeout=timeout_s,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                for st in pending:
+                    # wait_for 会先取消 gather 的子任务；``_run_sub`` 的
+                    # CancelledError 分支可能已把 error 写成"子任务被取消"——
+                    # 覆写成真正的原因：**超时是原因，取消是手段**。
+                    st.state = "failed"
+                    st.error = f"等待子任务完成超时（>{timeout_s:.0f}s）"
+                    if st.task is not None:
+                        st.task.cancel()
         return self.drain_completed()
 
     def _report_message(self, state: _SubTaskState) -> AgentMessage:

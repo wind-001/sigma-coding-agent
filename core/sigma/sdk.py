@@ -625,11 +625,10 @@ class InteractiveSession:
             description: str, ctx: ToolContext, sub_session_id: str,
             max_rounds: int,
         ) -> TurnResult:
-            sub_registry = ToolRegistry()
-            for name in self._registry.names():
-                if name in ("task", "todo"):
-                    continue
-                sub_registry.register(self._registry.get(name))
+            # 子会话的 registry = 主 registry 的克隆（同款工具、独立登记簿），
+            # 构造上排除 task（递归禁止）与 todo（子会话换独立账本，见下）。
+            # 用 ``ToolRegistry.clone`` 而不是手写循环：同一个概念不该有两份实现。
+            sub_registry = self._registry.clone(exclude=("task", "todo"))
             # 子 agent 的 todo 换独立账本（主清单不被子触碰，"至多一条 running"
             # 各自成立）；**但只在主会话有 todo 时才注册**——无 todo 消融档
             # （enable_todo=False，P4-批次2 D-A2）不能经子会话把 todo 偷渡回来。

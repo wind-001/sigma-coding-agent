@@ -522,3 +522,53 @@ async def test_unknown_difficulty_rejected_by_schema(tmp_path: Path) -> None:
             ),
             _ctx(tmp_path),
         )
+
+
+# ---------------------------------------------------------------------------
+# 收尾兜底超时（2026-09-24 review 修复）
+# ---------------------------------------------------------------------------
+
+
+class _HangFactory:
+    """永不完成的子 agent 工厂——复现"子任务死锁/失联"的挂死条件。"""
+
+    async def __call__(
+        self, description: str, ctx: ToolContext, sub_session_id: str,
+        max_rounds: int = 0,
+    ) -> TurnResult:
+        await asyncio.Event().wait()
+        raise AssertionError("永不完成：这行不该被执行")
+
+
+async def test_wait_and_drain_timeout_reports_failed_instead_of_hanging(
+    tmp_path: Path,
+) -> None:
+    """收尾兜底等待必须有上限：此前 ``gather`` 无超时，一个死锁的子任务
+    会把主 loop 永久卡在收尾处（轮数预算与流式双闸都管不到"等别人"）。
+    修复后：超时 → 子任务标 failed → **回报可见**，不是静默丢弃。"""
+    tool = TaskTool(_HangFactory())
+    await _dispatch(tool, tmp_path, "永远跑不完的子任务")
+
+    # 外层 wait_for(5s) 是测试自身的保险丝：修复前这行永不返回（红 = 挂死）。
+    messages = await asyncio.wait_for(tool.wait_and_drain(timeout_s=0.05), timeout=5)
+
+    texts = _user_texts(messages)
+    assert len(texts) == 1
+    assert "执行失败" in texts[0]
+    assert "超时" in texts[0]
+    assert tool.pending_count() == 0
+
+
+async def test_wait_and_drain_within_timeout_reports_normally(
+    tmp_path: Path,
+) -> None:
+    """超时闸不能误伤正常路径：按时完成的子任务照常回报 completed。"""
+    tool = TaskTool(_FakeFactory(text="结论回来了", delay=0.01))
+    await _dispatch(tool, tmp_path, "快任务")
+
+    messages = await tool.wait_and_drain(timeout_s=5)
+
+    texts = _user_texts(messages)
+    assert len(texts) == 1
+    assert "已完成" in texts[0]
+    assert "结论回来了" in texts[0]

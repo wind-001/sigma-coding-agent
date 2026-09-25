@@ -195,7 +195,14 @@ class JsonlStore:
 
         records: list[NodeRecord] = []
         skipped: list[int] = []
-        with self.path.open("r", encoding="utf-8") as handle:
+        # ``errors="replace"`` 不是可有可无（2026-09-24 review 修复）：
+        # 崩溃写入留下的**半个多字节字符**会让严格 UTF-8 解码在
+        # ``for line in handle`` 处抛 ``UnicodeDecodeError``——那穿透到 CLI
+        # 顶层就是"整个会话加载不了"，与上面"坏行跳过、能救多少救多少"
+        # 的模块纪律直接矛盾。替换后的坏字节自然落进下面的
+        # ``JSONDecodeError`` 跳过通道并记行号。
+        # （``sessions.py`` 的 ``_preview_one`` 一直就是这么做的——这里是补齐。）
+        with self.path.open("r", encoding="utf-8", errors="replace") as handle:
             for line_no, line in enumerate(handle, start=1):
                 stripped = line.strip()
                 if not stripped:

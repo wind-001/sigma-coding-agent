@@ -54,6 +54,11 @@ class AssembledCall:
     raw_arguments: str
     arguments: dict[str, Any] | None
     parse_error: str = ""
+    # provider 返回的不透明签名（如 Gemini 的 thought signature）——
+    # **必须原样回传**（messages.py 模块文档的明确要求），漏了会让多轮
+    # 对话行为异常且症状不指向根因。装配器若丢弃它，ToolCallBlock 上的
+    # 字段就成了摆设（2026-09-24 review 修复）。
+    thought_signature: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -75,6 +80,7 @@ class AssembledCall:
             id=self.id or f"call_{self.index}",
             name=self.name,
             arguments=self.arguments,
+            thought_signature=self.thought_signature,
         )
 
 
@@ -101,13 +107,17 @@ class ToolCallAssembler:
         不指向根因。
         """
         slot = self._slots.setdefault(
-            delta.index, {"id": None, "name": None, "arguments": ""}
+            delta.index,
+            {"id": None, "name": None, "arguments": "", "thought_signature": None},
         )
         if delta.id:
             slot["id"] = delta.id
         if delta.name:
             slot["name"] = delta.name
         slot["arguments"] += delta.arguments_delta
+        if delta.thought_signature:
+            # 签名可能只出现在某一个分片上——后到的非空值覆盖，与 id/name 同规则。
+            slot["thought_signature"] = delta.thought_signature
 
     @property
     def has_calls(self) -> bool:
@@ -178,4 +188,5 @@ class ToolCallAssembler:
             name=name,
             raw_arguments=raw,
             arguments=parsed,
+            thought_signature=slot.get("thought_signature"),
         )

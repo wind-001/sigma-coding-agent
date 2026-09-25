@@ -17,7 +17,6 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
-import pytest
 from pydantic import BaseModel, Field
 
 from sigma_agent.base import BaseTool

@@ -59,7 +59,6 @@ def test_truncation_marker_gives_actionable_advice() -> None:
     # 也要如实说明 P1 不保存完整输出——否则模型会去找一个不存在的文件
     assert "不保存完整输出" in result.text
 
-
 def test_statistics_are_reported_for_metrics() -> None:
     """统计字段进 ``details``，用于计算"截断发生率"（架构 5.3 节）。
 
@@ -90,3 +89,56 @@ def test_empty_and_tiny_inputs_are_safe() -> None:
     """边界：空串与极小输入不崩、不产生奇怪标记。"""
     assert truncate_output("").truncated is False
     assert truncate_output("a").text == "a"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-24 review 修复：预算是硬上限 + 头尾不重叠
+# ---------------------------------------------------------------------------
+
+
+def test_few_huge_lines_are_actually_reduced() -> None:
+    """3 行 × 3 MB 的 base64 输出必须**真的被砍小**——截断不是入口看一眼就不管。
+
+    修复前：总行数 ≤ HEAD_LINES 时"取头 40 行"就是取全部，约 10 MB
+    照样进上下文——截断对最需要拦截的场景完全失效。
+    """
+    text = "\n".join(["x" * (3 * 1024 * 1024)] * 3)
+    result = truncate_output(text)
+    assert result.truncated is True
+    assert len(result.text.encode("utf-8")) <= MAX_BYTES, (
+        f"截断后仍有 {len(result.text.encode('utf-8'))} 字节，预算形同虚设"
+    )
+    # 被砍的行要有行内标记——否则模型会把半行当完整行
+    assert "本行已截断" in result.text
+
+
+def test_output_never_exceeds_max_bytes_after_truncation() -> None:
+    """任何触发截断的输入，输出都必须 ≤ max_bytes（预算契约是硬的）。"""
+    cases = [
+        "\n".join(f"line {i}" for i in range(2000)),  # 大量短行
+        "y" * (MAX_BYTES * 3),  # 一条超长行
+        "\n".join(["中" * 5000] * 10),  # 多字节字符的超长行（不能切断字符）
+    ]
+    for text in cases:
+        result = truncate_output(text)
+        assert result.truncated is True
+        assert len(result.text.encode("utf-8")) <= MAX_BYTES
+
+
+def test_head_tail_do_not_overlap() -> None:
+    """``head_lines < total_lines ≤ head_lines + tail_lines`` 时不得输出重复行。
+
+    修复前：50 行输入（head=tail=40）会让第 10–39 行出现两次，
+    kept_lines=80 > total_lines=50 自相矛盾。
+    """
+    total = HEAD_LINES + 10  # 50 行
+    text = "\n".join(f"row-{i:03d} " + "z" * 400 for i in range(total))  # 超 8 KB
+    result = truncate_output(text)
+    assert result.truncated is True
+    assert result.kept_lines <= total
+    seen = [
+        line.split(" ")[0]
+        for line in result.text.splitlines()
+        if line.startswith("row-")
+    ]
+    assert len(seen) == len(set(seen)), f"输出含重复行：{seen}"

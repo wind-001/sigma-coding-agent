@@ -35,7 +35,6 @@ from sigma_ai.messages import (
     Usage,
     UserMessage,
 )
-from sigma_ai.tokens import estimate_messages
 from sigma_session.compact import (
     DEFAULT_KEEP_RECENT_ROUNDS,
     DEFAULT_TRIGGER_RATIO,
@@ -734,3 +733,71 @@ async def test_compaction_failure_does_not_break_the_session(tmp_path: Path) -> 
 
     assert result.text == "照常回答"
     assert session.last_compaction is None
+
+
+async def test_second_compaction_does_not_resurrect_compacted_messages() -> None:
+    """第二次压缩不得把第一次压掉的消息"复活"（2026-09-24 review 修复）。
+
+    修复前：``compact()`` 拿**视图**下标（含一条不在树上的虚拟摘要）
+    直接索引**原始路径**——下标整体错位，第二次压缩的 keep_from
+    指向靠前得多的节点，第一次压掉的消息全部回到 effective_history：
+    压缩白做、历史暴涨、两份摘要范围重复，而且完全静默。
+    """
+    context = SessionContext(system_prompt="s", tools_schema=[], clock=CLOCK)
+    context.append(*_rounds(10))  # 20 条
+    provider = FakeProvider.from_rounds(
+        [_summary_round("第一次摘要"), _summary_round("第二次摘要")]
+    )
+    policy = _policy(keep_recent_rounds=2)
+
+    await context.compact(
+        policy=policy, provider=provider, model="fake", signal=NeverCancelled()
+    )
+    assert len(context.effective_history()) == 5  # 摘要 + 最近 2 轮
+
+    # 追加 4 轮新消息（编号 11–14，与已压掉的 1–10 **不重号**），再压第二次
+    extra: list[AgentMessage] = []
+    for index in range(11, 15):
+        extra.append(
+            LlmMessageWrapper(
+                timestamp=ts(index * 100 - 1),
+                message=UserMessage(
+                    content=f"任务{index}", timestamp=ts(index * 100 - 1)
+                ),
+            )
+        )
+        extra.append(
+            LlmMessageWrapper(
+                timestamp=ts(index * 100),
+                message=AssistantMessage(
+                    content=[TextBlock(text=f"回复{index}")],
+                    timestamp=ts(index * 100),
+                    provider="fake",
+                    model="fake",
+                    usage=Usage(prompt_tokens=1, completion_tokens=1),
+                    stop_reason="stop",
+                ),
+            )
+        )
+    context.append(*extra)
+    await context.compact(
+        policy=policy, provider=provider, model="fake", signal=NeverCancelled()
+    )
+
+    effective = context.effective_history()
+    assert isinstance(effective[0], CompactionSummary)
+    assert effective[0].summary == "第二次摘要"
+    assert len(effective) == 5, (
+        f"第二次压缩后视图应为 摘要+2 轮（5 条），实际 {len(effective)} 条——"
+        "第一次压掉的消息复活了"
+    )
+    # 第一次压掉的轮次（任务1–10）一条都不许回来
+    texts = [
+        m.message.content
+        for m in effective[1:]
+        if isinstance(m.message, UserMessage) and isinstance(m.message.content, str)
+    ]
+    resurrected = [
+        c for c in texts if c.startswith("任务") and c not in ("任务13", "任务14")
+    ]
+    assert resurrected == [], f"已压缩的消息复活：{resurrected}"

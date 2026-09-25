@@ -402,12 +402,22 @@ class ShadowCheckpoint:
         head = self._git("rev-parse", "HEAD")
         if head.returncode != 0:
             return RestoreReport(ok=False, ref=ref, note="影子库还没有任何快照")
-        head_ref = head.stdout.strip()
 
         # 回滚前先自保：把**当前状态**存一分。
         # 这一步同时也是"差异统计"的数据源——见下面那行注释（踩过一次）。
         pre = self.mark(label=f"pre-restore:{ref[:8]}")
-        current = pre if pre is not None else head_ref
+        if pre is None:
+            # mark 的保险丝语义（失败返回 None 不阻断）在**回滚**场景是错的
+            # （2026-09-24 review 修复）：自保快照没收进去的新增文件，
+            # ``reset --hard`` 删不掉（它不碰未跟踪文件）——回滚实际不完整，
+            # 而报告却是 ok=True，L2 从"可回滚"变成"看似回滚了"。
+            # **回滚的优先级高于"不阻断"**：快照坏了就拒绝回滚，工作区原样不动。
+            return RestoreReport(
+                ok=False,
+                ref=ref,
+                note=f"回滚前自保快照失败，拒绝回滚：{self.last_error or '未知原因'}",
+            )
+        current = pre
 
         # 差异要相对 **pre-restore 快照** 算，不能相对 head_ref：
         # "最后一次 mark 之后新增/改动的文件"此刻只存在于 pre-restore 快照里，

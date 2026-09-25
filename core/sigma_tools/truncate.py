@@ -75,17 +75,33 @@ def truncate_output(
             kept_lines=total_lines,
         )
 
-    # 头尾要有重叠保护：文件很短但单行极长时，head+tail 可能超过总行数。
-    head = lines[:head_lines]
-    tail = lines[-tail_lines:] if total_lines > head_lines else []
-    kept_lines = len(head) + len(tail)
-
     marker = (
         f"\n[... 输出被截断：共 {total_lines} 行 / {total_bytes} 字节，"
-        f"此处只显示头 {len(head)} 行与尾 {len(tail)} 行。"
+        "此处只保留头尾各若干行。"
         "P1 版本不保存完整输出——**如需完整内容，请缩小命令的输出范围"
         "（例如加 | head、加 grep 过滤、或分批取）。**]\n"
     )
+
+    # 预算是**硬上限**，不是"入口看一眼就不管"（2026-09-24 review 修复）：
+    # 一条 base64 输出可以只有 3 行却有 10 MB——总行数 ≤ head_lines 时
+    # "取头 40 行"就是取全部，截断完全失效。所以单行与总量都要卡：
+    # 单行先截断（超长行本身就要拦），再按剩余字节预算从两头**贪心装填**，
+    # 保证 body + marker ≤ max_bytes。
+    budget = max(0, max_bytes - len(marker.encode("utf-8")))
+    tail_source = (
+        lines[max(head_lines, total_lines - tail_lines) :]
+        if total_lines > head_lines
+        else []
+    )
+    # 只有头尾**都要留**时才对半分：没有尾段（总行数 ≤ head_lines）时把全部
+    # 预算给头段。否则一半预算被白白闲置——明明装得下的数据被砍掉，
+    # 而这在"行数少但行很长"的输出里恰恰是常态。
+    head_budget = budget // 2 if tail_source else budget
+    head = _fill(lines[:head_lines], head_budget)
+    tail_budget = budget - _utf8_len("\n".join(head))
+    tail = _fill(list(reversed(tail_source)), tail_budget)
+    tail.reverse()
+    kept_lines = len(head) + len(tail)
 
     body = "\n".join(head) + marker + "\n".join(tail)
     return Truncated(
@@ -95,3 +111,39 @@ def truncate_output(
         total_bytes=total_bytes,
         kept_lines=kept_lines,
     )
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _cut_bytes(text: str, budget: int) -> str:
+    """按 UTF-8 字节预算截断，**不切断多字节字符**。"""
+    raw = text.encode("utf-8")
+    if len(raw) <= budget:
+        return text
+    return raw[:budget].decode("utf-8", errors="ignore")
+
+
+def _fill(lines: list[str], budget: int) -> list[str]:
+    """按字节预算从``lines``头部贪心装填，单行超限先截断。
+
+    被截断的行带行内标记——否则模型会把"半行"当成完整的一行，
+    基于残缺数据继续推理。标记本身也计进预算（预算不够就纯截断）。
+    """
+    out: list[str] = []
+    remaining = budget
+    suffix = " [...本行已截断]"
+    suffix_len = _utf8_len(suffix)
+    for line in lines:
+        if remaining <= 0:
+            break
+        if _utf8_len(line) > remaining:
+            # 给行内标记**预留**字节：标记不出现的"截断"等于悄悄丢数据——
+            # 模型会把半行当成完整的一行继续推理。
+            piece_budget = max(0, remaining - suffix_len)
+            out.append(_cut_bytes(line, piece_budget) + suffix)
+            break  # 预算已尽，后面的行不再取
+        out.append(line)
+        remaining -= _utf8_len(line) + 1  # +1 是 join 时的换行
+    return out

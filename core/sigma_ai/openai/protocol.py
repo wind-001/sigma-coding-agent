@@ -65,8 +65,11 @@ def _parse_usage(raw: dict[str, Any]) -> Usage:
         details = raw.get("prompt_tokens_details") or {}
         cached = details.get("cached_tokens", 0)
     return Usage(
-        prompt_tokens=int(raw.get("prompt_tokens", 0)),
-        completion_tokens=int(raw.get("completion_tokens", 0)),
+        # ``or 0`` 不是摆设：``.get(key, 0)`` 只在键**缺失**时给默认值，
+        # 厂商显式发 ``"prompt_tokens": null`` 时拿到的是 None，``int(None)``
+        # 直接抛 TypeError。三个字段必须同一条防线（cached 先修的，这两个补上）。
+        prompt_tokens=int(raw.get("prompt_tokens") or 0),
+        completion_tokens=int(raw.get("completion_tokens") or 0),
         cached_tokens=int(cached or 0),
     )
 

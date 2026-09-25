@@ -136,3 +136,43 @@ async def test_edit_missing_file_is_error(tmp_path: Path) -> None:
     )
     assert result.is_error
     assert "不存在" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_edit_mixed_newlines_is_rejected_and_file_untouched(tmp_path: Path) -> None:
+    """混合行尾（CRLF 与 LF 共存）必须**拒绝编辑**，文件逐字节不变。
+
+    修复前：`_detect_newline` 看到一处 \\r\\n 就判整文件 CRLF，写回时
+    把原本 LF 的行也转成 CRLF——一次只改一行的 edit 产生全文件行尾
+    diff（本模块 docstring 声明要避免的"隐性 diff"）。
+    处置与多匹配拒绝同一条原则：有歧义时宁可报错，不要猜。
+    """
+    target = tmp_path / "mixed.txt"
+    original = b"line1\r\nline2\nline3\r\n"
+    target.write_bytes(original)
+
+    tool = EditTool()
+    result = await _run(
+        tool, _ctx(tmp_path),
+        path="mixed.txt", old_string="line2", new_string="LINE2",
+    )
+
+    assert result.is_error
+    assert "混合行尾" in result.content[0].text
+    assert target.read_bytes() == original  # 逐字节不变
+
+
+@pytest.mark.asyncio
+async def test_edit_pure_crlf_still_round_trips(tmp_path: Path) -> None:
+    """回归：纯 CRLF 文件**不受影响**——混合判定不能误伤正常文件。"""
+    target = tmp_path / "win.txt"
+    target.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+
+    tool = EditTool()
+    result = await _run(
+        tool, _ctx(tmp_path),
+        path="win.txt", old_string="two", new_string="TWO",
+    )
+
+    assert not result.is_error
+    assert target.read_bytes() == b"one\r\nTWO\r\nthree\r\n"

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
 from sigma_agent.base import BaseTool, ToolDefinition
@@ -123,3 +124,26 @@ class ToolRegistry:
         这是热重载约束的一部分，见模块 docstring。
         """
         return [self._definitions[name] for name in self.names()]
+
+    def clone(self, *, exclude: Collection[str] = ()) -> ToolRegistry:
+        """返回一个**同款工具、独立登记簿**的新注册表。
+
+        工具实例**共享**（同一批 ``BaseTool`` 对象，不复制——工具的配置与
+        状态属于组装方），登记簿**独立**（往克隆里 register 不会影响原表）。
+        这个组合正是"每个会话一份注册表"要的形状（2026-09-24 review 修复）：
+
+        ``InteractiveSession`` 在 ``enable_sub_agent=True`` 时会往注册表里
+        **注册 TaskTool**。此前 ``SessionManager`` 的所有会话共享同一个
+        registry，第二次 ``_build``（/switch、/new）必然撞
+        ``DuplicateToolError``——终端会话当场终结。给每个会话传克隆后，
+        会话间互不影响，而 sdk 侧"调用方预注册 task 就拒绝"的防线原样保留。
+
+        ``exclude`` 用于子会话工厂的构造性排除（task/todo 不进子会话）——
+        此前那处是手写的 for 循环克隆，同一个概念不该有两份实现。
+        """
+        cloned = ToolRegistry()
+        for definition in self.definitions():
+            if definition.name in exclude:
+                continue
+            cloned.register(definition.tool, source=definition.source)
+        return cloned

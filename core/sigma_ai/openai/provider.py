@@ -56,7 +56,7 @@ from sigma_ai.openai.protocol import (
     _map_finish_reason,
     _parse_usage,
 )
-from sigma_ai.openai.sse import parse_sse_line
+from sigma_ai.openai.sse import is_done_line, parse_sse_line
 from sigma_ai.tokens import estimate_messages
 
 if TYPE_CHECKING:
@@ -261,6 +261,12 @@ class OpenAICompatProvider(BaseProvider):
         text_signature: str | None = None
         usage: Usage | None = None
         stop_reason: str = "stop"
+        # 断流检测（2026-09-24 review 修复）：流必须见过 finish_reason 或
+        # [DONE] 才算"正常结束"。两者都没见到就 EOF，是**被截断的响应**——
+        # 静默按 "stop" 收尾会让半截 tool_call 参数在上层拼出非法 JSON，
+        # 症状（模型参数错误）完全不指向根因（断流）。
+        saw_finish = False
+        saw_done = False
         # 注意：**本层不累积 tool_calls**。
         #
         # 2026-09-20 删掉了一份从未被使用的累积（原 `tool_acc`）——
@@ -330,6 +336,9 @@ class OpenAICompatProvider(BaseProvider):
 
                     signal.raise_if_cancelled()
 
+                    if is_done_line(line):
+                        saw_done = True
+
                     try:
                         chunk = parse_sse_line(line)
                     except json.JSONDecodeError:
@@ -344,6 +353,18 @@ class OpenAICompatProvider(BaseProvider):
                         continue
 
                     if chunk is None:
+                        continue
+
+                    if not isinstance(chunk, dict):
+                        # 合法 JSON 但**不是对象**（如 ``data: 123``）：与坏 JSON
+                        # 同级处置——可见、记事件、不中断流。直接 .get 会抛
+                        # AttributeError 裸穿出生成器，违背本层"错误即事件"的约定。
+                        yield ErrorEvent(
+                            error=ProviderErrorPayload(
+                                code=ErrorCode.INVALID_REQUEST,
+                                message=f"SSE 行不是 JSON 对象：{line[:200]}",
+                            )
+                        )
                         continue
 
                     if chunk.get("usage"):
@@ -361,14 +382,18 @@ class OpenAICompatProvider(BaseProvider):
                         for call in delta.get("tool_calls") or []:
                             function = call.get("function") or {}
                             yield ToolCallDelta(
-                                index=int(call.get("index", 0)),
+                                index=int(call.get("index") or 0),
                                 id=call.get("id"),
                                 name=function.get("name"),
                                 arguments_delta=function.get("arguments") or "",
+                                # 不透明签名必须原样透传（如 Gemini 的
+                                # thought signature）——见 tool_calls.py
+                                thought_signature=call.get("thought_signature"),
                             )
 
                         finish = choice.get("finish_reason")
                         if finish:
+                            saw_finish = True
                             stop_reason = _map_finish_reason(finish)
 
         except httpx.HTTPError as exc:
@@ -378,6 +403,18 @@ class OpenAICompatProvider(BaseProvider):
                 error=ProviderErrorPayload(
                     code=ErrorCode.TRANSIENT,
                     message=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            return
+
+        if not saw_finish and not saw_done:
+            # EOF 之前既没收到 finish_reason 也没收到 [DONE]——流被截断了。
+            # **丢弃必须可见**：静默按 "stop" 收尾会让上层把半截响应当成
+            # 正常完成（半截 tool_call 参数拼出非法 JSON，症状不指向根因）。
+            yield ErrorEvent(
+                error=ProviderErrorPayload(
+                    code=ErrorCode.TRANSIENT,
+                    message="流在未收到 finish_reason / [DONE] 前结束——响应被截断",
                 )
             )
             return
