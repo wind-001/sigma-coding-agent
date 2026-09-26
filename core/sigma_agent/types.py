@@ -106,3 +106,9 @@ class TurnResult:
     rounds: int = 0
     usage: Usage | None = None
     reason: str = ""
+    # 结构化错误码(归一化后的 ErrorCode 字符串,如 "context_overflow")。
+    # 为什么不是从 reason 里抠字符串:reason 是给人读的拼接文案,
+    # 恢复逻辑要判断"该不该触发压缩"——那是语义判断,必须有类型化的通道
+    # (架构 4.1:context_overflow 是压缩的第二条触发路径)。
+    # None = 非 error 结束,或错误没有归一化码。
+    error_code: str | None = None

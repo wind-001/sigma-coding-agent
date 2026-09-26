@@ -1,4 +1,9 @@
-"""loop 观测接口的测试（门槛 G32 / G33 / G36 的 loop 侧）。
+"""钩子事件系统的测试（门槛 G32 / G33 / G36 的 loop 侧；P4-批次6 迁入钩子）。
+
+P4-批次6 起观测通道并入钩子（星辰拍板：日志记录与告知是钩子的义务），
+本文件从 ``test_agent_observe.py`` 原地迁移：录制器从 ``LoopObserver``
+换成订阅全部事件的 ``BaseHook``，断言的**序列与次序一字未改**——
+通道换了，时机没有换。
 
 为什么这些 helper 不从 ``test_agent_loop.py`` 里 import
     那个文件里已经有一套同形的 helper，但搬过去共享要改一个承载着
@@ -13,14 +18,17 @@ from typing import Any, cast
 
 import pytest
 
-from sigma_agent.loop import AgentLoop
-from sigma_agent.observe import (
-    LoopObserver,
+from sigma_agent.hooks import (
+    BaseHook,
+    HookEvent,
+    HookManager,
     TextChunk,
+    ThinkingChunk,
     ToolEnd,
     ToolStart,
     TurnEnd,
 )
+from sigma_agent.loop import AgentLoop
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult
 from sigma_ai.base import NeverCancelled
@@ -68,14 +76,19 @@ class _FailingTool(BaseTool):
         )
 
 
-class RecordingObserver(LoopObserver):
-    """把所有事件记下来。测试断言的是**序列**，不只是"收到过"。"""
+class RecordingHook(BaseHook):
+    """订阅**全部**钩子点，把事件记下来。测试断言的是**序列**，不只是"收到过"。"""
+
+    name = "recording"
 
     def __init__(self) -> None:
-        self.events: list[Any] = []
+        self.seen: list[Any] = []
 
-    def on_event(self, event: Any) -> None:
-        self.events.append(event)
+    def events(self) -> tuple[type[HookEvent], ...]:
+        return (TextChunk, ThinkingChunk, ToolStart, ToolEnd, TurnEnd)
+
+    def on_event(self, event: HookEvent) -> None:
+        self.seen.append(event)
 
 
 def _tool_call_round(
@@ -104,10 +117,14 @@ def _make_loop(
     rounds: list[list[dict[str, Any]]],
     *,
     tool: BaseTool | None = None,
-    observer: LoopObserver | None = None,
-) -> tuple[AgentLoop, RecordingObserver | None]:
+    recorder: RecordingHook | None = None,
+) -> tuple[AgentLoop, RecordingHook | None]:
     registry = ToolRegistry()
     registry.register(tool if tool is not None else _EchoTool())
+    hooks = None
+    if recorder is not None:
+        hooks = HookManager()
+        hooks.register(recorder)
     loop = AgentLoop(
         provider=FakeProvider.from_rounds(rounds),
         registry=registry,
@@ -115,9 +132,9 @@ def _make_loop(
         workspace_root=".",
         signal=NeverCancelled(),
         clock=lambda: FIXED_TIME,
-        observer=observer,
+        hooks=hooks,
     )
-    return loop, observer
+    return loop, recorder
 
 
 @pytest.mark.asyncio
@@ -127,7 +144,7 @@ async def test_loop_emits_full_event_sequence_in_order() -> None:
     顺序是这条用例的重点：``ToolStart`` 必须早于 ``ToolEnd``——
     反了的话终端会显示"先出结果后出调用"。
     """
-    observer = RecordingObserver()
+    recorder = RecordingHook()
     loop, _ = _make_loop(
         [
             [
@@ -137,12 +154,12 @@ async def test_loop_emits_full_event_sequence_in_order() -> None:
             ],
             _text_round("完成"),
         ],
-        observer=observer,
+        recorder=recorder,
     )
 
     await loop.run_turn([])
 
-    kinds = [type(e).__name__ for e in observer.events]
+    kinds = [type(e).__name__ for e in recorder.seen]
     assert kinds == [
         "TextChunk",
         "TextChunk",
@@ -153,31 +170,32 @@ async def test_loop_emits_full_event_sequence_in_order() -> None:
     ], f"事件序列不符：{kinds}"
 
     # 文本**逐块**透传，不聚合——聚合了就没有"流式"了
-    assert [e.text for e in observer.events if isinstance(e, TextChunk)] == [
+    assert [e.text for e in recorder.seen if isinstance(e, TextChunk)] == [
         "我",
         "看一下",
         "完成",
     ]
 
-    start = next(e for e in observer.events if isinstance(e, ToolStart))
-    end = next(e for e in observer.events if isinstance(e, ToolEnd))
+    start = next(e for e in recorder.seen if isinstance(e, ToolStart))
+    end = next(e for e in recorder.seen if isinstance(e, ToolEnd))
     assert start.name == "echo"
     assert end.ok is True
     assert "echo: hi" in end.preview
 
-    turn_end = observer.events[-1]
+    turn_end = recorder.seen[-1]
     assert isinstance(turn_end, TurnEnd)
     assert turn_end.status == "completed"
 
 
 @pytest.mark.asyncio
-async def test_observer_is_optional_and_default_impl_is_silent() -> None:
-    """门槛 G33：不传 observer 时行为与加观测之前完全一致。
+async def test_hooks_are_optional_and_loop_runs_identically() -> None:
+    """门槛 G33（批次6 改写）：不接钩子总线时行为与没有钩子系统之前完全一致。
 
-    ``LoopObserver`` 的 ``on_event`` 有**默认空实现**——这条断言钉住它：
-    若哪天被改成抽象方法，"只想看一类事件"的观察者就得写一堆空方法。
+    原断言钉的是 ``LoopObserver.on_event`` 的默认空实现；观测并入钩子后,
+    等价的不变量是 **``hooks=None`` 短路**——不派发、不抛、照常跑完
+    （"零钩子 = 逐字节一致"是 hooks.py 承诺给全部既有用例的）。
     """
-    loop_without, _ = _make_loop(
+    loop_without, recorder = _make_loop(
         [
             [*_tool_call_round('{"message": "hi"}')],
             _text_round("完成"),
@@ -185,9 +203,7 @@ async def test_observer_is_optional_and_default_impl_is_silent() -> None:
     )
     result = await loop_without.run_turn([])
     assert result.status == "completed"
-
-    # 默认实现可直接调用且不抛——这是"默认空实现"的直接证据
-    LoopObserver().on_event(TextChunk(text="x"))
+    assert recorder is None  # 未接总线,也就没有录制器
 
 
 @pytest.mark.asyncio
@@ -197,18 +213,18 @@ async def test_failing_tool_emits_not_ok_with_visible_text() -> None:
     只标 ok=False 而不带文本，终端上就只剩一个 ✗——人看不到失败原因，
     而"看到失败原因"是纠错的前提（详规 3.6）。
     """
-    observer = RecordingObserver()
+    recorder = RecordingHook()
     loop, _ = _make_loop(
         [
             [*_tool_call_round('{"message": "hi"}', name="failing")],
             _text_round("看到了失败"),
         ],
         tool=_FailingTool(),
-        observer=observer,
+        recorder=recorder,
     )
 
     await loop.run_turn([])
 
-    end = next(e for e in observer.events if isinstance(e, ToolEnd))
+    end = next(e for e in recorder.seen if isinstance(e, ToolEnd))
     assert end.ok is False
     assert "退出码 1" in end.preview

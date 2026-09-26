@@ -21,6 +21,11 @@ dependencies = [
     # 代价核算：自写版本 20 行代码 + 18 个测试，覆盖面仍不如成熟库——
     # **那个成本已经超过依赖本身**。
     "python-dotenv>=1.0",
+    # 终端渲染（P4-批次6，Q2 拍板：运行期依赖）。CLI 是产品面，
+    # optional extra 会让"有 rich / 没 rich"两套渲染路径漂移。
+    # 验证：venv Python 3.13.9 + rich 15.0.0 实测正常；rich 官方支持 ≥3.9。
+    # 代价核算：传递引入 markdown-it-py + pygments，纯 Python 无编译。
+    "rich>=13",
 ]
 
 [project.optional-dependencies]

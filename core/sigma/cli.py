@@ -57,6 +57,10 @@ from sigma.sdk import (
 )
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.checkpoint import ShadowCheckpoint
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
 from sigma.render import TerminalRenderer
 from sigma_agent.agent_messages import (
     AgentMessage,
@@ -349,19 +353,31 @@ def _render(message: AgentMessage, index: int) -> str:
 
 
 def _report(result: TurnResult) -> None:
-    """打印执行过程与结果。"""
-    print("─" * 74)
-    for index, message in enumerate(result.messages, start=1):
-        print(f"  {_render(message, index)}")
-    print("─" * 74)
-
-    print(f"  状态   {result.status}")
-    print(f"  轮数   {result.rounds}")
-    if result.usage is not None:
-        print(
-            f"  token  prompt={result.usage.prompt_tokens} "
-            f"completion={result.usage.completion_tokens}"
+    """打印执行过程与结果（P4-批次6：过程与统计入面板，最终文本保持裸 print）。"""
+    body = "\n".join(
+        f"  {_render(message, index)}"
+        for index, message in enumerate(result.messages, start=1)
+    )
+    _CONSOLE.print(
+        Panel(
+            body if body else "  （本次没有产出消息）",
+            title="执行过程",
+            border_style="dim",
         )
+    )
+
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold")
+    grid.add_column()
+    grid.add_row("状态", result.status)
+    grid.add_row("轮数", str(result.rounds))
+    if result.usage is not None:
+        grid.add_row(
+            "token",
+            f"prompt={result.usage.prompt_tokens} "
+            f"completion={result.usage.completion_tokens}",
+        )
+    _CONSOLE.print(grid)
 
     print()
     print(result.text if result.text else "(模型没有给出最终文本)")
@@ -478,6 +494,18 @@ def shadow_git_dir_for(sessions_root: Path, session_id: str) -> Path:
     return sessions_root / f"{safe}.shadow.git"
 
 
+#: 面板/表格输出。markup/highlight 全关：CLI 的文本承载模型数据与中文方括号，
+#: 解释样式会吃字（与 G98 同源）；颜色只经 style=/border_style= 参数。
+_CONSOLE = Console(markup=False, highlight=False, emoji=False)
+#: stderr 错误输出：默认红色。
+_ERR_CONSOLE = Console(stderr=True, markup=False, highlight=False, emoji=False, style="red")
+
+
+def _err(message: str) -> None:
+    """stderr 错误行：红色、与 print 同形（harness 自身的失败必须显眼）。"""
+    _ERR_CONSOLE.print(message, soft_wrap=True)
+
+
 def _safe_session_id(session_id: str) -> str:
     """把用户敲进来的 id 净化成"能当文件名用的 id"。
 
@@ -526,17 +554,14 @@ def run_rollback(
     """
     session_id = args.session or latest_session_id(sessions_root)
     if session_id is None:
-        print(
-            f"[harness 错误] {sessions_root} 里没有会话，无法回滚。",
-            file=sys.stderr,
-        )
+        _err(f"[harness 错误] {sessions_root} 里没有会话，无法回滚。")
         return EXIT_HARNESS_ERROR
 
     shadow = ShadowCheckpoint(
         root=shadow_git_dir_for(sessions_root, session_id), workspace=workspace
     )
     if not shadow.available:
-        print(f"[harness 错误] 影子库不可用：{shadow.unavailable_reason}", file=sys.stderr)
+        _err(f"[harness 错误] 影子库不可用：{shadow.unavailable_reason}")
         return EXIT_HARNESS_ERROR
 
     # 工作区配对（**这条闸挡住了一次真事故**）：
@@ -545,18 +570,22 @@ def run_rollback(
     # 这里用**创建时记下的**工作区来执行，用户的 `--workspace` 只用于核对。
     mismatch = shadow.workspace_mismatch()
     if mismatch:
-        print(f"[harness 错误] {mismatch}", file=sys.stderr)
+        _err(f"[harness 错误] {mismatch}")
         return EXIT_HARNESS_ERROR
     recorded = shadow.recorded_workspace
     assert recorded is not None  # mismatch 为空 ⇒ 一定有记录
     workspace = recorded
 
     refs = shadow.refs()
-    print(f"会话 {session_id} 的快照（新 → 旧）：")
+    table = Table(title=f"会话 {session_id} 的快照（新 → 旧）")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("ref")
+    table.add_column("标签")
     if not refs:
-        print("  （还没有任何快照）")
+        table.add_row("-", "-", "（还没有任何快照）")
     for index, info in enumerate(refs):
-        print(f"  [{index}] {info.ref[:8]}  {info.label}")
+        table.add_row(str(index), info.ref[:8], info.label)
+    _CONSOLE.print(table)
 
     if args.list_checkpoints:
         return EXIT_OK
@@ -574,20 +603,19 @@ def run_rollback(
         # 接受 ref 前缀：人手敲 40 位哈希不现实，而前缀在单个仓库里足够唯一。
         matched = [info.ref for info in refs if info.ref.startswith(target)]
         if not matched:
-            print(f"[harness 错误] 找不到快照 {target!r}。", file=sys.stderr)
+            _err(f"[harness 错误] 找不到快照 {target!r}。")
             return EXIT_HARNESS_ERROR
         if len(matched) > 1:
-            print(
+            _err(
                 f"[harness 错误] 前缀 {target!r} 匹配到 {len(matched)} 个快照，"
-                "请多给几位。",
-                file=sys.stderr,
+                "请多给几位。"
             )
             return EXIT_HARNESS_ERROR
         target = matched[0]
 
     report = shadow.restore(target)
     if not report.ok:
-        print(f"[harness 错误] 回滚失败：{report.note}", file=sys.stderr)
+        _err(f"[harness 错误] 回滚失败：{report.note}")
         return EXIT_HARNESS_ERROR
 
     print(
@@ -632,7 +660,7 @@ async def _run_once(
             temperature=args.temperature,
             registry=registry,
             system_prompt=system_prompt,
-            observer=TerminalRenderer(),
+            extra_hooks=[TerminalRenderer()],
             session_id=session_id,
             tree=tree,
             shadow_git_dir=shadow_git_dir,
@@ -736,7 +764,7 @@ class SessionManager:
             temperature=self._args.temperature,
             registry=self._registry.clone(),
             system_prompt=self._system_prompt,
-            observer=TerminalRenderer(),
+            extra_hooks=[TerminalRenderer()],
             session_id=binding.session_id,
             tree=binding.tree,
             shadow_git_dir=shadow_git_dir,
@@ -883,26 +911,26 @@ async def _run_interactive(
 
 def _report_web_tool(
     registry: ToolRegistry, name: str, label: str, source: str, env_var: str
-) -> None:
-    """打印一个联网工具的状态：是否注册、额度还剩多少、账本有没有异常。
+) -> list[str]:
+    """联网工具的状态行（进横幅面板）：是否注册、额度还剩多少、账本有没有异常。
 
     为什么按"注册表里有没有"判断，而不是按"key 有没有"：
         两者在同一处决定（本函数上方），但**注册表才是事实**——
         将来多一个开关键时，这里不会静默打印出与实际不符的状态。
     """
     if name not in registry.names():
-        print(f"  {label}    未启用（未找到 {env_var}）")
-        return
+        return [f"  {label}    未启用（未找到 {env_var}）"]
     tool: Any = registry.get(name)
     usage = tool.quota.snapshot()
-    print(
+    lines = [
         f"  {label}    已启用（{source}）"
         f"｜剩余 {usage.remaining}/{usage.cycle_limit} credits"
-    )
+    ]
     # 账本写不下去时必须**说出来**：静默失败的后果是
     # "额度计数每次都从 0 开始"，而用户只会觉得"额度怎么用不完"。
     if usage.last_error:
-        print(f"          ⚠ 额度账本异常：{usage.last_error}")
+        lines.append(f"          ⚠ 额度账本异常：{usage.last_error}")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -937,7 +965,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 以下都是"harness 自己跑不起来"，属 Q4 里的非 0 ——与任务成败无关
     if not workspace.exists() or not workspace.is_dir():
-        print(f"[harness 错误] 工作区不存在或不是目录：{workspace}", file=sys.stderr)
+        _err(f"[harness 错误] 工作区不存在或不是目录：{workspace}")
         return EXIT_HARNESS_ERROR
 
     sessions_root = (
@@ -952,22 +980,18 @@ def main(argv: list[str] | None = None) -> int:
     # 而那恰恰是最需要回滚的时刻。第一版就把它排在了后面，冒烟时当场发现。
     if args.rollback or args.rollback_to is not None or args.list_checkpoints:
         if args.no_checkpoint:
-            print(
+            _err(
                 "[harness 错误] --no-checkpoint 与回滚开关同时给出："
-                "关掉 checkpoint 就没有快照可回滚。",
-                file=sys.stderr,
+                "关掉 checkpoint 就没有快照可回滚。"
             )
             return EXIT_HARNESS_ERROR
         return run_rollback(args, sessions_root, workspace)
     if not api_key:
-        print("[harness 错误] 缺少 API key。三种设置方式，任选一种：", file=sys.stderr)
-        print(
-            f"  1) 写进 {USER_CONFIG_DIR / '.env'}（推荐，在项目目录之外，不会被误提交）",
-            file=sys.stderr,
-        )
-        print(f"     内容一行即可：{ENV_VAR_NAME}=sk-xxx", file=sys.stderr)
-        print(f"  2) 临时用：export {ENV_VAR_NAME}=sk-xxx", file=sys.stderr)
-        print("  3) 只用一次：--api-key sk-xxx", file=sys.stderr)
+        _err("[harness 错误] 缺少 API key。三种设置方式，任选一种：")
+        _err(f"  1) 写进 {USER_CONFIG_DIR / '.env'}（推荐，在项目目录之外，不会被误提交）")
+        _err(f"     内容一行即可：{ENV_VAR_NAME}=sk-xxx")
+        _err(f"  2) 临时用：export {ENV_VAR_NAME}=sk-xxx")
+        _err("  3) 只用一次：--api-key sk-xxx")
         return EXIT_HARNESS_ERROR
 
     # 联网工具是可选工具组：**有 key 才注册**。工具 schema 进常驻区，
@@ -1009,27 +1033,34 @@ def main(argv: list[str] | None = None) -> int:
         else shadow_git_dir_for(sessions_root, binding.session_id)
     )
 
+    # 横幅面板（P4-批次6）：内容行与旧版逐字一致，只是从裸 print 换成
+    # Panel 承载——"排版"归面板，"说什么"不归它改。
     mode = "一次性" if args.prompt else "交互"
-    print(f"sigma {__version__}（{mode}模式）")
-    print(f"  工作区  {workspace.resolve()}")
-    print(f"  模型    {model} @ {base_url}")
-    print(f"  工具    {registry.names()}")
-    print(f"  密钥    已加载（来源：{key_source}）")
+    lines: list[str] = [
+        f"  工作区  {workspace.resolve()}",
+        f"  模型    {model} @ {base_url}",
+        f"  工具    {registry.names()}",
+        f"  密钥    已加载（来源：{key_source}）",
+    ]
     if args.no_web_search:
-        print("  联网    已按 --no-web-search 全部禁用（web_search / web_fetch）")
+        lines.append("  联网    已按 --no-web-search 全部禁用（web_search / web_fetch）")
     else:
-        _report_web_tool(registry, "web_search", "搜索", tavily_source, TAVILY_ENV_VAR)
-        _report_web_tool(registry, "web_fetch", "精读", firecrawl_source, FIRECRAWL_ENV_VAR)
+        lines.extend(
+            _report_web_tool(registry, "web_search", "搜索", tavily_source, TAVILY_ENV_VAR)
+        )
+        lines.extend(
+            _report_web_tool(registry, "web_fetch", "精读", firecrawl_source, FIRECRAWL_ENV_VAR)
+        )
     # 技能：**数量 + 问题都要打**。
     # 问题清单尤其重要——一个坏技能文件如果只是被静默跳过，
     # 症状是"我加了技能它怎么不用"，与手工清单漂移是同一种失败。
     if skill_scan.skills:
         names = "、".join(s.name for s in skill_scan.skills)
-        print(f"  技能    {len(skill_scan.skills)} 个：{names}")
+        lines.append(f"  技能    {len(skill_scan.skills)} 个：{names}")
     for problem in skill_scan.problems:
-        print(f"          ⚠ {problem}")
+        lines.append(f"          ⚠ {problem}")
     if binding.resumed:
-        print(
+        lines.append(
             f"  会话    已续接 {binding.session_id}"
             f"（载入 {binding.previous_messages} 条历史）"
         )
@@ -1037,28 +1068,40 @@ def main(argv: list[str] | None = None) -> int:
         # `--continue` 却没东西可续：**必须说出来**。静默开一个新的，
         # 用户会以为自己在续上下文，而模型其实"忘了"之前的一切——
         # 那看起来只是"这次答得不好"。
-        print(f"  会话    没有可续的会话（{sessions_root} 是空的），已新建 {binding.session_id}")
+        lines.append(f"  会话    没有可续的会话（{sessions_root} 是空的），已新建 {binding.session_id}")
     elif args.session:
-        print(f"  会话    新建 {binding.session_id}")
+        lines.append(f"  会话    新建 {binding.session_id}")
     else:
-        print(f"  会话    {binding.session_id}（新）")
+        lines.append(f"  会话    {binding.session_id}（新）")
     if not args.prompt:
         # 只在交互模式打：一次性模式没有 REPL，列命令会让用户以为能敲。
         # **不列全清单**（那是 `/help` 的事）——横幅里只放"存在斜杠命令"这件事，
         # 否则每加一个命令就要改两处文案，而漏改的那处会慢慢过期。
-        print("  交互    /help 看命令（/sessions 列会话、/switch 切会话、/new 开新的）")
-    print()
+        lines.append("  交互    /help 看命令（/sessions 列会话、/switch 切会话、/new 开新的）")
+    _CONSOLE.print(
+        Panel("\n".join(lines), title=f"sigma {__version__}（{mode}模式）", border_style="cyan")
+    )
     # 安全边界现状（P3-批次1 起**与代码同源**，不再是"什么都没有"）。
     # 这一段的每一句都要能在代码里指到对应实现，否则它又会变回"文档里的边界"。
     if shadow_dir is None:
-        print("  ⚠ 安全提示：影子 checkpoint 已按 --no-checkpoint 关闭——")
-        print("     **本次的破坏性操作不可回滚**（bash 仍能执行任意命令）。")
+        _CONSOLE.print(
+            Panel(
+                "  ⚠ 安全提示：影子 checkpoint 已按 --no-checkpoint 关闭——\n"
+                "     **本次的破坏性操作不可回滚**（bash 仍能执行任意命令）。",
+                border_style="yellow",
+            )
+        )
     else:
-        print("  ⚠ 安全边界（不是沙箱）：")
-        print("     L1 写路径：write/edit/bash 的 cwd 不得越出工作区（越界即拒绝）。")
-        print("     L2 可回滚：每次写操作前自动快照；必要时用 sigma --rollback 退回。")
-        print("     仍未保护：bash 能以你的用户权限执行任意命令、可访问网络与工作区外的路径——")
-        print("     请只在**受控目录**里使用，且不要让它接触不信任的脚本。")
+        _CONSOLE.print(
+            Panel(
+                "  L1 写路径：write/edit/bash 的 cwd 不得越出工作区（越界即拒绝）。\n"
+                "  L2 可回滚：每次写操作前自动快照；必要时用 sigma --rollback 退回。\n"
+                "  仍未保护：bash 能以你的用户权限执行任意命令、可访问网络与工作区外的路径——\n"
+                "  请只在**受控目录**里使用，且不要让它接触不信任的脚本。",
+                title="⚠ 安全边界（不是沙箱）",
+                border_style="yellow",
+            )
+        )
     print()
 
     try:
@@ -1099,10 +1142,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except KeyboardInterrupt:
-        print("\n已中断。", file=sys.stderr)
+        _err("\n已中断。")
         return EXIT_INTERRUPTED
     except Exception as exc:  # harness 级故障：报告并给非 0 退出码
-        print(f"[harness 错误] {type(exc).__name__}: {exc}", file=sys.stderr)
+        _err(f"[harness 错误] {type(exc).__name__}: {exc}")
         return EXIT_HARNESS_ERROR
 
 

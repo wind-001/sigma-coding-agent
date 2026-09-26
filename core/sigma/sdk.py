@@ -41,8 +41,8 @@ from typing import TYPE_CHECKING, Callable
 from sigma import dotenv
 from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
 from sigma_agent.checkpoint import ShadowCheckpoint
+from sigma_agent.hooks import BaseHook, HookManager
 from sigma_agent.loop import AgentLoop
-from sigma_agent.observe import LoopObserver
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.skills import (
     SKILLS_DIRNAME,
@@ -54,9 +54,12 @@ from sigma_agent.skills import (
 from sigma_agent.types import ToolContext, TurnResult
 from sigma_ai import stamps
 from sigma_ai.base import CancelToken, NeverCancelled, SamplingParams
+from sigma_ai.errors import ErrorCode, ProviderError
 from sigma_ai.messages import UserMessage
 from sigma_session.compact import CompactionOutcome, CompactionPolicy
 from sigma_session.context import SessionContext
+from sigma_session.persist_hook import SessionPersistHook
+from sigma_session.repair import repair_dangling_tool_results
 from sigma_session.tree import SessionTree
 from sigma_session.resources import (
     AGENTS_MD_FILENAME,
@@ -440,7 +443,7 @@ class InteractiveSession:
         system_prompt: str = SYSTEM_PROMPT,
         max_rounds: int = 20,
         temperature: float = 0.0,
-        observer: LoopObserver | None = None,
+        extra_hooks: Sequence[BaseHook] = (),
         emit: Callable[[str], None] | None = None,
         session_id: str = "sigma-session",
         project_instructions: str | None = None,
@@ -457,6 +460,7 @@ class InteractiveSession:
         sub_agent_rounds: SubAgentRounds | None = None,
         signal: CancelToken | None = None,
         tool_lock: asyncio.Lock | None = None,
+        repair_dangling: bool = True,
     ) -> None:
         """``sub_agent_rounds``：子 agent 的轮数预算**三档**（low/medium/high）。
 
@@ -471,7 +475,10 @@ class InteractiveSession:
         # 子 agent 工厂要重建同款组装（见 _make_sub_agent_factory），
         # 这几样先存起来——它们本来只为构造 AgentLoop 存在，现在多一个读者。
         self._emit = emit
-        self._observer = observer
+        # 渲染等"跨会话共享"的钩子由调用方以列表注入（P4-批次6）：
+        # 每个会话自建 HookManager（持久化钩子绑定本会话上下文），
+        # 共享钩子逐个注册进每一条会话的总线——子 agent 的渲染可见性同源。
+        self._extra_hooks = tuple(extra_hooks)
         self._shadow_git_dir = shadow_git_dir
         self._registry = (
             registry if registry is not None else default_registry(todo=enable_todo)
@@ -581,6 +588,12 @@ class InteractiveSession:
         # ``tree`` 由调用方传入（通常是 ``SessionTree.from_store(...)``）——
         # **会话接续的落点就在这里**：不传就是纯内存的新会话，
         # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。
+        #
+        # 断点续跑的前置修复（P4-批次5 Q3 拍板）：接续的树若停在
+        # "assistant 带 tool_calls 但结果缺失"（中断所致），先补齐合成结果。
+        # 无悬空时零写入零开销（repair 对健康会话是纯读扫描）。
+        if repair_dangling and tree is not None:
+            repair_dangling_tool_results(tree, clock=self._clock)
         self._context = SessionContext(
             system_prompt=system_prompt,
             tools_schema=self._registry.schemas(),
@@ -590,6 +603,15 @@ class InteractiveSession:
             skill_index=self._skill_index,
             tree=tree,
         )
+        # 钩子总线（P4-批次5，星辰拍板）：持久化是**订阅事件的钩子**，
+        # 不再是 send() 末尾的一次批量追加——每一次 LLM 返回、每一个工具
+        # 结果落定、每一次注入都立即写穿会话树，中断即停在最后一条
+        # 已发生的消息上。调用方传入自己的 manager 时也必须挂上持久化钩子
+        # （它是正确性要求，不是可选能力）；钩子的其余消费者同理自行注册。
+        self._hooks = HookManager()
+        self._hooks.register(SessionPersistHook(self._context))
+        for hook in self._extra_hooks:
+            self._hooks.register(hook)
         self._loop = AgentLoop(
             provider=provider,
             registry=self._registry,
@@ -601,12 +623,12 @@ class InteractiveSession:
             signal=signal if signal is not None else NeverCancelled(),
             clock=self._clock,
             emit=emit,
-            observer=observer,
             checkpoint=self._checkpoint,
             todo_steer_interval=todo_steer_interval,  # enable_todo=False 时已置 0
             tool_lock=self._tool_lock,
             mailbox_drain=self._mailbox_drain,
             mailbox_wait=self._mailbox_wait,
+            hooks=self._hooks,
         )
 
     def _make_sub_agent_factory(
@@ -654,7 +676,7 @@ class InteractiveSession:
                 # 轮数预算由派发方按难度档位给（low/medium/high）——
                 # 子会话不自定预算（见 SubAgentRounds 的取值依据）。
                 max_rounds=max_rounds,
-                observer=self._observer,
+                extra_hooks=self._extra_hooks,
                 emit=self._emit,
                 session_id=sub_session_id,
                 # AGENTS.md 用主会话已加载的文本（同一份，不重读文件）
@@ -674,12 +696,14 @@ class InteractiveSession:
         return factory
 
     async def send(self, task: str) -> TurnResult:
-        """发一条任务，跑完整轮，把产出追加回历史。
+        """发一条任务，跑完整轮。
 
-        追加这一步**必须在这里**——loop 参照 Pi 的形状不持有会话对象
-        （详规 3.8.1），历史归调用方管。
+        追加历史**不在这里**——loop 参照 Pi 的形状不持有会话对象
+        （详规 3.8.1），而产出消息的持久化由 :class:`SessionPersistHook`
+        在每个时机（LLM 返回 / 工具结果落定 / 注入）经钩子事件即时完成
+        （P4-批次5）：中断时树上停在最后一条已发生的消息，续跑从那里开始。
 
-        **压缩发生在追加新消息之前**：要压的是"已经攒下的历史"，
+        **压缩发生在发任务之前**：要压的是"已经攒下的历史"，
         把这一轮的新任务也算进去没意义（它才刚来，不可能在"最旧的一段"里）。
         """
         await self._compact_if_needed()
@@ -689,9 +713,72 @@ class InteractiveSession:
                 timestamp=now, message=UserMessage(content=task, timestamp=now)
             )
         )
-        result = await self._loop.run_turn(self._context.build_messages())
-        self._context.append(*result.messages)
+        return await self._attempt_turn()
+
+    async def _attempt_turn(self, *, may_recover: bool = True) -> TurnResult:
+        """跑一轮，带 context_overflow 恢复（Review-2026-09-26 P0）。
+
+        架构 4.1：``context_overflow`` 是压缩的**第二条触发路径**
+        （第一条是 send 边界的本地估算，见 ``_compact_if_needed``）。
+        恢复序列 = **修复悬空 → 强制压缩一次视图 → 重跑整轮**：
+
+        - 为什么重跑而不是轮中续跑：loop 是无状态的，消息视图是
+          run_turn 启动时的快照，压缩之后必须重建——轮中改它违反
+          loop 的形状（详规 3.8.1）。增量持久化让重跑不重复付费：
+          已落盘的消息就在历史里。
+        - 为什么先修悬空：错误轮的 partial assistant 可能带未应答的
+          tool_calls（流在批次执行前断掉），不修就重发等于送一个协议错上去。
+        - **只恢复一次**：再次溢出说明压缩救不了（历史太短 / 已压过 /
+          单条消息巨大），如实返回 error——不无限循环、不静默截断。
+
+        ``provider.stream`` 抛 ``ProviderError`` 的路径做防御性捕获：
+        当前 OpenAI 兼容 provider 把错误走 ErrorEvent 数据路径，但抛异常
+        是 ``BaseProvider`` 允许的形态，换一个实现不该让恢复失效。
+        """
+        # 轮前悬空修复（不变量：InteractiveSession 的树在轮边界协议干净）
+        repair_dangling_tool_results(self._context.tree, clock=self._clock)
+        try:
+            result = await self._loop.run_turn(self._context.build_messages())
+        except ProviderError as exc:
+            if not (may_recover and exc.code is ErrorCode.CONTEXT_OVERFLOW):
+                raise
+            if not await self._compact_for_overflow():
+                raise
+            return await self._attempt_turn(may_recover=False)
+        if (
+            may_recover
+            and result.status == "error"
+            and result.error_code == ErrorCode.CONTEXT_OVERFLOW.value
+        ):
+            if not await self._compact_for_overflow():
+                return result
+            return await self._attempt_turn(may_recover=False)
         return result
+
+    async def _compact_for_overflow(self) -> bool:
+        """溢出后**强制**压缩一次视图。压不了（关压缩/无可压段/压缩失败）返回 False。
+
+        与 ``_compact_if_needed`` 的分工：那条是"按阈值主动压"，
+        这条是"provider 已经拒了，能压多少压多少"。压不出结果
+        （``compact`` 返回 None = 没有可压的段）就如实说救不了。
+        失败不放大成新的失败源——与 ``_compact_if_needed`` 同判据。
+        """
+        if self._compaction_policy is None:
+            return False
+        try:
+            outcome = await self._context.compact(
+                policy=self._compaction_policy,
+                provider=self._provider,
+                model=self._model,
+                signal=NeverCancelled(),
+            )
+        except Exception:
+            return False
+        if outcome is not None:
+            # 与 _compact_if_needed 同一可见性通道:CLI 用 last_compaction
+            # 告诉用户"压过了"。溢出恢复的压缩不该是隐形的。
+            self._last_compaction = outcome
+        return outcome is not None
 
     async def _compact_if_needed(self) -> CompactionOutcome | None:
         """动态区超过策略阈值时压一次。压不了（没有可压的段）时返回 ``None``。
@@ -793,7 +880,7 @@ async def run_task(
     system_prompt: str = SYSTEM_PROMPT,
     temperature: float = 0.0,
     emit: Callable[[str], None] | None = None,
-    observer: LoopObserver | None = None,
+    extra_hooks: Sequence[BaseHook] = (),
     session_id: str = "sigma-session",
     project_instructions: str | None = None,
     compaction_policy: CompactionPolicy | None = None,
@@ -837,7 +924,7 @@ async def run_task(
         system_prompt=system_prompt,
         max_rounds=max_rounds,
         temperature=temperature,
-        observer=observer,
+        extra_hooks=extra_hooks,
         emit=emit,
         session_id=session_id,
         project_instructions=project_instructions,

@@ -39,9 +39,11 @@ from sigma_agent.agent_messages import (
 )
 from sigma_agent.base import BaseTool
 from sigma_agent.checkpoint import ShadowCheckpoint
-from sigma_agent.observe import (
-    LoopEvent,
-    LoopObserver,
+from sigma_agent.hooks import (
+    AssistantProduced,
+    HookEvent,
+    HookManager,
+    MessageInjected,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
@@ -100,6 +102,9 @@ class _StreamedRound:
     assistant: AssistantMessage
     calls: list[AssembledCall]
     error_summary: str | None = None
+    # 归一化错误码集合(ErrorEvent.error.code 的字符串形态)。
+    # 供上层做**语义**恢复判断(如 context_overflow → 压缩),不靠抠文案。
+    error_codes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -136,12 +141,12 @@ class AgentLoop:
         signal: CancelToken | None = None,
         clock: Callable[[], str] | None = None,
         emit: Callable[[str], None] | None = None,
-        observer: LoopObserver | None = None,
         checkpoint: ShadowCheckpoint | None = None,
         todo_steer_interval: int = 10,
         tool_lock: asyncio.Lock | None = None,
         mailbox_drain: Callable[[], list[AgentMessage]] | None = None,
         mailbox_wait: Callable[[], Awaitable[list[AgentMessage]]] | None = None,
+        hooks: HookManager | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -152,16 +157,16 @@ class AgentLoop:
         self._sampling = sampling
         self._signal = signal
         # 影子 git checkpoint（D5 的 L2）。**None = 没有**——回放与旧测试路径
-        # 不传它，行为与加它之前逐字节一致（与批次 6 observer 的纪律相同）。
+        # 不传它，行为与加它之前逐字节一致（与渲染钩子的纪律相同）。
         # 它由产品壳构造并传入：放哪（GIT_DIR 路径）是产品壳的策略。
         self._checkpoint = checkpoint
         # 时钟可注入：回放测试要求"两次执行逐字节一致"，
         # 而真实时钟每次不同——不注入就永远无法满足那条断言。
         self._clock: Callable[[], str] = clock or stamps.now
-        self._emit = emit
-        # 观测是**旁听**：为 None 时 loop 的行为与加观测之前完全一致
-        # （门槛 G33：226 个既有用例就是这条的证据）。
-        self._observer = observer
+        self._emit_cb = emit
+        # 观测通道已于 P4-批次6 并入钩子（星辰拍板）：渲染 = 订阅日志事件的
+        # 钩子，与持久化钩子平级。原 observer/observe.py 已删除——
+        # 事件全集与派发语义见 hooks.py。
         # steering 计数（星辰需求，2026-09-23）：连续 N 轮没碰 todo 工具就在
         # 下一轮前注入一条提醒，防长任务跑偏（"多轮 turn 塞满 context 后偏移目标"）。
         #
@@ -189,11 +194,16 @@ class AgentLoop:
         # 默认 None = 行为与加它之前逐字节一致（observer 同款承诺）。
         self._mailbox_drain = mailbox_drain
         self._mailbox_wait = mailbox_wait
+        # 钩子总线（P4-批次5，星辰拍板）：钩子点 = 触发时机，事件驱动。
+        # loop 在固定时机 emit 事件（LLM 返回 / 工具结果落定 / 注入），
+        # 派发给注册表里的订阅者——**loop 不认识会话与持久化**，谁订阅谁负责。
+        # None = 不派发，行为与没有钩子系统之前逐字节一致。
+        self._hooks = hooks
 
-    def _notify(self, event: LoopEvent) -> None:
-        """向观察者发一个事件。没有观察者时这是一次空调用。"""
-        if self._observer is not None:
-            self._observer.on_event(event)
+    async def _emit(self, event: HookEvent) -> None:
+        """向钩子总线发一个事件。没接线时短路——零开销。"""
+        if self._hooks is not None:
+            await self._hooks.emit(event)
 
     # ------------------------------------------------------------------
     # 主循环
@@ -228,16 +238,32 @@ class AgentLoop:
         # 口径写成"最后一轮"会让"多轮任务更贵"这个基本事实在报告里消失。
         total_usage: Usage | None = None
 
+        async def record(message: AgentMessage, event: HookEvent) -> None:
+            """produced 追加 + 钩子事件派发的**唯一收口**（P4-批次5）。
+
+            为什么收口：produced 与事件流必须同序——树上节点序 ==
+            produced 序 == 事件发出序，树与 TurnResult 才能互为对账。
+            散落各处的 append 迟早有一处漏发事件，症状是
+            "树里少一条"且不报错。
+
+            异常不吞（Q2 拍板）：持久化类钩子失败还继续跑 = 审计链分叉。
+            """
+            produced.append(message)
+            if self._hooks is not None:
+                await self._hooks.emit(event)
+
         for round_index in range(1, self._max_rounds + 1):
             # steering 注入（P4 任务清单的防跑偏闸）。在 _to_llm **之前**追加进
-            # produced，模型本轮就能看到；produced 随 TurnResult 返回后被
-            # sdk 追加回会话树——提醒既被看到、也被持久化，恢复会话后仍可见。
-            produced.extend(self._todo_steer_if_due())
+            # produced，模型本轮就能看到；经钩子事件落盘后，恢复会话仍可见。
+            for message in self._todo_steer_if_due():
+                await record(message, MessageInjected(message=message))
             # 信箱收集（P4 task 工具）：后台子任务完成后，结果在**下一轮开始之前**
             # 被取走并注入——这正是 loop.py 顶部注释里预留的 transformContext
             # 接入点的第一个真实住客。与 steering 同模式：尾部 user 消息，
             # 不进常驻区、不改前缀（D4 缓存不破）。
-            produced.extend(self._drain_mailbox())
+            # 信箱是 drain-once：取走即只存在于内存，所以注入即落盘（时机③）。
+            for message in self._drain_mailbox():
+                await record(message, MessageInjected(message=message))
             # 第 2 步 transformContext：P1 没有钩子体系（属 P3），此处跳过。
             # 保留这个注释是为了让 P3 接手时能一眼看到接入点在哪。
             llm_messages = self._to_llm(messages, produced)  # 第 3 步
@@ -245,7 +271,10 @@ class AgentLoop:
             assistant_box = await self._stream_model(llm_messages)  # 第 4 步
             assistant = assistant_box.assistant
             calls = assistant_box.calls
-            produced.append(_wrap(assistant))
+            # 时机①：每一次 LLM 返回。在错误判断**之前**——错误轮的 partial
+            # 内容也先经事件落盘再被定性（"留下审计"与"如实报错"都做）。
+            wrapped = _wrap(assistant)
+            await record(wrapped, AssistantProduced(message=wrapped))
             last_text = _text_of(assistant)
             total_usage = _add_usage(total_usage, assistant.usage)
 
@@ -265,8 +294,9 @@ class AgentLoop:
                     rounds=round_index,
                     usage=total_usage,
                     reason=assistant_box.error_summary,
+                                 error_code=_pick_error_code(assistant_box.error_codes),
                 )
-                self._notify(_turn_end(errored))
+                await self._emit(_turn_end(errored))
                 return errored
 
             if not calls:  # 第 8 步：模型不再要工具 → 尝试收尾
@@ -283,7 +313,8 @@ class AgentLoop:
                 # 子批次拿锁无阻碍。
                 tail_msgs = await self._drain_or_wait_mailbox()
                 if tail_msgs:
-                    produced.extend(tail_msgs)
+                    for message in tail_msgs:
+                        await record(message, MessageInjected(message=message))
                     continue
                 finished = TurnResult(
                     status="completed",
@@ -292,7 +323,7 @@ class AgentLoop:
                     rounds=round_index,
                     usage=total_usage,
                 )
-                self._notify(_turn_end(finished))
+                await self._emit(_turn_end(finished))
                 return finished
 
             # 第 5、6 步：校验参数并执行完整批次
@@ -306,26 +337,30 @@ class AgentLoop:
                     # 拼装失败的调用：构造一条说明性结果，让模型知道
                     # **它上一次的调用没有被接受**（否则它会以为自己已经调过了）
                     # 观测上也要发一条失败——否则终端在这一步什么都不会显示
-                    self._notify(
+                    failure = _failure_message(item, self._clock())
+                    # 时机：每一个工具结果落定（unparsed 的合成结果也算）。
+                    # 渲染与持久化是同一时机的两个订阅者——一个事件两队人马。
+                    await record(
+                        failure,
                         ToolEnd(
                             name="(unparsed)",
                             ok=False,
                             preview=_preview(item.parse_error),
-                        )
+                            message=failure,
+                        ),
                     )
-                    produced.append(_failure_message(item, self._clock()))
                     continue
-                self._notify(
+                result_message = ToolResultAgentMessage.from_result(
+                    item.to_block(), result, timestamp=self._clock()
+                )
+                await record(
+                    result_message,
                     ToolEnd(
                         name=item.name or "?",
                         ok=not result.is_error,
                         preview=_preview(_first_text(result)),
-                    )
-                )
-                produced.append(
-                    ToolResultAgentMessage.from_result(
-                        item.to_block(), result, timestamp=self._clock()
-                    )
+                        message=result_message,
+                    ),
                 )
 
         # 轮数耗尽：不是错误，但要显式告诉调用方和用户
@@ -337,7 +372,7 @@ class AgentLoop:
             usage=total_usage,
             reason=f"达到 max_rounds={self._max_rounds}",
         )
-        self._notify(_turn_end(stopped))
+        await self._emit(_turn_end(stopped))
         return stopped
 
     # ------------------------------------------------------------------
@@ -456,6 +491,7 @@ class AgentLoop:
         # OpenAICompatProvider 现在会为这种情况补发 ErrorEvent，
         # 但**兜底要放在这一层**：换一个 provider 实现不该让这个信号丢回去。
         saw_stop = False
+        error_codes: list[str] = []
 
         async for event in self._provider.stream(
             messages,
@@ -466,12 +502,12 @@ class AgentLoop:
         ):
             if isinstance(event, TextDelta):
                 text_parts.append(event.text)
-                # **逐块透传**：聚合后再发就没有"流式"了（observe.TextChunk 的说明）
-                self._notify(TextChunk(text=event.text))
+                # **逐块透传**：聚合后再发就没有"流式"了（hooks.TextChunk 的说明）
+                await self._emit(TextChunk(text=event.text))
                 if event.text_signature is not None:
                     text_signature = event.text_signature
             elif isinstance(event, ThinkingDelta):
-                self._notify(ThinkingChunk(text=event.thinking))
+                await self._emit(ThinkingChunk(text=event.thinking))
             elif isinstance(event, ToolCallDelta):
                 assembler.feed(event)
             elif isinstance(event, UsageEvent):
@@ -481,6 +517,7 @@ class AgentLoop:
                 stop_reason = event.stop_reason
             elif isinstance(event, ErrorEvent):
                 error_messages.append(f"{event.error.code}: {event.error.message}")
+                error_codes.append(str(event.error.code.value))
 
         calls = assembler.finish()
 
@@ -516,7 +553,12 @@ class AgentLoop:
         )
         # partial 内容**保留**着返回（text / messages 都还在），只是它同时带着
         # error_summary——"留下审计"和"如实定性"两件事都做，不二选一。
-        return _StreamedRound(assistant=assistant, calls=calls, error_summary=error_summary)
+        return _StreamedRound(
+            assistant=assistant,
+            calls=calls,
+            error_summary=error_summary,
+            error_codes=tuple(error_codes),
+        )
 
     # ------------------------------------------------------------------
     # 第 5、6 步：校验并执行整批
@@ -595,7 +637,7 @@ class AgentLoop:
         # 观测：工具**即将**执行。集中在这里发，保证每个 ToolStart 都早于任何
         # ToolEnd——顺序错了，终端上就会显示"先出结果后出调用"。
         for plan in planned:
-            self._notify(
+            await self._emit(
                 ToolStart(
                     name=plan.tool.name,
                     arguments=plan.call.arguments,
@@ -701,7 +743,7 @@ class AgentLoop:
             session_id=self._session_id,
             workspace_root=self._workspace,
             signal=self._signal,  # type: ignore[arg-type]
-            emit=self._emit,
+            emit=self._emit_cb,
         )
 
 
@@ -772,23 +814,52 @@ def _turn_end(result: TurnResult) -> TurnEnd:
     )
 
 
-def _failure_message(item: AssembledCall, timestamp: str) -> ToolResultAgentMessage:
-    """为「拼装失败的工具调用」构造一条 agent 层消息。
+def _pick_error_code(codes: tuple[str, ...]) -> str | None:
+    """从错误码集合里挑出放进 TurnResult 的那一个。
 
-    为什么要构造消息、而不是直接丢掉：
-    模型需要知道**它上一次的调用没有被接受**，否则它会以为自己已经调过了，
-    于是要么重复调用，要么基于"工具没返回"继续往下走。
-
-    这与 G14 的「未知消息类型 warning + 丢弃」是**不同场景**：
-    那里丢的是**别人的**消息，这里回的是**模型自己刚发出来的**调用。
+    context_overflow 优先:它是恢复逻辑(压缩+重跑)的唯一触发码,
+    其余码当前没有对应的自动恢复动作,取第一个即可。
     """
-    return ToolResultAgentMessage(
-        tool_call_id=f"unparsed_{item.index}",
-        tool_name="(unparsed)",
-        content=[TextBlock(text=item.parse_error)],
-        details={"raw_arguments": item.raw_arguments},
-        is_error=True,
+    if not codes:
+        return None
+    if "context_overflow" in codes:
+        return "context_overflow"
+    return codes[0]
+
+
+def _failure_message(item: AssembledCall, timestamp: str) -> AgentMessage:
+    """为「拼装失败的工具调用」构造一条**user 系统注记**(P0 修复 2026-09-26)。
+
+    为什么不再是合成 tool_result:
+        旧实现给失败调用发 tool_call_id="unparsed_{index}" 的 tool_result,
+        但 assistant 消息只含拼装成功的调用块——这个 id **没有配对**,
+        OpenAI 兼容协议要求 tool 消息逐个应答前文 assistant 的 tool_calls,
+        孤儿 id 会让下一轮请求被 provider 拒掉(400)。
+
+    为什么是 user 注记:
+        与压缩摘要 / todo 提醒 / 信箱回报同一既有模式——尾部 user 消息,
+        协议任何位置都合法,不破坏 prompt cache 前缀;模型仍然看得到
+        **它上一次的调用没有被接受**(不然它会以为自己已经调过了),
+        且 parse_error 全文可见。assistant 不被改写:
+        失败的调用依旧不伪装成合法调用块。
+
+    这与 G14 的「未知消息类型 warning + 丢弃」是**不同场景**:
+    那里丢的是**别人的**消息,这里回的是**模型自己刚发出来的**调用。
+    """
+    raw = item.raw_arguments or ""
+    preview = raw if len(raw) <= 200 else raw[:200] + " …"
+    return LlmMessageWrapper(
         timestamp=timestamp,
+        message=UserMessage(
+            content=(
+                f"[系统注记] 你上一次的第 {item.index} 个工具调用无法解析,"
+                "没有被接受、也没有执行。\n"
+                f"原始参数片段:{preview}\n"
+                f"错误:{item.parse_error}\n"
+                "请修正参数后重新调用。"
+            ),
+            timestamp=timestamp,
+        ),
     )
 
 

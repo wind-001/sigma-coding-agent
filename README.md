@@ -78,7 +78,7 @@ sigma 0.0.1（一次性模式）
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"            # 运行期依赖只有 pydantic / httpx / python-dotenv
+pip install -e ".[dev]"            # 运行期依赖:pydantic / httpx / python-dotenv / rich(P4-批次6)
 ```
 
 需要 Python **≥ 3.12**。

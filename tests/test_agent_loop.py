@@ -459,7 +459,13 @@ async def test_tool_raising_exception_is_caught_by_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_invalid_json_arguments_becomes_visible_error() -> None:
-    """arguments 不是合法 JSON → 一级校验失败，结果给模型看，不抛异常。"""
+    """arguments 不是合法 JSON → 一级校验失败，**user 系统注记**给模型看，不抛异常。
+
+    P0 修复(Review-2026-09-26)改了注记的载体:从合成 tool_result(孤儿
+    tool_call_id,协议 400 风险)改为尾部 user 消息。不变的断言是:
+    工具**没有**被执行、失败对模型可见、"不是合法 JSON"的原因可见。
+    协议侧的配对不变量由 tests/test_p0_correctness.py 的 G100 钉住。
+    """
     loop, _, _ = _make_loop(
         [_tool_call_round('{"message": "unterminated'), _text_round("我改")],
         tools=[EchoTool()],
@@ -469,12 +475,21 @@ async def test_invalid_json_arguments_becomes_visible_error() -> None:
 
     assert result.status == "completed"
     # 工具**没有**被执行
-    from sigma_agent.agent_messages import ToolResultAgentMessage
+    from sigma_agent.agent_messages import LlmMessageWrapper, ToolResultAgentMessage, UserMessage
+    from sigma_ai.messages import UserMessage as _UserMessage
 
     tool_results = [m for m in result.messages if isinstance(m, ToolResultAgentMessage)]
-    assert len(tool_results) == 1
-    assert tool_results[0].is_error is True
-    assert "不是合法 JSON" in tool_results[0].content[0].text  # type: ignore[union-attr]
+    assert tool_results == []  # 不再合成孤儿 tool_result
+    notes = [
+        m
+        for m in result.messages
+        if isinstance(m, LlmMessageWrapper)
+        and isinstance(m.message, _UserMessage)
+        and "无法解析" in str(m.message.content)
+    ]
+    assert len(notes) == 1
+    assert "不是合法 JSON" in str(notes[0].message.content)
+    assert "也没有执行" in str(notes[0].message.content)
 
 
 @pytest.mark.asyncio

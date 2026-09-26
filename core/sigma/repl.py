@@ -34,6 +34,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from rich.console import Console
+from rich.table import Table
+
 from sigma_ai import stamps
 
 if TYPE_CHECKING:  # 只为注解；运行时不 import，免得形成环
@@ -157,18 +160,33 @@ async def _cmd_sessions(
         return
 
     current = manager.current_id
-    print(f"最近 {len(previews)} 个会话（新 → 旧）：")
+    table = Table(title=f"最近 {len(previews)} 个会话（新 → 旧）")
+    table.add_column("当前", justify="center")
+    table.add_column("#", justify="right", style="dim")
+    # no_wrap:会话 id 是完整标识符,折行会让"/switch <id>"复制粘贴变困难,
+    # 也会让"列表里能搜到 id"这个性质消失(窄终端下宁可超宽)。
+    table.add_column("会话 id", no_wrap=True)
+    table.add_column("修改时间", style="dim")
+    table.add_column("大小", justify="right")
+    table.add_column("消息", justify="right")
+    table.add_column("首条任务")
     for index, preview in enumerate(previews):
         index_map[index] = preview.id
-        mark = "*" if preview.id == current else " "
+        mark = "*" if preview.id == current else ""
         summary = preview.first_user_text or "（还没有用户消息）"
-        print(
-            f" {mark}[{index}] {preview.id}"
-            f"  {_now_text(preview.modified)}"
-            f"  {_size_text(preview.size):>9}"
-            f"  {preview.message_count:>3} 条"
-            f'  "{summary}"'
+        table.add_row(
+            mark,
+            str(index),
+            preview.id,
+            _now_text(preview.modified),
+            _size_text(preview.size),
+            str(preview.message_count),
+            summary,
         )
+    # 宽度下限 110:列表有 7 列,rich 在 80 列(管道/非 TTY 默认)会截断
+    # "首条任务"列——那是认出"这是哪次会话"的关键信息。宁可超宽,不截断
+    # (与"会话 id no_wrap"同一条判据);真实终端按检测宽度取更宽者。
+    Console(markup=False, highlight=False, emoji=False, width=max(int(Console().width), 110)).print(table)
     print("用 /switch <序号|id> 切过去。")
 
 

@@ -203,10 +203,12 @@ async def test_sessions_lists_disk_sessions(
 
     assert ALPHA in out and BETA in out, "两个会话都该出现"
     # 当前会话标 *，另一个不标——逐行断言，免得"某行有星号"就放过
+    # P4-批次6 起列表是 rich Table:标记在"当前"列里,与 id 同一行。
+    # 断言语义不变——当前会话的行有 *,别的行没有。
     alpha_line = next(line for line in out.splitlines() if ALPHA in line)
     beta_line = next(line for line in out.splitlines() if BETA in line)
-    assert alpha_line.lstrip().startswith("*"), "当前会话没打 *"
-    assert not beta_line.lstrip().startswith("*"), "非当前会话打了 *"
+    assert "*" in alpha_line, "当前会话没打 *"
+    assert "*" not in beta_line, "非当前会话打了 *"
     # 首条用户消息摘要是可辨认性的关键（id 是自动生成的，认不出来）
     assert f"{ALPHA} 里的任务" in alpha_line
 
