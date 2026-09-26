@@ -1,0 +1,379 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "sigma:自研 coding agent harness 分层架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1360,
+      580
+    ],
+    "views": [
+      {
+        "id": "main-path",
+        "label": "一轮任务主路径",
+        "focus": [
+          "shell",
+          "ctx",
+          "loop",
+          "provider",
+          "model-api"
+        ],
+        "note": "组装上下文 → 流式请求 → 模型返回工具调用,循环往复直到任务完成"
+      },
+      {
+        "id": "safety",
+        "label": "安全与回滚",
+        "focus": [
+          "loop",
+          "checkpoint",
+          "tools",
+          "disk"
+        ],
+        "note": "写批次前影子快照;L1 拦越界写,sigma --rollback 可整体回退"
+      },
+      {
+        "id": "tools-view",
+        "label": "工具与扩展",
+        "focus": [
+          "shell",
+          "registry",
+          "tools",
+          "web-api"
+        ],
+        "note": "内置与扩展工具走同一条注册路径;联网工具有 key 才注册"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "shell",
+      "type": "frontend",
+      "label": "sigma 产品壳",
+      "sublabel": "CLI · REPL · SDK",
+      "tag": "core/sigma",
+      "pos": [
+        36,
+        244
+      ],
+      "size": [
+        170,
+        76
+      ]
+    },
+    {
+      "id": "ctx",
+      "type": "backend",
+      "label": "SessionContext 上下文组装",
+      "sublabel": "常驻区指纹 + 预算断言",
+      "tag": "sigma_session",
+      "pos": [
+        306,
+        244
+      ],
+      "size": [
+        180,
+        76
+      ]
+    },
+    {
+      "id": "tree",
+      "type": "backend",
+      "label": "SessionTree 会话树",
+      "sublabel": "只追加 · 可回溯",
+      "tag": "sigma_session",
+      "pos": [
+        306,
+        440
+      ],
+      "size": [
+        180,
+        76
+      ]
+    },
+    {
+      "id": "registry",
+      "type": "backend",
+      "label": "ToolRegistry 注册表",
+      "sublabel": "按名解析 · 热重载",
+      "tag": "sigma_agent",
+      "pos": [
+        591,
+        48
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "loop",
+      "type": "backend",
+      "label": "AgentLoop 唯一循环",
+      "sublabel": "只读并发 · 写顺序",
+      "tag": "sigma_agent",
+      "pos": [
+        591,
+        244
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "checkpoint",
+      "type": "security",
+      "label": "ShadowCheckpoint 影子 git",
+      "sublabel": "写批次前自动快照",
+      "tag": "sigma_agent",
+      "pos": [
+        591,
+        440
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "工具集",
+      "sublabel": "read/write/edit/bash/grep 等",
+      "tag": "sigma_tools",
+      "pos": [
+        881,
+        48
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "provider",
+      "type": "backend",
+      "label": "BaseProvider 抽象",
+      "sublabel": "OpenAI 兼容 + 回放实现",
+      "tag": "sigma_ai",
+      "pos": [
+        886,
+        244
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "web-api",
+      "type": "cloud",
+      "label": "Tavily / Firecrawl",
+      "sublabel": "联网搜索 · 网页精读",
+      "tag": "额度硬闸",
+      "pos": [
+        1161,
+        48
+      ],
+      "size": [
+        180,
+        72
+      ]
+    },
+    {
+      "id": "model-api",
+      "type": "external",
+      "label": "模型 API",
+      "sublabel": "DeepSeek / Kimi / GLM",
+      "tag": "OpenAI 兼容",
+      "pos": [
+        1161,
+        440
+      ],
+      "size": [
+        180,
+        72
+      ]
+    },
+    {
+      "id": "disk",
+      "type": "database",
+      "label": "工作区 + ~/.sigma",
+      "sublabel": "会话 JSONL · shadow.git",
+      "tag": "本机磁盘",
+      "pos": [
+        36,
+        440
+      ],
+      "size": [
+        190,
+        76
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "产品壳 · sigma",
+      "wraps": [
+        "shell"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "会话层 · sigma_session",
+      "wraps": [
+        "ctx",
+        "tree"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "循环层 · sigma_agent",
+      "wraps": [
+        "loop",
+        "registry",
+        "checkpoint"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "工具层 · sigma_tools",
+      "wraps": [
+        "tools"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "协议层 · sigma_ai",
+      "wraps": [
+        "provider"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "shell-to-ctx",
+      "from": "shell",
+      "to": "ctx",
+      "label": "build_messages()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ctx-to-loop",
+      "from": "ctx",
+      "to": "loop",
+      "label": "convert_to_llm()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "loop-to-provider",
+      "from": "loop",
+      "to": "provider",
+      "label": "stream() 流式请求",
+      "variant": "emphasis"
+    },
+    {
+      "id": "provider-to-model",
+      "from": "provider",
+      "to": "model-api",
+      "label": "OpenAI 兼容 SSE",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "shell-to-registry",
+      "from": "shell",
+      "to": "registry",
+      "label": "组装注册(同一条路径)",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "loop-to-registry",
+      "from": "loop",
+      "to": "registry",
+      "label": "get(name) 按名解析"
+    },
+    {
+      "id": "registry-to-tools",
+      "from": "registry",
+      "to": "tools"
+    },
+    {
+      "id": "loop-to-checkpoint",
+      "from": "loop",
+      "to": "checkpoint",
+      "label": "写批次前 mark",
+      "labelDy": 24
+    },
+    {
+      "id": "loop-to-tree",
+      "from": "loop",
+      "to": "tree",
+      "label": "追加结果"
+    },
+    {
+      "id": "tree-to-ctx",
+      "from": "tree",
+      "to": "ctx",
+      "label": "树上历史 + 压缩视图"
+    },
+    {
+      "id": "tree-to-disk",
+      "from": "tree",
+      "to": "disk",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "checkpoint-to-disk",
+      "from": "checkpoint",
+      "to": "disk",
+      "label": "独立 GIT_DIR 快照",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    },
+    {
+      "id": "tools-to-web",
+      "from": "tools",
+      "to": "web-api",
+      "label": "有 key 才注册",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "分层契约(CI 强制)",
+      "items": [
+        "依赖严格单向:壳 → 工具/会话 → agent → ai",
+        "sigma_tools 与 sigma_session 兄弟层,互不依赖(independence)",
+        "内置与扩展工具同一条注册路径;task 可派后台 sub_agent(≤3)",
+        "三道门禁:lint-imports · mypy --strict · pytest"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "上下文预算",
+      "items": [
+        "常驻区 ≤ 3500 token 且逐字节稳定,是 prompt cache 的充要条件",
+        "压缩是视图不是改写:树上原文不动,摘要降级成 user 追加尾部",
+        "技能目录进常驻区,正文由 load_skill 按需追加,不破坏缓存前缀"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "安全边界(不是沙箱)",
+      "items": [
+        "L1 写路径:write / edit / bash.cwd 越出工作区即拒绝",
+        "L2 影子 git:写批次前快照,sigma --rollback 整体回退且可再回滚",
+        "L3 钩子未做;bash 仍以用户权限执行任意命令",
+        "web_search / web_fetch 有 key 才注册,额度用尽自动禁用"
+      ]
+    }
+  ]
+}
