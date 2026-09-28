@@ -88,6 +88,13 @@ def resolve_write_path(ctx: ToolContext, raw: str) -> Path:
     resolved = candidate.resolve(strict=False)
     root = ctx.workspace_root.resolve(strict=False)
     if not _same_or_inside(resolved, root):
+        # L3 审批联动(P3-批次2):审批钩子明示豁免(用户在 CLI 确认过"允许
+        # 越出工作区")→ 放行,但 resolve 后的绝对路径照常返回——L1 的解析
+        # 与规范化工作一个不少,豁免的只是"必须在内"这一条。
+        # 无审批通道(评测/非交互)时该字段恒为 False → 拒绝语义不变,
+        # G64 族门槛(越界即拒绝)在非交互路径上原样成立。
+        if ctx.outside_approved:
+            return resolved
         raise PathEscapesWorkspace(
             f"路径越界：{resolved}\n"
             f"  工作区根：{root}\n"

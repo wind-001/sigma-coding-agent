@@ -57,15 +57,29 @@ def test_available_and_baseline(tmp_path: Path) -> None:
     assert refs[0].ref == ref
 
 
-def test_mark_is_allow_empty(tmp_path: Path) -> None:
-    """没有变化的 mark 也要留一条提交——否则"快照数 = 基线 + 写批次数"不成立。
+def test_mark_skips_when_nothing_changed(tmp_path: Path) -> None:
+    """内容没变化的 mark **不新增提交**（G66 修订，P4-批次7 / G859）。
 
-    那条不变量就是门槛 G66 断言的东西：它让"漏打快照"变成一个**可数的差异**，
-    而不是"少了一次看不见的备份"。
+    旧语义是 ``--allow-empty``（快照数=基线+写批次数）；共享库 + plumbing 之后，
+    空提交只剩噪声——不变量改成"**每个写批次执行前，分支 tree 与工作区一致**"。
+    跳过的 mark 返回现有 tip，refs 不增长。
     """
     cp = _cp(tmp_path)
+    first = cp.mark(label="baseline")
+    assert first is not None
+    again = cp.mark(label="write-batch:write")
+    assert again == first, "无变化的第二次 mark 不该新增提交"
+    labels = [info.label for info in cp.refs()]
+    assert labels == ["baseline"]
+
+
+def test_mark_commits_when_content_changes(tmp_path: Path) -> None:
+    """有变化必须提交：空跳过**不许**把真变化也吞掉（G859 的另一半）。"""
+    cp = _cp(tmp_path)
     cp.mark(label="baseline")
-    cp.mark(label="write-batch:write")
+    _ws(tmp_path).joinpath("a.txt").write_text("1", encoding="utf-8")
+    second = cp.mark(label="write-batch:write")
+    assert second is not None
     labels = [info.label for info in cp.refs()]
     assert labels == ["write-batch:write", "baseline"]
 
@@ -234,12 +248,113 @@ def test_user_git_repo_is_untouched(tmp_path: Path) -> None:
     assert "code.py" in user_status
 
 
-def test_shadow_repo_is_separate_from_workspace(tmp_path: Path) -> None:
-    """影子库必须在工作区**之外**（默认在 sessions 目录下）——否则它自己会被快照进去。"""
-    cp = _cp(tmp_path)
-    cp.mark(label="baseline")
-    assert not (_ws(tmp_path) / ".git").exists()
+def test_workspace_level_repo_is_not_self_snapshotted(tmp_path: Path) -> None:
+    """影子库**就在工作区里**（P4-批次7：``<ws>/.sigma/shadow.git``）——
+    自指防护由 BUILTIN_EXCLUDES 的 ``.sigma/`` 承担，这里实证它生效。"""
+    ws = _ws(tmp_path)
+    cp = ShadowCheckpoint(root=ws / ".sigma" / "shadow.git", workspace=ws)
+    ref = cp.mark(label="baseline")
+    assert ref is not None
     assert cp.root.exists()
+    tracked = cp._git("ls-files").stdout
+    assert ".sigma" not in tracked, "影子库把自己快照进去了"
+
+
+def test_shared_repo_dedupes_across_sessions(tmp_path: Path) -> None:
+    """共享库跨会话去重（G857）：第二个会话的 baseline 只新增 1 个 commit 对象。
+
+    旧设计（每会话一个全新裸库）在这里会复制全部 blob+tree——
+    803MB 的根因。新设计 blob/tree 内容寻址天然共享，只有 commit 是新的。
+    """
+    ws = _ws(tmp_path)
+    (ws / "code.py").write_text("print(1)\n", encoding="utf-8")
+    root = tmp_path / "shared.shadow.git"
+    cp_a = ShadowCheckpoint(root=root, workspace=ws, branch="session-a")
+    cp_b = ShadowCheckpoint(root=root, workspace=ws, branch="session-b")
+    ref_a = cp_a.mark(label="baseline-a")
+    assert ref_a is not None
+
+    def _object_count() -> int:
+        objects_dir = root / "objects"
+        return sum(1 for _ in objects_dir.rglob("*") if _.is_file())
+
+    before = _object_count()
+    ref_b = cp_b.mark(label="baseline-b")
+    assert ref_b is not None
+    after = _object_count()
+    assert after - before == 1, (
+        f"第二个会话的 baseline 新增了 {after - before} 个对象——去重失效"
+    )
+    # 两个分支各自可见自己的快照
+    assert [i.label for i in cp_a.refs()] == ["baseline-a"]
+    assert [i.label for i in cp_b.refs()] == ["baseline-b"]
+
+
+def test_restore_does_not_touch_other_branch_tips(tmp_path: Path) -> None:
+    """回滚走 plumbing（read-tree），**不许移动别的会话分支**（G864）。
+
+    ``reset --hard`` 会移动 HEAD 所指分支——共享库里那等于踩坏别的会话。
+    这条用例钉住"restore 之后 B 分支的 tip 一个字节都不变"。
+    """
+    ws = _ws(tmp_path)
+    (ws / "f.txt").write_text("1", encoding="utf-8")
+    root = tmp_path / "shared.shadow.git"
+    cp_a = ShadowCheckpoint(root=root, workspace=ws, branch="session-a")
+    cp_b = ShadowCheckpoint(root=root, workspace=ws, branch="session-b")
+    base_a = cp_a.mark(label="a1")
+    (ws / "f.txt").write_text("2", encoding="utf-8")
+    cp_a.mark(label="a2")
+    tip_b_before = cp_b.mark(label="b1")
+    assert base_a is not None and tip_b_before is not None
+
+    report = cp_a.restore(base_a)
+    assert report.ok is True
+    assert cp_b.refs()[0].ref == tip_b_before, "B 分支的 tip 被 A 的回滚动了"
+
+
+def test_gc_packs_objects_and_keeps_refs_readable(tmp_path: Path) -> None:
+    """收尾 GC（G863）：打包后 ref 仍可读——``gc.packRefs=false`` 保住
+    "松散 ref 恒成立"的不变量（``_head_ref`` 零进程读的前提）。"""
+    ws = _ws(tmp_path)
+    (ws / "a.txt").write_text("1", encoding="utf-8")
+    cp = ShadowCheckpoint(root=tmp_path / "shadow.git", workspace=ws, branch="s1")
+    ref1 = cp.mark(label="m1")
+    (ws / "a.txt").write_text("2", encoding="utf-8")
+    ref2 = cp.mark(label="m2")
+    assert ref1 is not None and ref2 is not None
+
+    assert cp.gc() is True
+
+    packs = list((tmp_path / "shadow.git" / "objects" / "pack").glob("*.pack"))
+    assert packs, "gc 之后没有 pack 文件——打包没发生"
+    # ref 没被打包进 packed-refs，松散文件仍可直接读
+    labels = [info.label for info in cp.refs()]
+    assert labels == ["m2", "m1"]
+    assert cp._head_ref() == ref2
+
+
+def test_oversize_scan_is_downsampled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超大文件扫描降频（G862）：首次必扫，之后每 20 次 mark 扫一次。"""
+    ws = _ws(tmp_path)
+    cp = ShadowCheckpoint(
+        root=tmp_path / "shadow.git", workspace=ws, max_file_bytes=1024
+    )
+    calls = {"n": 0}
+    original = cp._collect_oversize
+
+    def _spy() -> bool:
+        calls["n"] += 1
+        return original()
+
+    monkeypatch.setattr(cp, "_collect_oversize", _spy)
+    (ws / "a.txt").write_text("x", encoding="utf-8")
+    cp.mark(label="m0")
+    for i in range(1, 30):
+        (ws / "a.txt").write_text(f"x{i}", encoding="utf-8")
+        cp.mark(label=f"m{i}")
+    assert calls["n"] == 2, f"30 次 mark 扫了 {calls['n']} 次——降频失效（应为 2：m0 与 m20）"
 
 
 # ----------------------------------------------------------------------
@@ -322,6 +437,10 @@ async def test_loop_write_then_rollback_restores_workspace(tmp_path: Path) -> No
     cp = _cp(tmp_path)
     base = cp.mark(label="baseline")
     assert base is not None
+    # baseline 之后、loop 之前的**真实变化**（用户手写的文件）：
+    # 这样 loop 的 pre-write 快照才有新内容可存——若 baseline 之后一切未变，
+    # pre-write 快照与 baseline 内容一致，被空跳过（G859）是正确行为。
+    (ws / "notes.txt").write_text("用户手写的笔记", encoding="utf-8")
 
     registry = ToolRegistry()
     registry.register(WriteTool())
@@ -364,13 +483,14 @@ async def test_loop_write_then_rollback_restores_workspace(tmp_path: Path) -> No
 
     assert result.status == "completed"
     assert readme.read_text(encoding="utf-8") == "被写坏了"
-    # loop 在写之前打了快照：基线 + write-batch
+    # loop 在写之前打了快照（含用户的 notes.txt）：
     labels = [info.label for info in cp.refs()]
     assert any(label.startswith("write-batch:") for label in labels)
 
     report = cp.restore(base)
     assert report.ok is True
     assert readme.read_text(encoding="utf-8") == "原始 README"
+    assert not (ws / "notes.txt").exists(), "回滚没删掉 baseline 之后新增的文件"
 
 
 

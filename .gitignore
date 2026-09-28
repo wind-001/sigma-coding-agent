@@ -31,9 +31,12 @@ demo/
 # 见 docs/architecture.md 第 6.2 节
 .sigma/
 
-# 编辑器
+# 编辑器 / 本地工具配置
+# `.zcodeignore` 是 ZCode 从 `.gitignore` 同步生成的工具侧排除表（自带一套默认规则），
+# 与 `.workbuddy/` 同一类——**助手/工具的工作文件，不是项目产物**。
 .vscode/
 .idea/
+.zcodeignore
 
 # 助手工作记忆，不属于项目产物
 .workbuddy/

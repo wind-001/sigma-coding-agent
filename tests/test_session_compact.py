@@ -664,10 +664,11 @@ async def test_interactive_session_compacts_automatically(tmp_path: Path) -> Non
         provider=provider,
         workspace_root=tmp_path,
         model="fake",
-        # 窗口要**大于常驻区**（默认注册表约 1149）：等于 1 会让动态预算为 0，
-        # 于是按设计不触发。2000 给出正的预算，配 ratio=0 必然触发。
+        # 窗口要**大于常驻区**（默认注册表 + ask_user 后实测约 2082，见
+        # P3-批次2 实现记录）：小于常驻会让动态预算 ≤0，按设计不触发。
+        # 2600 给出正的预算，配 ratio=0 必然触发。
         compaction_policy=CompactionPolicy(
-            context_window_tokens=2000, trigger_ratio=0.0
+            context_window_tokens=2600, trigger_ratio=0.0
         ),
     )
     # 先塞一点历史，让"最旧的一段"真的存在（否则没有可压的段）
@@ -724,7 +725,7 @@ async def test_compaction_failure_does_not_break_the_session(tmp_path: Path) -> 
         workspace_root=tmp_path,
         model="fake",
         compaction_policy=CompactionPolicy(
-            context_window_tokens=2000, trigger_ratio=0.0
+            context_window_tokens=2600, trigger_ratio=0.0
         ),
     )
     session.context.append(*_rounds(5))

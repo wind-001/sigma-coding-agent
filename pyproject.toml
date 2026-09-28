@@ -26,6 +26,10 @@ dependencies = [
     # 验证：venv Python 3.13.9 + rich 15.0.0 实测正常；rich 官方支持 ≥3.9。
     # 代价核算：传递引入 markdown-it-py + pygments，纯 Python 无编译。
     "rich>=13",
+    # 终端按键输入(P3-批次2 追加,星辰:决策交互按键化)。跨平台按键归一化
+    # (Windows 老 conhost 的方向键/VT 转义)是最容易写错的部分,交给它扛;
+    # 传递依赖仅 wcwidth,纯 Python。
+    "prompt_toolkit>=3.0",
 ]
 
 [project.optional-dependencies]

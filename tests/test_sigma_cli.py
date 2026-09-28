@@ -22,10 +22,10 @@ def _fake_repl(entered: list[int]):  # type: ignore[no-untyped-def]
     **形参名要与真实签名一致（P5 起是 ``manager``）**：写 ``session``
     不会让测试变红（Python 不看形参名），但下一个人读到这里会以为
     REPL 拿到的是会话对象——而这正是 P5 改掉的约定（现在拿到的是 manager，
-    因为 ``/switch`` 要能把整个会话换掉）。
+    因为 ``/switch`` 要能把整个会话换掉）。``**kwargs`` 吞掉 P3-批次2 起
+    新增的 ``broker`` 关键字——假 REPL 不消费 stdin。
     """
-
-    async def fake_repl(manager: object) -> int:
+    async def fake_repl(manager: object, **kwargs: object) -> int:
         entered.append(1)
         return 0
 
@@ -88,7 +88,10 @@ def test_devnull_stdin_never_enters_repl() -> None:
 def test_explicit_interactive_flag_bypasses_stdin_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``-i`` 的价值：Git Bash / 管道里 stdin 判不出控制台，靠它显式进入。"""
+    """``-i`` 的价值：Git Bash / 管道里 stdin 判不出控制台，靠它显式进入。
+
+    monkeypatch ``run_repl`` 并断言被调用——stdin 检测不挡显式交互意图。
+    """
     entered: list[int] = []
 
     monkeypatch.setattr(cli_module, "stdin_is_interactive", lambda: False)

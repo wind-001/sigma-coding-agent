@@ -1,0 +1,2 @@
+{"events": [{"type": "tool_call_delta", "index": 0, "id": "call_d09", "name": "bash", "arguments_delta": "{\"command\": \"echo 'demo: del /s /q C:\\\\temp\\\\evil'\"}"}, {"type": "stop", "stop_reason": "tool_use"}], "usage": {"prompt_tokens": 100, "completion_tokens": 10, "cached_tokens": 0}}
+{"events": [{"type": "text_delta", "text": "done"}, {"type": "stop", "stop_reason": "stop"}], "usage": {"prompt_tokens": 120, "completion_tokens": 8, "cached_tokens": 100}}

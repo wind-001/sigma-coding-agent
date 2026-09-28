@@ -1,6 +1,6 @@
 # sigma 架构方案
 
-> 版本：v1.6 ｜ 2026-09-22
+> 版本：v1.7 ｜ 2026-09-28
 > 参照对象：Pi Agent Harness（架构与设计理念见 `pi-harness研究笔记.md`）
 > 定位：自研 coding agent harness，目标是**可自证的设计**，不是功能数量
 >
@@ -54,11 +54,31 @@
 >   差异只剩校准端点与响应解析。批次 7 的 G37–G41 门槛随之重跑（E37 锚点迁移）。
 > - 完整详规与门槛（G42–G47）：`docs/plans/P1-批次8-联网调研与精读-详规.md`。
 >
+> **v1.7 变更**（2026-09-28，P5-批次1）：
+> - **观测层落地**（采集 = 钩子订阅者，"日志/渲染也是钩子义务"的第三位住客）：
+>   - **新增两个通知事件**：`LlmRequested`（请求锚点，订阅者配对测单次延迟/TTFT）与
+>     `ApprovalDecided`（审批结论留痕，批准与拒绝都发；**空审批名单不发**——
+>     无人审批的默认放行是结构性直通，不是决定）。事件仍是瞬时通知，计时归订阅者。
+>   - **TraceHook**（`sigma_session/trace.py`）：逐事件写 `<id>.trace.jsonl`
+>     （与会话文件同目录）。失败语义与持久化钩子**刻意相反**——自宽容
+>     （警告一次 + 自禁用），分界线 = 审计凭据 vs 派生视图（Q3 拍板）。
+>     默认开（`--no-obs` 关）；纯内存树（无落点）与子 agent（不透传）不落。
+>   - **`--timeline [ID]`**：会话 JSONL 为主数据源（**旧会话可查**，延迟用
+>     消息时间戳差近似、标 ≈），trace 在场时叠加精确延迟/TTFT 与审批留痕；
+>     `--json` 输出字段对齐 7.5 指标口径，供 P5 ablation 复用。
+>   - **发现层排除**：trace 文件与 `*.jsonl` 同目录同扩展名，`list_sessions`
+>     按 `TRACE_SUFFIX` 排除（幽灵会话修复，实测 /sessions 出现过）。
+>   - 门槛 G865–G872 + 注入实验 `scripts/gate_injection_batch16.py`（8/8 证伪）。
+>   - 完整详规与拍板（Q1–Q5 全按推荐）：`docs/plans/P5-批次1-观测层-trace与时间线-详规.md`。
+>
 > **v1.6 变更**（2026-09-22，P3-批次1）：
 > - **D5 的 L1 与 L2 落地**（三层软边界里"高、可证明"的两层）：
 >   L1 = 写路径 resolve 后必须仍在工作区内（`_paths.resolve_write_path`，含符号链接与 Windows 大小写）；
 >   L2 = 影子 git checkpoint（`sigma_agent/checkpoint.py`，写批次前自动快照、`sigma --rollback` 可整体回退）。
-> - **L3 钩子规则仍未做**（属 P3-批次2，需要 HookManager）；6.3 节"挡不住什么"那份清单**一字未改**。
+> - **L3 审批层已落地**（P3-批次2）：`sigma/_approval.py` 的 `CliApprovalGate` 在执行前把
+>   危险指令 / 越界访问交人确认（allowlist 精确命中即免打扰，`--no-approval` 整体关）。
+>   它**仍是软边界**——6.3 节"挡不住什么"那份清单**一字未改，全部成立**：
+>   它挡不住的从来不是"没做"，而是"字符串与启发式只能减少不能消除"。
 > - 第 6 节表格与 CLI 横幅都改成"与代码同源"的现状描述——原先那句
 >   "P1 的工具没有任何边界约束"已删（**文档里的边界与代码里的边界必须是同一件事**）。
 > - 门槛 G64–G70 + 注入实验 `scripts/gate_injection_batch13.py`（8/8 可证伪）。
@@ -1092,33 +1112,43 @@ def _import_fresh(path: str) -> ModuleType:
 | --- | --- | --- | --- | --- |
 | L1 | 工作区根目录约束（写路径 resolve 后必须在 root 下） | 高，可证明 | 越界拦截率、误拦率 | ✅ **P3-批次1**（`_paths.resolve_write_path`，含符号链接与 Windows 大小写） |
 | L2 | 影子 git checkpoint（每批次前提交，可整体回滚） | 高，可证明 | 回滚成功率、恢复后成功率 | ✅ **P3-批次1**（`sigma_agent/checkpoint.py`，写批次前 mark + CLI 回滚） |
-| L3 | 钩子规则（危险命令匹配） | **低，只能减少不能消除** | 对抗集拦截率、误拦率 | ⬜ P3-批次2（要 HookManager） |
+| L3 | 审批拦截层（危险命令 / 越界写的执行前确认） | **低，只能减少不能消除** | 对抗集拦截率、误拦率 | ✅ **P3-批次2**（`sigma/_approval.py` 的 `CliApprovalGate`；自证报告：拦截 20/20、误拦 0/10） |
 
 > **2026-09-22（P3-批次1）追加**：
 > - L1 落在 `sigma_tools/_paths.py`，`write` / `edit` / `bash.cwd` 走它；**读路径不约束**
 >   （本节 6.3 早就写明"L1 只约束写"）。
 > - L2 落在 `sigma_agent/checkpoint.py`：独立 `GIT_DIR`、`info/exclude` = 内置清单 +
->   工作区 `.gitignore`、>5 MB 不入快照、回滚先自查再 `reset --hard`（因此**新增文件会被删**）。
-> - 影子库位置：`~/.sigma/sessions/<session-id>.shadow.git`（与会话文件同层）。
-> - 开关：`--no-checkpoint` 关；回滚是人的动作：`sigma --session <id> --rollback[-to <ref>]`。
-> - 门槛 G64–G70 + 注入实验 `scripts/gate_injection_batch13.py`。
+>   工作区 `.gitignore`、>5 MB 不入快照、回滚先自查再整体回退（因此**新增文件会被删**）。
+> - 影子库位置：~~`~/.sigma/sessions/<session-id>.shadow.git`（与会话文件同层）~~
+>   **2026-09-27（P4-批次7）改为 `<workspace>/.sigma/shadow.git` 工作区级共享库，
+>   会话=分支、懒基线、空批次跳过——详见 6.2 与 `docs/plans/P4-批次7-影子checkpoint优化-详规.md`**。
+> - 开关：`--no-checkpoint` 关；家目录工作区自动关（P4-批次7）；回滚是人的动作：`sigma --session <id> --rollback[-to <ref>]`。
+> - 门槛 G64–G70 + 注入实验 `scripts/gate_injection_batch13.py`；P4-批次7 增补 G857–G864。
 >
-> L3 仍未落地——**本节 6.3 那份"挡不住什么"的清单依然全部成立**，一字未改。
+> L3 已落地（P3-批次2 审批层），但**本节 6.3 那份"挡不住什么"的清单依然全部成立**，一字未改——
+> 审批拦不住 `python -c`、base64、先写脚本再执行；它做的是"把看得见的危险明示出来交人决定"，
+> 真正的兜底仍是 L1 的拒绝与 L2 的可回滚。
 
 
 ### 6.2 影子 git 的实现约定
 
 ```
-GIT_DIR   = <session_dir>/shadow.git
+GIT_DIR       = <workspace_root>/.sigma/shadow.git   # 工作区级共享库（P4-批次7）
 GIT_WORK_TREE = <workspace_root>
+快照隔离      = refs/heads/<session_id>              # 一个会话一个分支
 ```
 
 关键点：
 
 - **不碰用户仓库自己的 `.git`。** 用独立 `GIT_DIR` 是唯一的正确做法，`git stash` 和往用户历史里插 commit 都会污染真实项目。
-- 需要读取工作区的 `.gitignore` 作为 exclude 源，否则会把 `node_modules` 之类提交进去，checkpoint 会慢到不可用。
-- 回滚必须处理**文件删除**：`checkout <commit> -- .` 不会删除新增文件，需要配合清理。这是最容易漏的一条，要有单测。
+- **一个工作区一个库，一个会话一个分支（P4-批次7）。** 旧设计每会话一个全新裸库，同一工作区被全量复制 N 遍（151 会话实测 803MB，三个家目录会话各 274/169/104MB）。共享后所有会话复用同一批内容寻址对象——同工作区第二次启动的 baseline 几乎零成本，成本模型从 O(工作区 × 会话数) 降到 O(工作区 × 1)。mark/restore 全走 plumbing（`add -A` → `write-tree` → `commit-tree -p <parent>` → `update-ref`；回滚用 `read-tree --reset -u`），**绝不碰 HEAD**——`reset --hard` 会移动 HEAD 所指分支，共享库里等于踩坏别的会话的快照链。
+- **懒基线（P4-批次7）。** 构造期不打 baseline：loop 的 `_mark_before_writes` 在写批次**执行前**打快照，首个写批次快照天然就是"任何写之前的干净状态"。启动路径由此零 git 调用（家目录实测单次全工作区扫描 65 秒，已归零）。
+- **空批次跳过（G66 修订）。** `write-tree` 与上次相同就不提交（内容没变化，提交只是噪声）；不变量从"快照数=基线+写批次数"改为"每个写批次执行前，分支 tree 与工作区一致"。
+- **家目录守门。** workspace == 家目录时 L2 自动禁用（横幅如实提示）——全量快照会复制 AppData，而"回滚家目录"本身危险。判定收在 `cli.checkpoint_disabled_reason` 一处。
+- 需要读取工作区的 `.gitignore` 作为 exclude 源，否则会把 `node_modules` 之类提交进去，checkpoint 会慢到不可用。超大文件扫描降频（每 20 次 mark 一次，首次必扫）。
+- 回滚必须处理**文件删除**：`checkout <commit> -- .` 不会删除新增文件；plumbing 等价物 `read-tree --reset -u` 承接同一职责。这是最容易漏的一条，要有单测。
 - 大文件要设上限（例如单文件 > 5 MB 不入 checkpoint），否则 checkpoint 会成为性能瓶颈。
+- 收尾 GC：会话关停时跑一次 `git gc`（`gc.autoDetach=false` 防后台竞态；`gc.packRefs=false` 保住"松散 ref 可零进程读"的不变量）。
 
 ### 6.3 钩子挡不住什么（写进文档，不藏）
 

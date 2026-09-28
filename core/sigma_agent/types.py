@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Awaitable, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -74,6 +74,15 @@ class ToolContext(BaseModel):
     workspace_root: Path
     signal: CancelToken
     emit: Callable[[str], None] | None = None
+    # L3 审批联动(P3-批次2):审批钩子明示豁免本次"越出工作区"的写操作时,
+    # loop 把 True 传进来,L1(resolve_write_path)据此放行。
+    # 默认 False = L1 的拒绝语义一个字节不动;只有审批通道能打开它。
+    outside_approved: bool = False
+    # ask_user 工具的交互通道(P3-批次2,星辰追加):产品壳接线(终端面板 +
+    # to_thread 输入),评测为 None → 工具自动采用推荐项。
+    # ``question`` / ``options`` / ``recommended_index`` 进,选中选项文本出;
+    # 返回 "" = 未收到有效选择(EOF / 非法输入),由工具自行回退。
+    ask: Callable[[str, list[str], int | None], Awaitable[str]] | None = None
 
     def say(self, message: str) -> None:
         """发出一条进度信息。``emit`` 未提供时静默忽略。"""

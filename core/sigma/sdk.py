@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Callable
 from sigma import dotenv
 from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
 from sigma_agent.checkpoint import ShadowCheckpoint
-from sigma_agent.hooks import BaseHook, HookManager
+from sigma_agent.hooks import ApprovalHook, BaseHook, HookManager
 from sigma_agent.loop import AgentLoop
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.skills import (
@@ -53,12 +53,13 @@ from sigma_agent.skills import (
 )
 from sigma_agent.types import ToolContext, TurnResult
 from sigma_ai import stamps
-from sigma_ai.base import CancelToken, NeverCancelled, SamplingParams
+from sigma_ai.base import CancelToken, InterruptToken, NeverCancelled, SamplingParams
 from sigma_ai.errors import ErrorCode, ProviderError
 from sigma_ai.messages import UserMessage
 from sigma_session.compact import CompactionOutcome, CompactionPolicy
 from sigma_session.context import SessionContext
 from sigma_session.persist_hook import SessionPersistHook
+from sigma_session.trace import TraceHook
 from sigma_session.repair import repair_dangling_tool_results
 from sigma_session.tree import SessionTree
 from sigma_session.resources import (
@@ -66,6 +67,7 @@ from sigma_session.resources import (
     ProjectInstructions,
     load_project_instructions,
 )
+from sigma_tools.ask_user import AskUserTool
 from sigma_tools.bash import BashTool
 from sigma_tools.edit import EditTool
 from sigma_tools.grep import GrepTool
@@ -97,6 +99,13 @@ if TYPE_CHECKING:
 TODO_TOOL_LINE = (
     "- todo：任务清单（.sigma/todo.json）。长任务先 create 拆解计划，每完成一步 update 状态；"
     "执行中发现后续划分或难度判断不对，用 revise 重排未开始的 pending 部分\n"
+)
+
+#: ask_user 工具行。恒注册(方向决策交还用户是产品决策),与注册表同源。
+#: description 刻意写短——它进常驻区,每轮重付(load_skill 同一条纪律)。
+ASK_USER_TOOL_LINE = (
+    "- ask_user：进度走到需要**用户决定方向**的分叉时调用：给出问题、"
+    "2–6 个候选选项与推荐项，等用户挑选后按选择继续。\n"
 )
 
 _SYSTEM_PROMPT_HEAD = """你是一个在本地工作区里干活的编程助手。
@@ -146,7 +155,9 @@ def _rules_section(todo: bool) -> str:
     )
 
 
-SYSTEM_PROMPT = _SYSTEM_PROMPT_HEAD + TODO_TOOL_LINE + "\n" + _rules_section(True)
+SYSTEM_PROMPT = (
+    _SYSTEM_PROMPT_HEAD + TODO_TOOL_LINE + ASK_USER_TOOL_LINE + "\n" + _rules_section(True)
+)
 
 
 #: 联网工具的工具行。**只在启用时拼进系统提示词**——它进常驻区，
@@ -242,7 +253,7 @@ def build_system_prompt(
     ``default_registry(todo=False)``。默认路径返回 ``SYSTEM_PROMPT`` 本身
     （逐字节一致由 test_system_prompt_is_byte_identical_when_disabled 钉住）。
     """
-    head = _SYSTEM_PROMPT_HEAD + (TODO_TOOL_LINE if todo else "")
+    head = _SYSTEM_PROMPT_HEAD + (TODO_TOOL_LINE if todo else "") + ASK_USER_TOOL_LINE
     rules_section = _rules_section(todo)
     tool_lines: list[str] = []
     if web_search:
@@ -324,6 +335,9 @@ def default_registry(
     """
     registry = ToolRegistry()
     registry.register(ReadTool())
+    # ask_user 恒注册（P3-批次2，星辰）：方向决策交还用户。
+    # schema 进常驻区；description 刻意写短，SDK/测试不需要时可自行剔除。
+    registry.register(AskUserTool())
     registry.register(WriteTool())
     registry.register(EditTool())
     registry.register(BashTool())
@@ -460,7 +474,11 @@ class InteractiveSession:
         sub_agent_rounds: SubAgentRounds | None = None,
         signal: CancelToken | None = None,
         tool_lock: asyncio.Lock | None = None,
+        approval: ApprovalHook | None = None,
+        ask: Callable[[str, list[str], int | None], Awaitable[str]] | None = None,
         repair_dangling: bool = True,
+        checkpoint_watermark_bytes: int | None = None,
+        enable_trace: bool = True,
     ) -> None:
         """``sub_agent_rounds``：子 agent 的轮数预算**三档**（low/medium/high）。
 
@@ -479,6 +497,19 @@ class InteractiveSession:
         # 每个会话自建 HookManager（持久化钩子绑定本会话上下文），
         # 共享钩子逐个注册进每一条会话的总线——子 agent 的渲染可见性同源。
         self._extra_hooks = tuple(extra_hooks)
+        # L3 审批钩子(决策型,P3-批次2):None = 不注册 = 默认放行
+        # (评测/子 agent 不接审批,行为与没有 L3 之前一致)。
+        self._approval = approval
+        # ask_user 工具的交互通道:None = 非交互,工具自动采用推荐项。
+        self._ask = ask
+        # 中途打断与双队列(P3-批次2 下半场,星辰):signal 未显式传入时,
+        # 每次 send 新建 InterruptToken(打断状态不跨任务泄漏);
+        # 显式传入(评测的 NeverCancelled)则 interrupt() 无操作。
+        self._user_signal = signal
+        self._turn_signal: InterruptToken | None = None
+        self._steering: list[AgentMessage] = []
+        self._followups: list[str] = []
+        self._turn_running = False
         self._shadow_git_dir = shadow_git_dir
         self._registry = (
             registry if registry is not None else default_registry(todo=enable_todo)
@@ -528,15 +559,19 @@ class InteractiveSession:
         # 影子 git checkpoint（D5 的 L2）。**位置由调用方给**（``shadow_git_dir``）：
         # 与 store.py / sessions.py 同一条判据——会话层与 agent 层不拼 ``Path.home()``，
         # 落点是产品壳的决定。不传就是"没有 checkpoint"（回放与测试路径的默认）。
+        # P4-批次7：库里所有会话共享对象，本会话的快照走自己的分支（session_id 即分支名）。
         self._checkpoint: ShadowCheckpoint | None = None
         if enable_checkpoint and shadow_git_dir is not None:
             self._checkpoint = ShadowCheckpoint(
-                root=shadow_git_dir, workspace=workspace_root
+                root=shadow_git_dir,
+                workspace=workspace_root,
+                branch=self._session_id,
+                watermark_bytes=checkpoint_watermark_bytes,
             )
-            # 启动基线：**必须在任何写操作之前**。少了它，"第一个写批次前的快照"
-            # 就是"已经被改过的状态"，第一次回滚无点可退（门槛 G65）。
-            # 失败不阻断——它自己会降级（last_error 里留原因）。
-            self._checkpoint.mark(label="baseline")
+        # 构造期**不打** baseline（G65 已修订为懒基线）：loop 的
+        # ``_mark_before_writes`` 在写批次**执行前**打快照，首个写批次快照
+        # 天然就是"任何写之前的干净状态"——启动那记是纯冗余，而它把
+        # 整个工作区扫描压在了启动路径上（家目录实测单次扫描 65 秒）。
         # 技能：**自动从 ``<workspace>/extensions/skills`` 扫**（与 AGENTS.md 同一处置），
         # 但扫描结果要**同时**喂给两处，少一处就是半截功能：
         #   - 常驻区：渲染成"可用技能"那段文本（模型据此知道有哪些技能）
@@ -610,8 +645,15 @@ class InteractiveSession:
         # （它是正确性要求，不是可选能力）；钩子的其余消费者同理自行注册。
         self._hooks = HookManager()
         self._hooks.register(SessionPersistHook(self._context))
+        # 观测层（P5-批次1，Q2 拍板默认开）：trace 与会话文件同目录、
+        # 同名不同后缀，落点由"有没有 store"决定——纯内存树没有落点，
+        # 评测与子 agent 的静默是同款承诺（零钩子 = 行为不变），不是遗漏。
+        if enable_trace and tree is not None and tree.store is not None:
+            self._hooks.register(TraceHook(session_id, tree.store.path.parent))
         for hook in self._extra_hooks:
             self._hooks.register(hook)
+        if self._approval is not None:
+            self._hooks.register_approval(self._approval)
         self._loop = AgentLoop(
             provider=provider,
             registry=self._registry,
@@ -629,6 +671,8 @@ class InteractiveSession:
             mailbox_drain=self._mailbox_drain,
             mailbox_wait=self._mailbox_wait,
             hooks=self._hooks,
+            ask=self._ask,
+            steering_drain=self._drain_steering,
         )
 
     def _make_sub_agent_factory(
@@ -677,6 +721,8 @@ class InteractiveSession:
                 # 子会话不自定预算（见 SubAgentRounds 的取值依据）。
                 max_rounds=max_rounds,
                 extra_hooks=self._extra_hooks,
+                approval=self._approval,
+                ask=self._ask,
                 emit=self._emit,
                 session_id=sub_session_id,
                 # AGENTS.md 用主会话已加载的文本（同一份，不重读文件）
@@ -687,6 +733,9 @@ class InteractiveSession:
                 shadow_git_dir=self._shadow_git_dir,
                 skills_root=self._skills_root,
                 tool_lock=tool_lock,
+                # 子 agent 不透传观测（P5-批次1 R5）：子任务的开销经信箱
+                # 注入的部分可见于主 trace；完整覆盖属 task 深度观测，另立批次。
+                enable_trace=False,
                 # 取消传播：主会话被取消时子任务同步停（signal 从派发时的
                 # ToolContext 里来——那是主 loop 的取消令牌）。
                 signal=ctx.signal,
@@ -694,6 +743,49 @@ class InteractiveSession:
             return await sub_session.send(description)
 
         return factory
+
+    def interrupt(self) -> bool:
+        """打断当前正在跑的任务(可从任意协程/线程调用)。
+
+        返回是否真的打断了一枚在跑的令牌。协作式:在跑的工具先完成,
+        流在下一个块边界停;树上状态已持久化,断点重续免费。
+        """
+        token = self._turn_signal
+        if token is None:
+            return False
+        token.cancel()
+        return True
+
+    @property
+    def turn_running(self) -> bool:
+        """是否有任务正在跑(读线程据此把输入路由为 steering/排队/打断)。"""
+        return self._turn_running
+
+    def submit_steering(self, text: str) -> None:
+        """任务运行中注入补充指导(下一轮模型调用前生效,REPL 线程喂入)。"""
+        now = self._clock()
+        self._steering.append(
+            LlmMessageWrapper(
+                timestamp=now, message=UserMessage(content=text, timestamp=now)
+            )
+        )
+
+    def _drain_steering(self) -> list[AgentMessage]:
+        if not self._steering:
+            return []
+        drained = self._steering[:]
+        self._steering.clear()
+        return drained
+
+    def submit_followup(self, text: str) -> None:
+        """排队下一条任务:当前任务完成后由 REPL 自动执行。"""
+        self._followups.append(text)
+
+    def has_followups(self) -> bool:
+        return bool(self._followups)
+
+    def pop_followup(self) -> str:
+        return self._followups.pop(0)
 
     async def send(self, task: str) -> TurnResult:
         """发一条任务，跑完整轮。
@@ -713,7 +805,14 @@ class InteractiveSession:
                 timestamp=now, message=UserMessage(content=task, timestamp=now)
             )
         )
-        return await self._attempt_turn()
+        # 每次任务一枚新令牌:打断只对当前任务生效,不跨任务泄漏
+        #(外部固定信号=评测路径,interrupt() 无操作)。
+        self._turn_signal = InterruptToken() if self._user_signal is None else None
+        self._turn_running = True
+        try:
+            return await self._attempt_turn()
+        finally:
+            self._turn_running = False
 
     async def _attempt_turn(self, *, may_recover: bool = True) -> TurnResult:
         """跑一轮，带 context_overflow 恢复（Review-2026-09-26 P0）。
@@ -738,7 +837,9 @@ class InteractiveSession:
         # 轮前悬空修复（不变量：InteractiveSession 的树在轮边界协议干净）
         repair_dangling_tool_results(self._context.tree, clock=self._clock)
         try:
-            result = await self._loop.run_turn(self._context.build_messages())
+            result = await self._loop.run_turn(
+                self._context.build_messages(), signal=self._turn_signal
+            )
         except ProviderError as exc:
             if not (may_recover and exc.code is ErrorCode.CONTEXT_OVERFLOW):
                 raise
@@ -881,6 +982,8 @@ async def run_task(
     temperature: float = 0.0,
     emit: Callable[[str], None] | None = None,
     extra_hooks: Sequence[BaseHook] = (),
+    approval: ApprovalHook | None = None,
+    ask: Callable[[str, list[str], int | None], Awaitable[str]] | None = None,
     session_id: str = "sigma-session",
     project_instructions: str | None = None,
     compaction_policy: CompactionPolicy | None = None,
@@ -894,6 +997,8 @@ async def run_task(
     enable_sub_agent: bool = False,
     sub_agent_max_concurrent: int = 3,
     sub_agent_rounds: SubAgentRounds | None = None,
+    checkpoint_watermark_bytes: int | None = None,
+    enable_trace: bool = True,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -925,6 +1030,8 @@ async def run_task(
         max_rounds=max_rounds,
         temperature=temperature,
         extra_hooks=extra_hooks,
+        approval=approval,
+        ask=ask,
         emit=emit,
         session_id=session_id,
         project_instructions=project_instructions,
@@ -939,5 +1046,7 @@ async def run_task(
         enable_sub_agent=enable_sub_agent,
         sub_agent_max_concurrent=sub_agent_max_concurrent,
         sub_agent_rounds=sub_agent_rounds,
+        checkpoint_watermark_bytes=checkpoint_watermark_bytes,
+        enable_trace=enable_trace,
     )
     return await session.send(task)

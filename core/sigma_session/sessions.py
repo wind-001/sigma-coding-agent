@@ -40,6 +40,8 @@ from typing import Any
 #: 会话文件的扩展名。**与 ``JsonlStore.path`` 必须一致**——
 #: 这里只引用它，不重新声明一份。
 SESSION_SUFFIX = ".jsonl"
+#: 观测层 trace 文件（P5-批次1）的后缀——与会话文件同目录，列表时必须排除。
+TRACE_SUFFIX = ".trace.jsonl"
 
 #: 预览时最多读多少字节。
 #:
@@ -258,6 +260,12 @@ def list_sessions(root: Path) -> list[SessionInfo]:
     infos: list[SessionInfo] = []
     for path in root.glob(f"*{SESSION_SUFFIX}"):
         if not path.is_file():
+            continue
+        # 观测层（P5-批次1）的 trace 文件（``<id>.trace.jsonl``）与会话文件
+        # 同目录同扩展名——它们**不是会话**，混进列表的症状是
+        # "/sessions 出现幽灵条目、--continue 续到一个 trace 文件"。
+        # 排除规则放本层（会话身份的唯一判定点），不放调用方。
+        if path.name.endswith(TRACE_SUFFIX):
             continue
         try:
             stat = path.stat()

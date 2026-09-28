@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -69,11 +70,12 @@ def _session(root: Path, session_id: str, rounds: list[list[dict[str, object]]])
     )
 
 
-def test_session_marks_baseline_checkpoint(tmp_path: Path) -> None:
-    """会话启动时打**基线**快照（G65）。
+def test_session_starts_with_no_checkpoint_refs(tmp_path: Path) -> None:
+    """构造期**不打**快照（G65 懒基线语义，P4-批次7 / G858）。
 
-    少了它，第一个写批次前的快照就是"已经被改过的状态"——
-    第一次回滚无点可退，而用户会以为"回滚没生效"。
+    首个写批次的快照（loop 的 ``_mark_before_writes``，在写**执行前**）天然
+    就是基线——启动那记是纯冗余，还把全工作区扫描压在启动路径上
+    （家目录实测单次扫描 65 秒）。构造完 refs 必须为空。
     """
     session = sdk.InteractiveSession(
         provider=FakeProvider.from_rounds([_text("嗯")]),
@@ -81,12 +83,11 @@ def test_session_marks_baseline_checkpoint(tmp_path: Path) -> None:
         model="fake",
         session_id="s1",
         project_instructions="",
-        shadow_git_dir=tmp_path / "sessions" / "s1.shadow.git",
+        shadow_git_dir=tmp_path / "shadow.git",
     )
 
     assert session.checkpoint is not None
-    labels = [info.label for info in session.checkpoint.refs()]
-    assert labels == ["baseline"]
+    assert session.checkpoint.refs() == []
 
 
 def test_session_without_shadow_dir_has_no_checkpoint(tmp_path: Path) -> None:
@@ -105,16 +106,38 @@ def test_session_without_shadow_dir_has_no_checkpoint(tmp_path: Path) -> None:
     assert session.checkpoint is None
 
 
-def test_cli_shadow_dir_is_next_to_session_file(tmp_path: Path) -> None:
-    """影子库与会话文件同层（``<sessions>/<id>.shadow.git``）。
+def test_cli_shadow_dir_is_workspace_level(tmp_path: Path) -> None:
+    """影子库落工作区 ``.sigma/session/shadow.git``（P4-批次8 起挪到 session/ 下）。
 
-    同层的意义：``--continue`` 续上会话就天然续上 checkpoint 历史；
-    换一个目录会让"续了会话却回滚不到刚才那一步"。
+    与 todo / allowlist 同判据：工作区级状态落工作区 ``.sigma/``。
+    库随项目走（删项目即删库），``--continue`` 续上会话就天然续上
+    同一个库——快照隔离由分支（session_id）承担，不再靠每会话一个库。
     """
     from sigma.cli import shadow_git_dir_for
 
-    assert shadow_git_dir_for(tmp_path, "会话 A") == tmp_path / "会话 A.shadow.git"
-    assert shadow_git_dir_for(tmp_path, "a/b") == tmp_path / "a_b.shadow.git"
+    assert shadow_git_dir_for(tmp_path) == tmp_path / ".sigma" / "session" / "shadow.git"
+
+
+def test_home_workspace_disables_checkpoint() -> None:
+    """家目录守门（P4-批次7 拍板 A / G861）：判定收在一处，返回关停原因。
+
+    ``--no-checkpoint`` 显式关的优先级最高；家目录是自动关——
+    全量快照复制 AppData（实测 65 秒/数百 MB），"回滚家目录"本身危险。
+    """
+    from sigma.cli import checkpoint_disabled_reason
+
+    with tempfile.TemporaryDirectory() as td:
+        project = Path(td) / "project"
+        project.mkdir()
+        assert checkpoint_disabled_reason(project, no_checkpoint_flag=False) is None
+        assert (
+            checkpoint_disabled_reason(project, no_checkpoint_flag=True)
+            == "--no-checkpoint"
+        )
+        assert checkpoint_disabled_reason(Path.home(), no_checkpoint_flag=False) == "home"
+        assert checkpoint_disabled_reason(Path.home(), no_checkpoint_flag=True) == (
+            "--no-checkpoint"
+        )
 
 
 # ---------------------------------------------------------------------------

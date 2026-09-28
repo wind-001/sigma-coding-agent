@@ -40,9 +40,11 @@ from sigma_agent.agent_messages import (
 from sigma_agent.base import BaseTool
 from sigma_agent.checkpoint import ShadowCheckpoint
 from sigma_agent.hooks import (
+    ApprovalDecided,
     AssistantProduced,
     HookEvent,
     HookManager,
+    LlmRequested,
     MessageInjected,
     TextChunk,
     ThinkingChunk,
@@ -53,7 +55,7 @@ from sigma_agent.hooks import (
 from sigma_agent.registry import ToolRegistry
 from sigma_agent.types import ToolContext, ToolResult, TurnResult
 from sigma_ai import stamps
-from sigma_ai.base import CancelToken, SamplingParams
+from sigma_ai.base import CancelToken, NeverCancelled, SamplingParams
 from sigma_ai.events import (
     ErrorEvent,
     StopEvent,
@@ -147,6 +149,8 @@ class AgentLoop:
         mailbox_drain: Callable[[], list[AgentMessage]] | None = None,
         mailbox_wait: Callable[[], Awaitable[list[AgentMessage]]] | None = None,
         hooks: HookManager | None = None,
+        ask: Callable[[str, list[str], int | None], Awaitable[str]] | None = None,
+        steering_drain: Callable[[], list[AgentMessage]] | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -199,6 +203,13 @@ class AgentLoop:
         # 派发给注册表里的订阅者——**loop 不认识会话与持久化**，谁订阅谁负责。
         # None = 不派发，行为与没有钩子系统之前逐字节一致。
         self._hooks = hooks
+        # ask_user 工具的交互通道（P3-批次2）：产品壳接线；None = 评测/非交互，
+        # 工具自动采用推荐项。
+        self._ask = ask
+        # 用户 steering(P3-批次2 下半场,架构 4.3):每轮开始时取走并注入——
+        # 与信箱 drain 同一个注入点、同一条持久化路径(MessageInjected)。
+        # None = 没有 steering 通道,行为与加它之前逐字节一致。
+        self._steering_drain = steering_drain
 
     async def _emit(self, event: HookEvent) -> None:
         """向钩子总线发一个事件。没接线时短路——零开销。"""
@@ -209,7 +220,9 @@ class AgentLoop:
     # 主循环
     # ------------------------------------------------------------------
 
-    async def run_turn(self, messages: list[AgentMessage]) -> TurnResult:
+    async def run_turn(
+        self, messages: list[AgentMessage], *, signal: CancelToken | None = None
+    ) -> TurnResult:
         """跑一轮，直到模型不再请求工具调用，或达到轮数上限。
 
         ⚠️ ``messages`` **必须是 agent 层消息**（``LlmMessageWrapper`` /
@@ -237,6 +250,13 @@ class AgentLoop:
         # 而 `TurnResult.usage` 是它**唯一**的数据来源。
         # 口径写成"最后一轮"会让"多轮任务更贵"这个基本事实在报告里消失。
         total_usage: Usage | None = None
+        # 本轮生效的取消信号:run_turn 级覆盖(P3-批次2:每次 send 新令牌,
+        # 用户打断只杀当前任务)优先于构造参数(评测的 NeverCancelled)。
+        # 两级都缺(旧测试直接构造 loop)→ NeverCancelled 兜底:语义与
+        # 加打断之前完全一致。
+        effective_signal = signal if signal is not None else (
+            self._signal if self._signal is not None else NeverCancelled()
+        )
 
         async def record(message: AgentMessage, event: HookEvent) -> None:
             """produced 追加 + 钩子事件派发的**唯一收口**（P4-批次5）。
@@ -253,6 +273,9 @@ class AgentLoop:
                 await self._hooks.emit(event)
 
         for round_index in range(1, self._max_rounds + 1):
+            # 协作式打断检查点:每轮开始。在跑的工具会先完成(见 InterruptToken),
+            # 这里保证"不再发起下一次模型调用"。
+            effective_signal.raise_if_cancelled()
             # steering 注入（P4 任务清单的防跑偏闸）。在 _to_llm **之前**追加进
             # produced，模型本轮就能看到；经钩子事件落盘后，恢复会话仍可见。
             for message in self._todo_steer_if_due():
@@ -262,13 +285,20 @@ class AgentLoop:
             # 接入点的第一个真实住客。与 steering 同模式：尾部 user 消息，
             # 不进常驻区、不改前缀（D4 缓存不破）。
             # 信箱是 drain-once：取走即只存在于内存，所以注入即落盘（时机③）。
+            # 用户 steering(需求 2):补充信息指导当前方向,先于信箱注入。
+            for message in self._drain_steering():
+                await record(message, MessageInjected(message=message))
             for message in self._drain_mailbox():
                 await record(message, MessageInjected(message=message))
             # 第 2 步 transformContext：P1 没有钩子体系（属 P3），此处跳过。
             # 保留这个注释是为了让 P3 接手时能一眼看到接入点在哪。
             llm_messages = self._to_llm(messages, produced)  # 第 3 步
 
-            assistant_box = await self._stream_model(llm_messages)  # 第 4 步
+            # 观测锚点（P5-批次1）：请求即将发出。订阅者（TraceHook）拿它与
+            # AssistantProduced / 首个 TextChunk 配对测延迟与 TTFT——
+            # 计时在订阅者侧，事件只标时机（判据 1/2）。
+            await self._emit(LlmRequested())
+            assistant_box = await self._stream_model(llm_messages, signal=effective_signal)  # 第 4 步
             assistant = assistant_box.assistant
             calls = assistant_box.calls
             # 时机①：每一次 LLM 返回。在错误判断**之前**——错误轮的 partial
@@ -327,7 +357,7 @@ class AgentLoop:
                 return finished
 
             # 第 5、6 步：校验参数并执行完整批次
-            results = await self._execute_batch(calls)
+            results = await self._execute_batch(calls, signal=effective_signal)
             self._count_todo_touch(calls)
 
             # 第 7 步：逐个追加工具结果。
@@ -428,6 +458,12 @@ class AgentLoop:
     # 信箱（P4 task 工具的子任务结果收集）
     # ------------------------------------------------------------------
 
+    def _drain_steering(self) -> list[AgentMessage]:
+        """非阻塞取走用户 steering 补充。没接线时恒为空。"""
+        if self._steering_drain is None:
+            return []
+        return self._steering_drain()
+
     def _drain_mailbox(self) -> list[AgentMessage]:
         """非阻塞取走"已完成且未回报"的子任务结果。没接线时恒为空。"""
         if self._mailbox_drain is None:
@@ -464,7 +500,7 @@ class AgentLoop:
     # ------------------------------------------------------------------
 
     async def _stream_model(
-        self, messages: list[LlmMessage]
+        self, messages: list[LlmMessage], *, signal: CancelToken
     ) -> _StreamedRound:
         """消费事件流，聚合成一条 assistant 消息与解析后的工具调用。
 
@@ -497,7 +533,7 @@ class AgentLoop:
             messages,
             self._registry.schemas(),
             model=self._model,
-            signal=self._signal,  # type: ignore[arg-type]
+            signal=signal,
             sampling=self._sampling,
         ):
             if isinstance(event, TextDelta):
@@ -564,7 +600,9 @@ class AgentLoop:
     # 第 5、6 步：校验并执行整批
     # ------------------------------------------------------------------
 
-    async def _execute_batch(self, calls: list[AssembledCall]) -> list[ToolResult]:
+    async def _execute_batch(
+        self, calls: list[AssembledCall], *, signal: CancelToken
+    ) -> list[ToolResult]:
         """执行一批工具调用。
 
         返回结果**与 ``calls`` 一一对应、顺序一致**（门槛 G27）。
@@ -645,6 +683,41 @@ class AgentLoop:
                 )
             )
 
+        # L3 审批（P3-批次2，决策型钩子）：执行前逐个询问。拒绝 → 该位置填
+        # 模型可见的拒绝结果（模型可自我纠正），不执行该工具；批次其余照跑。
+        # 批准且明示越界豁免 → ToolContext.outside_approved，L1 据此放行。
+        # 无审批钩子 → 逐字节跳过（hooks None 或空名单），行为与没有 L3 前一致。
+        outside_flags: dict[int, bool] = {}
+        if self._hooks is not None:
+            approved: list[_Planned] = []
+            for plan in planned:
+                decision = await self._hooks.approve_tool(
+                    plan.tool.name, plan.call.arguments, plan.call.id
+                )
+                # 观测（P5-批次1）：批准与拒绝都留痕——"allowlist 命中放行"
+                # 此前完全不可见，拒绝只有工具结果里的间接影子。
+                # 事件不带 arguments：reason 已含命中信息，参数落盘是
+                # 隐私与体积的双重负担（详规 Q4）。
+                # **没有审批钩子时不发**：空名单的默认放行是结构性直通，
+                # 不是任何人做出的决定——发了会让每个评测/子 agent 的
+                # 工具调用都多一行无信息量的 approval（"零钩子=行为不变"
+                # 在观测上的延伸）。
+                if self._hooks.approval_names():
+                    await self._emit(
+                        ApprovalDecided(name=plan.tool.name, decision=decision)
+                    )
+                if not decision.allowed:
+                    reason = f"：{decision.reason}" if decision.reason else "。"
+                    results[plan.position] = ToolResult(
+                        content=[TextBlock(text=f"用户拒绝了这次调用{reason}")],
+                        details={"approval": "denied"},
+                        is_error=True,
+                    )
+                    continue
+                outside_flags[plan.position] = decision.approve_outside
+                approved.append(plan)
+            planned = approved
+
         # 规则①：只读并发、写工具严格顺序。
         # 写工具并发是不确定性的来源，而"确定性回放"是整个评测的地基。
         readonly = [p for p in planned if p.tool.read_only]
@@ -654,7 +727,16 @@ class AgentLoop:
         # 必须立即返回，不能被在跑的写批次卡住；它们也不碰文件，无需互斥。
         if readonly:
             gathered = await asyncio.gather(
-                *(p.tool.run(p.args, self._make_context()) for p in readonly),
+                *(
+                    p.tool.run(
+                        p.args,
+                        self._make_context(
+                            signal,
+                            outside_flags.get(p.position, False),
+                        ),
+                    )
+                    for p in readonly
+                ),
                 return_exceptions=True,
             )
             for plan, outcome in zip(readonly, gathered, strict=True):
@@ -665,10 +747,12 @@ class AgentLoop:
         # 没接锁时行为与加它之前逐字节一致（None = 直通）。
         if writers:
             if self._tool_lock is None:
-                await self._run_write_batch(writers, results)
+                await self._run_write_batch(writers, results, outside_flags, signal)
             else:
                 async with self._tool_lock:
-                    await self._run_write_batch(writers, results)
+                    await self._run_write_batch(
+                        writers, results, outside_flags, signal
+                    )
 
         # 到这里每个位置都应该有结果；若没有，说明上面的分支漏了一种。
         # **宁可崩，不要错**：返回一个 None 会让下游 unpack 时才炸，症状远离根因。
@@ -681,7 +765,11 @@ class AgentLoop:
         return [r for r in results if r is not None]
 
     async def _run_write_batch(
-        self, writers: list[_Planned], results: list[ToolResult | None]
+        self,
+        writers: list[_Planned],
+        results: list[ToolResult | None],
+        outside_flags: dict[int, bool],
+        signal: CancelToken,
     ) -> None:
         """执行写批次（调用方保证已在 tool_lock 内——如果有的话）。
 
@@ -700,7 +788,11 @@ class AgentLoop:
         for plan in writers:
             try:
                 results[plan.position] = await plan.tool.run(
-                    plan.args, self._make_context()
+                    plan.args,
+                    self._make_context(
+                        signal,
+                        outside_flags.get(plan.position, False),
+                    ),
                 )
             except Exception as exc:  # 兜底：工具没接住的异常在此转成模型可见的结果
                 # loop 再兜一层：工具自己没接住的异常在这里转成模型可见的结果。
@@ -717,7 +809,12 @@ class AgentLoop:
                 )
 
     def _mark_before_writes(self, writers: list[_Planned]) -> None:
-        """写批次前打快照。**失败静默降级**（原因留在 checkpoint.last_error）。"""
+        """写批次前打快照。**失败静默降级**（原因留在 checkpoint.last_error）。
+
+        首个写批次的快照**即基线**（G65 懒基线语义，P4-批次7）：它天然在
+        任何写操作之前，构造期那记 baseline 是纯冗余，已删——启动路径
+        由此零 git 调用（家目录实测省 65 秒的全工作区扫描）。
+        """
         if self._checkpoint is None:
             return
         names = ",".join(sorted({plan.tool.name for plan in writers}))
@@ -738,12 +835,14 @@ class AgentLoop:
     def _workspace(self) -> Path:
         return Path(self._workspace_root) if self._workspace_root else Path.cwd()
 
-    def _make_context(self) -> ToolContext:
+    def _make_context(self, signal: CancelToken, outside_approved: bool = False) -> ToolContext:
         return ToolContext(
             session_id=self._session_id,
             workspace_root=self._workspace,
-            signal=self._signal,  # type: ignore[arg-type]
+            signal=signal,
             emit=self._emit_cb,
+            outside_approved=outside_approved,
+            ask=self._ask,
         )
 
 

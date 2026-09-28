@@ -383,6 +383,16 @@ class SessionTree:
         return self._head
 
     @property
+    def store(self) -> JsonlStore | None:
+        """本树落盘的 store（``None`` = 纯内存树）。
+
+        观测层（P5-批次1 TraceHook）用它定位 trace 文件的落点——
+        trace 与会话文件同目录、同名不同后缀，所以"有没有落点"由
+        "有没有 store"决定，不该由调用方另传一份路径（两份路径必然漂移）。
+        """
+        return self._store
+
+    @property
     def clean(self) -> bool:
         """没有任何节点损坏。"""
         return not self._corrupt

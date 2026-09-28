@@ -113,6 +113,42 @@ class NeverCancelled(CancelToken):
         return None
 
 
+class TurnCancelled(RuntimeError):
+    """用户/外部信号强制打断了当前轮(P3-批次2 下半场)。
+
+    **树上状态已按事件持久化**(P4-批次5:每次 LLM 返回/每个工具结果落盘
+    即写穿),打断点之后的状态可以断点重续——轮前悬空修复会补齐
+    "assistant 带调用但结果未落"的缺口。
+    """
+
+
+class InterruptToken(CancelToken):
+    """可被外部触发的取消令牌:用户中途打断的**外部信号**。
+
+    ``cancel()`` 从任意线程调用都安全(读输入在后台线程,事件循环在主线程);
+    CPython 的布尔赋值是原子的,这里不需要锁——需要的只是"置位后,
+    下一次 ``raise_if_cancelled()`` 必然可见"。
+
+    协作式打断:检查点在 provider 的每个流块边界与每轮开始——
+    当前工具跑完、流在下一个块边界停。**不留半截写操作**,协议状态干净;
+    代价是"强制"不是即时的(在跑的 bash 最长还会跑 60s),提示文案如实说明。
+    """
+
+    def __init__(self) -> None:
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """请求打断当前轮。幂等;从任意线程调用都安全。"""
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
+    def raise_if_cancelled(self) -> None:
+        if self._cancelled:
+            raise TurnCancelled("用户中断了当前任务")
+
+
 class BaseProvider(ABC):
     """所有 Provider 的抽象基类。
 

@@ -35,6 +35,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Awaitable
 
+from pydantic import BaseModel
+
 from sigma_agent.agent_messages import AgentMessage
 
 
@@ -79,6 +81,18 @@ class ThinkingChunk:
 
 
 @dataclass(frozen=True)
+class LlmRequested:
+    """钩子点：**即将发起一次模型请求**（P5-批次1，观测）。
+
+    为什么在 loop 发、而不是 provider 内部测：``sigma_ai`` 不认识钩子
+    （import-linter 契约），且"换 provider 不改测量点"是回放口径的前提。
+    与 :class:`AssistantProduced`（返回）及首个 :class:`TextChunk`（首 token）
+    配对，派生单次调用延迟与 TTFT——**配对与计时都归订阅者**（TraceHook），
+    事件本身不带时间：事件是瞬时通知，不是领域模型（判据 2）。
+    """
+
+
+@dataclass(frozen=True)
 class ToolStart:
     """钩子点：一次工具调用**即将执行**。
 
@@ -119,14 +133,36 @@ class TurnEnd:
     completion_tokens: int
 
 
+@dataclass(frozen=True)
+class ApprovalDecided:
+    """钩子点：一次审批询问的**结论**（P5-批次1，观测）。
+
+    批准与拒绝都发——"allowlist 命中放行"与"命中危险模式被拒"同为
+    需要追溯的观测事实；此前审批决策零留痕，会话 JSONL 里只能看到
+    拒绝结果的间接影子（``details={"approval": "denied"}``），放行则完全不可见。
+
+    ``decision`` 的类型 ``ApprovalDecision`` 定义在本文件更下方（决策型
+    钩子区）——注解是前向引用字符串，dataclass 不在运行时解析它；
+    而 ``HookEvent`` union 在运行时做 ``isinstance`` 判别，只需本类自身
+    是真实类对象即可。
+    **不带 arguments**：reason 已携带"命中了什么"，参数原样落盘是
+    隐私与体积的双重负担（工具参数里可能有整段代码）。
+    """
+
+    name: str
+    decision: "ApprovalDecision"
+
+
 HookEvent = (
     AssistantProduced
     | MessageInjected
     | TextChunk
     | ThinkingChunk
+    | LlmRequested
     | ToolStart
     | ToolEnd
     | TurnEnd
+    | ApprovalDecided
 )
 """全部钩子点。**新增时机 = 新增一个成员 + loop 里一处 emit**，接口不变。"""
 
@@ -160,6 +196,49 @@ class BaseHook(ABC):
         raise NotImplementedError
 
 
+class ApprovalDecision(BaseModel):
+    """一次审批的**决定**。
+
+    ``allowed=False`` 时 ``reason`` 必填——它会进工具结果,模型要能读到
+    "为什么被拒"才能自我纠正(与"单个失败不中断批次"同构)。
+
+    ``approve_outside``:本次调用需要**越出工作区**(write/edit 的目标路径
+    在工作区之外)且审批方明示豁免 → loop 把它传进 ``ToolContext``,
+    L1(``resolve_write_path``)据此放行。默认 False:L1 的拒绝语义不动。
+    """
+
+    allowed: bool
+    reason: str = ""
+    note: str = ""
+    approve_outside: bool = False
+
+
+class ApprovalHook(ABC):
+    """**决策型**钩子:在工具执行前给出放行/拒绝的判断(P3-批次2,L3)。
+
+    与 :class:`BaseHook` 的区别:通知型钩子是"发生了一件事,你看着办";
+    审批钩子是"这件事能不能发生,你要给一个决定"。两者注册进**同一条
+    总线**(HookManager),但走各自的名单与询问协议——统一管理,职责分开。
+
+    实现方负责自己的宽容与阻塞策略:交互式实现(终端确认)会阻塞等待
+    用户输入,自动实现(allowlist 命中)立即返回。总线**不吞异常**:
+    审批通道本身坏了(交互设施崩了)应该暴露,而不是静默放行。
+    """
+
+    name: str
+
+    @abstractmethod
+    async def approve(
+        self, name: str, arguments: dict[str, Any], call_id: str
+    ) -> ApprovalDecision:
+        """对一个即将执行的工具调用给出决定。
+
+        ``arguments`` 是**校验通过后**的参数 dict(loop 在 schema 校验之后
+        才询问)——审批方看到的是工具真正要用的东西。
+        """
+        raise NotImplementedError
+
+
 class DuplicateHookError(RuntimeError):
     """注册了同名的钩子。
 
@@ -181,6 +260,10 @@ class HookManager:
     def __init__(self) -> None:
         self._hooks: list[BaseHook] = []
         self._by_name: dict[str, BaseHook] = {}
+        # 决策型钩子(审批)单独成名单:与通知型钩子同注册、同重名拒绝,
+        # 但询问协议不同(要回传决定,不是单向通知)。
+        self._approval_hooks: list[ApprovalHook] = []
+        self._approval_by_name: dict[str, ApprovalHook] = {}
 
     def register(self, hook: BaseHook) -> None:
         """注册一个钩子。重名（含与类型默认名撞名）即抛。"""
@@ -208,6 +291,38 @@ class HookManager:
             if inspect.isawaitable(outcome):
                 await outcome
 
+    def register_approval(self, hook: ApprovalHook) -> None:
+        """注册一个审批钩子。重名(通知型/决策型两名单之间也不许撞)即抛。"""
+        name = hook.name or type(hook).__name__
+        if name in self._by_name or name in self._approval_by_name:
+            raise DuplicateHookError(
+                f"钩子 {name!r} 已注册。审批钩子与通知型钩子共用一个命名空间。"
+            )
+        self._approval_hooks.append(hook)
+        self._approval_by_name[name] = hook
+
+    async def approve_tool(
+        self, name: str, arguments: dict[str, Any], call_id: str
+    ) -> ApprovalDecision:
+        """对一个即将执行的工具调用询问全部审批钩子。
+
+        按注册顺序逐个询问,**任一拒绝 → 立即拒绝**(第一个拒绝理由生效);
+        全部放行 → ``approve_outside`` 取并集(任一审批方明示豁免即豁免)。
+        **没有注册任何审批钩子 → 默认放行**——与"零钩子 = 行为不变"
+        同一条承诺:评测与子 agent 不注册审批,行为与没有 L3 之前一致。
+        """
+        approve_outside = False
+        for hook in self._approval_hooks:
+            decision = await hook.approve(name, arguments, call_id)
+            if not decision.allowed:
+                return decision
+            approve_outside = approve_outside or decision.approve_outside
+        return ApprovalDecision(allowed=True, approve_outside=approve_outside)
+
     def hook_names(self) -> list[str]:
         """已注册钩子名（观测与测试用）。"""
         return list(self._by_name)
+
+    def approval_names(self) -> list[str]:
+        """已注册审批钩子名（横幅与测试用）。"""
+        return list(self._approval_by_name)

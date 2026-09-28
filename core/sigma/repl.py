@@ -30,14 +30,17 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from rich.console import Console
 from rich.table import Table
 
 from sigma_ai import stamps
+from sigma_ai.base import TurnCancelled
 
 if TYPE_CHECKING:  # 只为注解；运行时不 import，免得形成环
     from sigma.cli import SessionManager
@@ -51,7 +54,9 @@ COMMAND_PREFIX = "/"
 
 HELLO = (
     "输入任务后回车执行；/help 看命令，exit / quit 或 Ctrl+C 退出。\n"
-    "注意：一条任务跑完才能输入下一条——**不支持中途打断**（P3）。"
+    "任务运行中:!补充指导 / 裸文本 = 排队 / !! 或 /stop = 打断;"
+    "排队消息在当前任务完成后自动执行。\n"
+    "注意:一条任务跑完才能输入下一条。"
 )
 
 
@@ -137,6 +142,7 @@ def print_help() -> None:
     print("  /sessions           列出最近的会话（当前会话标 *）")
     print("  /switch <序号|id>   切换到某个会话，历史与快照都接上")
     print("  /new                开一个新会话")
+    print("  /allowlist          列出/移除'总是允许'的动作(remove <序号>)")
     print("  /help               这份清单")
     print("  exit / quit         退出（Ctrl+C 也一样）")
 
@@ -243,6 +249,56 @@ async def _cmd_new(
     print(f"已开新会话 {session_id}。")
 
 
+async def _cmd_allowlist(
+    manager: SessionManager, index_map: dict[int, str], argument: str
+) -> None:
+    """``/allowlist``:列出 / 移除"总是允许"的动作(P3-批次2)。
+
+    ``argument`` 支持 ``remove <序号>``;裸敲 = 列出。
+    清单是**精确匹配**的已批准动作,落 ``.sigma/allowlist.json``;
+    移除后相同动作会重新走确认。
+    """
+    from sigma._approval import CliApprovalGate
+
+    gate = manager.approval_gate
+    if gate is None:
+        print("审批层已按 --no-approval 关闭,没有 allowlist。")
+        return
+    if not isinstance(gate, CliApprovalGate):
+        print("当前审批通道不支持 allowlist(非终端审批门)。")
+        return
+    parts = argument.split()
+    if parts and parts[0] == "remove":
+        if len(parts) < 2 or not parts[1].isdigit():
+            print("用法:/allowlist remove <序号>。先敲 /allowlist 看清单。")
+            return
+        items = gate.allowlist.items()
+        position = int(parts[1])
+        if not (1 <= position <= len(items)):
+            print(f"没有序号 {position}(共 {len(items)} 条)。")
+            return
+        key = items[position - 1]
+        gate.allowlist.remove(key)
+        print(f"已移除:{key}")
+        print("之后相同动作会重新走确认。")
+        return
+    items = gate.allowlist.items()
+    if not items:
+        print("allowlist 是空的(还没有被'总是允许'的动作)。")
+        return
+    print(f"allowlist {len(items)} 条(精确匹配,落 .sigma/allowlist.json):")
+    for index, key in enumerate(items, start=1):
+        print(f"  [{index}] {key}")
+    print("移除:/allowlist remove <序号>。")
+
+
+async def _cmd_stop(
+    manager: SessionManager, index_map: dict[int, str], argument: str
+) -> None:
+    """``/stop``:打断当前任务。空闲时敲 = 提示(真正打断走任务期 feeder)。"""
+    print("当前没有在跑的任务(打断只在任务运行中有效:敲 !! 或 /stop)。")
+
+
 async def _cmd_help(
     manager: SessionManager, index_map: dict[int, str], argument: str
 ) -> None:
@@ -269,6 +325,8 @@ COMMANDS: dict[str, tuple[CommandHandler, str]] = {
     "switch": (_cmd_switch, "序号|id"),
     "resume": (_cmd_switch, "序号|id"),
     "new": (_cmd_new, ""),
+    "allowlist": (_cmd_allowlist, "[remove <序号>]"),
+    "stop": (_cmd_stop, ""),
     "help": (_cmd_help, ""),
     "h": (_cmd_help, ""),
     "?": (_cmd_help, ""),
@@ -300,10 +358,118 @@ async def _dispatch(manager: SessionManager, index_map: dict[int, str], text: st
     await handler(manager, index_map, argument)
 
 
+#: EOF 哨兵:读线程收到 EOF(管道/Ctrl+D/测试脚本耗尽)时放入队列。
+_EOF_SENTINEL = "__sigma_eof__"
+
+
+class _LineBroker:
+    """stdin 行的**单读者多等待者**仲裁(P3-批次2 下半场)。
+
+    读线程是 stdin 的唯一读者(多线程 input() 会互相抢行);
+    一行去哪里由"当时谁在等"决定:有交互请求挂起(审批确认 / ask_user)
+    → 交给该请求;否则进队列,由提示符主循环或任务期分类器取用。
+    """
+
+    def __init__(self) -> None:
+        self._q: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self._pending: asyncio.Future[str] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def reader_put(self, line: str) -> None:
+        """读线程入口。线程安全:挂在 pending 上的行经 call_soon_threadsafe 转交。"""
+        pending = self._pending
+        loop = self._loop
+        if pending is not None and loop is not None and not pending.done():
+            loop.call_soon_threadsafe(pending.set_result, line)
+            return
+        self._q.put(line)
+
+    async def get(self, timeout: float | None = None) -> str:
+        """取一行。timeout 到点返回 ""(调用方按"暂时没有输入"处理)。"""
+        if timeout is None:
+            return await asyncio.to_thread(self._q.get)
+        try:
+            return await asyncio.to_thread(self._q.get, True, timeout)
+        except queue.Empty:
+            return ""
+
+    async def ask_line(self, prompt_text: str) -> str:
+        """挂起一个交互请求(审批确认 / ask_user)并等下一行输入。"""
+        loop = asyncio.get_running_loop()
+        self._loop = loop
+        fut: asyncio.Future[str] = loop.create_future()
+        self._pending = fut
+        try:
+            print(prompt_text, end="", flush=True)
+            return await fut
+        finally:
+            self._pending = None
+
+
+def _start_stdin_reader(broker: _LineBroker) -> None:
+    """stdin 的唯一读者:后台守护线程,行全部交给 broker 仲裁。"""
+
+    def _reader() -> None:
+        while True:
+            try:
+                line = input()
+            except (EOFError, OSError, StopIteration):
+                # StopIteration:测试的脚本化输入耗尽(monkeypatch input)
+                broker.reader_put(_EOF_SENTINEL)
+                return
+            broker.reader_put(line)
+
+    threading.Thread(target=_reader, daemon=True, name="sigma-stdin").start()
+
+
+async def _feed_during_turn(
+    manager: SessionManager, broker: _LineBroker, turn_task: "asyncio.Task[Any]"
+) -> None:
+    """任务运行期间的输入分类器(P3-批次2 拍板):
+
+    ``!!`` / ``/stop`` = 强制打断(协作式:在跑工具完成后停);
+    ``!text``        = steering,下一轮模型调用前注入;
+    裸文本           = follow-up,排队等当前任务完成后自动执行。
+    """
+    while not turn_task.done():
+        line = await broker.get(timeout=0.2)
+        text = line.strip()
+        if not text:
+            continue
+        session = manager.current
+        if text in ("!!", "/stop"):
+            if session.interrupt():
+                print("' + bs + 'n[打断请求已受理] 当前工具完成后停止,进度已保存。")
+        elif text.startswith("!") and len(text) > 1:
+            session.submit_steering(text[1:].strip())
+            print("' + bs + 'n[已注入指导] 下一轮模型调用前生效。")
+        else:
+            session.submit_followup(text)
+            print("' + bs + 'n[已排队] 当前任务完成后自动执行。")
+
+
+async def _send_with_feeder(
+    manager: SessionManager, broker: _LineBroker, task: str
+) -> Any:
+    """跑一条任务 + 输入分类器。被打断时打印提示并返回 None。"""
+    session = manager.current
+    turn_task = asyncio.create_task(session.send(task))
+    feeder = asyncio.create_task(_feed_during_turn(manager, broker, turn_task))
+    try:
+        result = await turn_task
+    except TurnCancelled:
+        print("' + bs + 'n[已打断] 进度已保存,直接输入下一条任务即可断点续跑。")
+        return None
+    finally:
+        await feeder
+    return result
+
+
 async def run_repl(
     manager: SessionManager,
     *,
     prompt: str = PROMPT,
+    broker: _LineBroker | None = None,
 ) -> int:
     """跑交互循环，返回退出码（恒为 ``0``）。
 
@@ -317,10 +483,13 @@ async def run_repl(
     print(HELLO)
     #: 序号 → 会话 id。**只在两次 ``/sessions`` 之间有意义**，见 ``_switch_target``。
     index_map: dict[int, str] = {}
+    if broker is None:
+        broker = _LineBroker()
+        _start_stdin_reader(broker)
     while True:
-        try:
-            line = await asyncio.to_thread(input, prompt)
-        except (EOFError, KeyboardInterrupt):
+        print(prompt, end="", flush=True)
+        line = await broker.get()
+        if line == _EOF_SENTINEL:
             print()
             return 0
 
@@ -339,8 +508,18 @@ async def run_repl(
             continue
         if text.lower() in EXIT_WORDS:
             return 0
+        if text == "!!":
+            print("当前没有在跑的任务(打断只在任务运行中有效)。")
+            continue
 
-        try:
-            await manager.current.send(text)
-        except Exception as exc:  # 见模块 docstring：错误要打印，但不要终结会话
-            print(f"[本轮失败，会话继续] {type(exc).__name__}: {exc}")
+        result = await _send_with_feeder(manager, broker, text)
+        if result is None:
+            continue
+        # follow-up 等待队列(需求 3):当前任务**正常完成**才自动续;
+        # error/stopped/被打断不自动续——失败要先让人看到。
+        while result.status == "completed" and manager.current.has_followups():
+            next_task = manager.current.pop_followup()
+            print(f"\n[等待队列] 自动执行:{next_task}")
+            result = await _send_with_feeder(manager, broker, next_task)
+            if result is None:
+                break

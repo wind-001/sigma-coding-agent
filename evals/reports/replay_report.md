@@ -1,6 +1,6 @@
 # 回放场景评测报告
 
-- 生成时间戳（脚本注入，非挂钟）：2026-09-26 17:23:55
+- 生成时间戳（脚本注入，非挂钟）：2026-09-28 10:55:43
 - 场景数：6
 - 通过：6 / 6
 
@@ -11,12 +11,12 @@
 
 | 场景 | 状态 | 轮数 | 工具调用 | 工具失败 | prompt tok | completion tok | 耗时 ms | 结果 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| read_then_edit | completed | 4 | 3 | 0 | 3740 | 203 | 65 | PASS |
-| bash_fail_then_retry | completed | 6 | 5 | 1 | 6150 | 261 | 98 | PASS |
-| context_overflow | completed | 4 | 3 | 0 | 18600 | 245 | 109 | PASS |
-| compact_then_continue | completed | 4 | 3 | 0 | 9200 | 152 | 10 | PASS |
-| tool_error_recovery | completed | 5 | 4 | 1 | 5000 | 202 | 78 | PASS |
-| branch_and_resume | completed | 3 | 2 | 0 | 4800 | 100 | 3 | PASS |
+| read_then_edit | completed | 4 | 3 | 0 | 3740 | 203 | 198 | PASS |
+| bash_fail_then_retry | completed | 6 | 5 | 1 | 6150 | 261 | 417 | PASS |
+| context_overflow | completed | 4 | 3 | 0 | 18600 | 245 | 256 | PASS |
+| compact_then_continue | completed | 4 | 3 | 0 | 9200 | 152 | 9 | PASS |
+| tool_error_recovery | completed | 5 | 4 | 1 | 5000 | 202 | 283 | PASS |
+| branch_and_resume | completed | 3 | 2 | 0 | 4800 | 100 | 5 | PASS |
 
 ## 偏差明细
 

@@ -1,0 +1,11 @@
+{
+  "deny_total": 20,
+  "denied": 20,
+  "intercept_rate": 1.0,
+  "allow_total": 10,
+  "false_blocks": 0,
+  "false_block_rate": 0.0,
+  "allowlist_total": 2,
+  "allowlist_hits": 2,
+  "failures": []
+}

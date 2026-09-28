@@ -527,3 +527,39 @@ async def test_handler_exception_does_not_kill_repl(
     assert "命令失败" in out and "RuntimeError" in out
     # 后续命令照常执行：/new 真的换了会话
     assert manager.current_id != ALPHA
+
+
+@pytest.mark.asyncio
+async def test_followup_queued_auto_executes_after_completed_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """G110:等待队列里的消息在当前任务**正常完成**后自动执行(精确序)。
+
+    队列在 send 之前预置(确定性);"任务运行中敲入 → 排队"的分类由
+    读线程按 ``turn_running`` 完成,轮边界时序用 tests/test_steering_interrupt.py
+    的会话级用例覆盖。注入:删掉 REPL 的自动续跑循环 → 第二个断言红。
+    """
+    provider = FakeProvider.from_rounds([_text("第一件完成"), _text("第二件完成")])
+    manager = SessionManager(
+        args=build_parser().parse_args([]),
+        workspace=tmp_path,
+        base_url="http://fake",
+        model="fake",
+        api_key="sk-test",
+        registry=ToolRegistry(),
+        system_prompt="",
+        sessions_root=tmp_path / "sessions",
+        binding=SessionBinding("test", SessionTree(), resumed=False, previous_messages=0),
+        shadow_git_dir=None,
+        skills_root=None,
+        make_provider=lambda: provider,
+    )
+    manager.current.submit_followup("第二条任务")
+    _feed(monkeypatch, ["第一条任务", "exit"])
+
+    assert await run_repl(manager) == 0
+    out = capsys.readouterr().out
+
+    assert "第一件完成" in out
+    assert "[等待队列] 自动执行:第二条任务" in out
+    assert "第二件完成" in out

@@ -4,13 +4,15 @@
 
 [![ci](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.12-blue)
-![tests](https://img.shields.io/badge/tests-510%20passed-brightgreen)
-![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-73%2F73-brightgreen)
+![tests](https://img.shields.io/badge/tests-716%20passed-brightgreen)
+![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-105-brightgreen)
 
-> **现状**（数字绑**本次提交**；换代码必须重跑，见[计数纪律](#计数纪律)）：
-> P1 最小闭环 ✅ · P2 会话树 / 上下文 / 压缩 / 会话接续 ✅ · **P3-批次1 工具安全边界 ✅ · P4-批次1 技能系统 ✅**
-> ——**510 单测全绿 · 三道门禁全绿（mypy strict 53 files / 契约 3 kept）· 78 条门槛注入全部可证伪 · 回放 6/6**。
-> 未完成的部分不藏：评测任务集 70 条、压缩质量验收门、L3 钩子规则、skill 热重载（见[进度与未完成](#进度与未完成)）。
+> **现状**（数字绑**本次提交**；换代码 / 换环境必须重跑，见[计数纪律](#计数纪律)）：
+> P0–P2 ✅ · **P3 安全边界与审批（L1 写路径 / L2 影子 checkpoint / L3 审批层）✅** ·
+> **P4 技能系统 · todo · sub_agent · 影子库优化 ✅** · **P5-批次1 观测层（trace + `--timeline`）✅**
+> ——**716 单测全绿 · 三道门禁全绿（mypy strict 63 files / 契约 3 kept）· 18 份注入脚本 105 条实验 · 回放 6/6**。
+> 未完成的部分不藏：正式集 30 条只落了 12、`reproduce` 0/20、压缩质量验收门、扩展层热重载、
+> 技能命中率未实测、7.6 八项主张只有 5 项有对照数据（见[进度与未完成](#进度与未完成)）。
 
 ---
 
@@ -142,7 +144,7 @@ sigma --no-checkpoint -p "任务"                 # 关掉快照（危险：破�
 ### 6. 跑测试（不需要任何 API key）
 
 ```bash
-pytest -q                 # 510 个单测
+pytest -q                 # 716 个单测
 mypy core                 # strict
 lint-imports              # 三条分层契约
 python evals/runner.py    # 回放六个场景，报告落 evals/reports/
@@ -208,22 +210,24 @@ flowchart LR
 | --- | --- | --- |
 | **L1 写路径约束** | `write` / `edit` / `bash.cwd` 解析符号链接后必须仍在工作区内，越界即拒绝（`read` 不限制） | ✅ |
 | **L2 影子 git checkpoint** | 写批次前自动快照；`sigma --rollback` 整体退回（含删除新增文件）；独立 `GIT_DIR` 不碰你的仓库 | ✅ |
-| **L3 钩子规则** | 危险命令匹配（软边界，**只能减少不能消除**） | ⬜ 待做 |
+| **L3 审批拦截层** | 危险指令 / 越界写的**执行前确认**（allowlist 精确命中即免打扰；`--no-approval` 整体关）——软边界，**只能减少不能消除** | ✅ |
 
 **它仍然不是沙箱。** `bash` 会以你的用户权限执行**任意命令**：可以删工作区外的目录、
 可以把数据发到网上、可以改环境变量。快照只覆盖**工作区内、未被 `.gitignore` 与 5 MB 上限排除**的文件。
 完整清单（"钩子挡不住什么"）在 [`docs/architecture.md` 6.3 节](docs/architecture.md)，
 不做容器的理由见 [`docs/decisions/D6`](docs/decisions/D6-不做容器隔离.md)。
 
-## 质量体系：三道门禁 + 73 条门槛
+## 质量体系：三道门禁 + 105 条注入实验
 
 **三道门禁**（CI 里就是这三条）：`lint-imports` · `mypy core`（strict）· `pytest`。
 
-**73 条门槛**分布（每条都有一份注入实验证明它能红）：
+**每条门槛都配一次注入实验**：`scripts/gate_injection_*.py` 共 **18 份脚本、105 条实验**
+（条数是机械数出来的——按 AST 数每个脚本实际注册/调用的实验条数，不是抄文档）。
+一条实验 = **破坏 → 断言变红 → 还原 → 断言变绿**；脚本自己报 `N/N 被成功证伪` 才算过。
 
 | 批次 | 覆盖 | 条数 |
 | --- | --- | --- |
-| batch1 / 15 | 骨架契约、消息模型 | 7 + 10 |
+| batch1 / 15 | 骨架契约、消息模型（G11–G18） | 7 + 10 |
 | batch24 | loop / 注册表 / 截断 | 10 |
 | batch6 | CLI 流式与 REPL | 6 |
 | batch7 / 8 | 联网搜索与精读（额度硬闸、来源过滤） | 5 + 7 |
@@ -231,6 +235,12 @@ flowchart LR
 | batch10 / 11 | 上下文接树、`AGENTS.md` 预算、压缩 | 4 + 4 |
 | batch12 | CLI 会话接续 | 4 |
 | batch13 | **安全边界（L1 路径约束 + L2 回滚）** | 9 |
+| batch14 | **技能系统（G75–G79）** | 5 |
+| eval | **EvalProfile 消融 + todo / sub_agent（G80–G90）** | 11 |
+| batch16 | **观测层（G865–G872）** | 8 |
+| batch17 | **自证波1（G873 / G874 / G875 / G878）** | 4 |
+| p2_compaction / p5 | 压缩视图与 P5 其余 | 2 + 2 |
+| | **合计** | **105** |
 
 **一条门槛长什么样**（以 G68 为例——"回滚要删掉事后新建的文件"）：
 
@@ -242,8 +252,11 @@ reset = self._git("reset", "--hard", "--quiet", ref)
 # 期望：tests/test_agent_checkpoint.py::test_restore_deletes_files_added_after_ref 变红
 ```
 
-跑注入实验：`python scripts/gate_injection_batch13.py` → **9/9 被成功证伪**、
-`scripts/gate_injection_batch14.py` → **5/5 被成功证伪**。
+跑注入实验：`python scripts/gate_injection_batch13.py` → **9/9 被成功证伪**（安全边界）、
+`scripts/gate_injection_batch14.py` → **5/5**（技能系统）、`batch16` → **8/8**（观测层）、
+`batch17` → **4/4**（自证波1）。
+**本文件不宣称"105 条全部已被复验"**——每条的可证伪性以各脚本自报的 `N/N` 作数；
+要逐条复验，按上表跑对应脚本即可（它们改真实源码、`finally` 还原）。
 
 ---
 
@@ -256,8 +269,8 @@ core/           五个包（package-dir 指向 core/，所以它们是顶层包�
   sigma_session/会话树、上下文组装、压缩、会话目录操作
   sigma_tools/  内置工具、输出截断、路径约束
   sigma/        产品壳：CLI / REPL / SDK 入口
-tests/          510 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
-evals/          评测运行器 + 报告（datasets/ 的任务集尚未落地，见下）
+tests/          716 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
+evals/          评测运行器 + 报告（adversarial 20+10 条已落地；synthetic 12/30；reproduce 0/20）
 extensions/     运行时加载的扩展样例（P4）
 docs/           架构方案、调研笔记、计划、决策记录
 scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
@@ -267,7 +280,7 @@ scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
 
 | 文件 | 内容 |
 | --- | --- |
-| [`docs/architecture.md`](docs/architecture.md) | 架构方案（v1.6）：六项决策、消息模型两层结构、上下文预算、安全边界、可验证性设计 |
+| [`docs/architecture.md`](docs/architecture.md) | 架构方案：六项决策、消息模型两层结构、上下文预算、安全边界、可验证性设计 |
 | [`docs/decisions/`](docs/decisions/) | ADR：D1 语言 / D2 harness 边界 / D3 扩展层形态 / D4 常驻区预算 / D5 安全边界 / D6 不做容器 |
 | [`docs/plans/`](docs/plans/) | 各批次实施计划与验收记录（含门槛表、风险、实现中发现的问题） |
 | [`docs/pi-harness研究笔记.md`](docs/pi-harness研究笔记.md) | 参照对象 Pi Agent Harness 的调研笔记，带来源可信度分级 |
@@ -282,18 +295,33 @@ scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
 | 批次 7/8：联网搜索 + 精读（额度硬闸、来源过滤、调研纪律） | ✅ |
 | P2-1…P2-5：回放评测 · 会话树 · 上下文接树 · 压缩 · CLI 会话接续 | ✅ |
 | **P3-批次1：安全边界（L1 写路径 + L2 影子 checkpoint）** | ✅ |
-| P3-批次2：HookManager + **L3 钩子规则** + steering | ⬜ |
-| P4 扩展系统（运行时热重载） | ⬜ |
-| P5 自证：数据集的基线 B0–B3 与消融 | ⬜ |
+| **P3-批次2：审批拦截层（L3）+ 决策按键化 + 中途打断与双队列** | ✅ |
+| P4-批次1…4：技能系统 · todo A/B · sub_agent 轮数预算 · todo 可演进 | ✅ |
+| P4-批次5/6：钩子统一通道 · 增量持久化与断点续跑 · rich 渲染 | ✅ |
+| P4-批次7/8：影子库工作区级共享 · 懒基线 · 空批次跳过 · 水位治理 | ✅ |
+| **P5-批次1：观测层（trace 采集 + `--timeline` 查看器）** | ✅ |
+| **P5-批次2 波1：自证三行（缓存命中 / 回滚统计 / 对抗集拦截）+ steering·技能 token** | ✅ |
+| P4 扩展系统（运行时热重载、按名解析契约） | ⬜ |
+| P5 收尾：正式集 30 条 + 消融矩阵波 2/3（8 项主张全部有对照数据） | ⬜ |
 
 **明确未验收的**（写出来，不假装）：
 
-- **`evals/datasets/` 的 70 条任务集未落地**（reproduce 20 / synthetic 30 / adversarial 20）。
+- **`evals/datasets/` 的任务集只落地了一部分**：`adversarial/`（20 条对抗 + 10 条正常）已落地并出数
+  （拦截 20/20、误拦 0/10）；`synthetic/` **12/30**；**`reproduce/` 0/20**。
   构造纪律已定死：`synthetic/` **必须先有会失败的测试、后有任务描述**，反过来会造出一批
   "本实现的水平恰好能过"的任务，评测就失去意义。
 - **P2 第 3 条验收门（压缩前后成功率下降 ≤ 5%）未验收**：它需要真模型判定"压完还够不够用"，
   用回放录音算出来的"成功率"只是在数脚本对不对得上，与压缩质量无关。**未验收 ≠ 已通过。**
-- **L3 钩子规则未做**，且它本来就是软边界。
+- **7.6 八项主张只有 5 项有对照数据**（缓存命中率 / 回滚成功率 / 拦截率与误拦率 / steering 送达 /
+  技能 token 增量，逐行见 `evals/reports/self_check.md`）；"工具本身不等于 harness" 的正式结论
+  仍待 30 条正式集（10 条试水的 B0 全过——**任务集对 B0 没有区分度**，这一条要连带改任务难度）。
+- **技能"缓存命中率真的上去了"从未实测**：结构上不破前缀是可证的（索引在常驻区、正文只追加到尾部），
+  但命中率受 provider 分段策略影响，那要跑对照实验——**本文件不宣称它成立**。
+- **L3 只做了危险指令匹配**：它挡不住 `python -c` / base64 / 先写脚本再执行，
+  6.3 节那份"挡不住什么"的清单**一条都没被消灭**。
+- **回放场景依赖 PATH 里的解释器**（2026-09-28 实测暴露）：transcript 以 `python3` 调用解释器，
+  若 PATH 上的 `bash` 连 `python3` 都没有（如未装 python 的 MSYS2），这两个场景会因
+  "环境缺解释器"而变红。根因与残余暴露面登记在 `docs/技术债登记.md`。
 - 顺带一条自我记录：曾试图加"回放工作区隔离"门槛（G57），**实测无法证伪，于是不注册**——
   宁可少一条门槛，不要一条名义门槛。
 
@@ -302,6 +330,15 @@ scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
 本文件里任何计数都必须绑定提交号。理由：批次 1.5 的代码曾"未提交就落在盘上"，
 导致"104 个单测"这句话在提交历史里过期而无人察觉。这是「配置跑绿」的第三种形态——
 **数字会随未提交代码漂移**。所以：换代码或换环境后，上面的数字**必须重跑**，不能照抄。
+
+**2026-09-28 复发了一次**，形状与批次 1.5 完全一样：P3-批次2 / P4-批次5–8 / P5-批次1 的全部代码
+与 13 份详规都只在工作区，`git log` 里看不到，README 的进度表还停在 P3-批次1。
+**纪律写下来了不等于被执行**（CI 从没跑过是同一个形状）。这次修正的顺序固定为：
+先跑门禁取数 → 再改数字 → 最后提交，**顺序不能倒**。
+
+**同日新增一条判据：数字还依赖环境。** 同一份回放，02:09 是 6/6、几小时后变 4/6——
+差别不在代码，在 `shutil.which("bash")` 解析到了 WSL bash（里面只有 `python3`、没有 `python`）。
+**换机器、换 PATH、换 bash，都要重跑**，不能只认"上次是绿的"。
 
 ## 不做的东西，以及代替路径
 

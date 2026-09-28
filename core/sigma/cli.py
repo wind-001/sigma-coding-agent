@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -61,7 +62,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from sigma._approval import DANGEROUS_PATTERNS, Allowlist, CliApprovalGate
+from sigma._selector import choose_option
+from sigma.repl import _LineBroker, _start_stdin_reader
+from sigma.timeline import build_timeline, render_timeline, timeline_to_json
+from sigma_session.trace import trace_path_for
 from sigma.render import TerminalRenderer
+from sigma_agent.hooks import ApprovalHook
 from sigma_agent.agent_messages import (
     AgentMessage,
     LlmMessageWrapper,
@@ -155,11 +162,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="流式输出之外，结束再打印一遍完整消息序列（调试 / 评测用）",
     )
     parser.add_argument(
+        "--timeline",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="ID",
+        help=(
+            "查看一个会话的执行时间线（轮次×延迟/TTFT/token/缓存×工具×审批），"
+            "然后退出；不带 ID 看最近的会话。不启动模型。旧会话没有 trace 文件时"
+            "延迟用消息时间戳差近似（标 ≈）；审批留痕自 trace 层引入起才有"
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="--timeline 配套：输出机器可读 JSON（字段对齐 architecture 7.5 口径）",
+    )
+    parser.add_argument(
+        "--no-obs",
+        action="store_true",
+        help=(
+            "关闭观测层（trace 文件采集，P5-批次1）。默认开启——trace 与会话文件"
+            "同目录、不进模型上下文、不进会话树；采集失败只停用观测、不影响任务"
+        ),
+    )
+    parser.add_argument(
+        "--no-approval",
+        action="store_true",
+        help=(
+            "关闭 L3 审批层（危险指令/越界访问的执行前确认）。"
+            "默认开启——关掉后危险动作将直接执行、只靠 L1/L2 兜底，横幅会明说"
+        ),
+    )
+    parser.add_argument(
         "--no-checkpoint",
         action="store_true",
         help=(
             "关闭影子 git checkpoint（D5 的 L2：写批次前自动快照、可整体回滚）。"
             "默认开启——关掉之后破坏性操作**不可回滚**，横幅会明说这一点"
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-watermark-mb",
+        type=int,
+        default=512,
+        help=(
+            "影子库水位上限（MB），默认 512。库目录总大小超过它就按"
+            "“最旧优先”清理：先删闲置超 1 小时的其他会话分支，仍超则把"
+            "当前会话砍到基线+最近 20 个快照；清完仍超会在横幅明说。"
+            "传 0 关闭水位治理"
         ),
     )
     rollback = parser.add_mutually_exclusive_group()
@@ -189,10 +240,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sub-agent",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "启用 task 工具：模型可派后台子 agent（独立上下文、最多 3 个并发）"
-            "执行子任务，完成后自动回报。子任务会消耗额外 token。"
+            "task 工具默认开启：模型可派后台子 agent（独立上下文、最多 3 个并发）"
+            "执行子任务，完成后自动回报；**是否派发由模型按任务自行判断**"
+            "（星辰 2026-09-27 拍板）。传 --no-sub-agent 关闭。"
+            "子任务会消耗额外 token。"
         ),
     )
     # 会话接续（P2-5）。两者互斥：一个说"续最近那个"，一个说"用这个 id"，
@@ -484,14 +538,53 @@ def replace_binding_count(binding: SessionBinding, messages: int) -> SessionBind
     )
 
 
-def shadow_git_dir_for(sessions_root: Path, session_id: str) -> Path:
-    """本会话的影子库路径（D5 的 L2）。
+def shadow_git_dir_for(workspace: Path) -> Path:
+    """工作区级影子库路径（D5 的 L2；P4-批次7 起按工作区共享）。
 
-    **与会话文件同层扁平放置**：``<sessions>/<id>.shadow.git``——
-    这样 ``--continue`` 续上一个会话时，天然续上它的 checkpoint 历史。
+    **落点 = ``<workspace>/.sigma/session/shadow.git``**（P4-批次8 起挪到
+    ``session/`` 子目录下,星辰指定）,与 todo / allowlist 同判据:
+    工作区级状态落工作区 ``.sigma/``。库里所有会话共享对象、各占一个分支
+    （分支名 = session_id）——同工作区第二次启动 baseline 几乎零成本；
+    旧设计"每会话一个全新裸库"会把整个工作区全量复制 N 遍（实测 803MB）。
+    ``.sigma/`` 在 checkpoint 的 BUILTIN_EXCLUDES 里,库不会被自己快照。
     """
-    safe = _safe_session_id(session_id)
-    return sessions_root / f"{safe}.shadow.git"
+    return workspace / ".sigma" / "session" / "shadow.git"
+
+
+def migrate_legacy_shadow_dir(workspace: Path) -> bool:
+    """旧路径库(批次7 的 ``.sigma/shadow.git``)原子迁移到批次8 新路径。
+
+    **同分区 ``os.replace`` 是 O(1) 的目录改名**,不复制任何对象数据,
+    回滚点零丢失;迁移后旧路径不复存在。新库已存在(重复启动/已迁移)
+    或旧库不存在时是无害的 no-op。返回是否真的迁移了。
+
+    迁移而不是"新库从零重建":重建等于丢掉全部历史回滚点,而用户对
+    "还能不能回滚到上周"没有任何心理预期——**搬家可以,烧家不行**。
+    """
+    legacy = workspace / ".sigma" / "shadow.git"
+    new = shadow_git_dir_for(workspace)
+    if not legacy.is_dir() or new.exists():
+        return False
+    new.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(legacy, new)
+    return True
+
+
+def checkpoint_disabled_reason(workspace: Path, *, no_checkpoint_flag: bool) -> str | None:
+    """L2 是否关停的**唯一判定点**（P4-批次7 家目录守门，拍板 A）。
+
+    返回关停原因（``None`` = 启用）：
+    ``"--no-checkpoint"``——用户显式关；
+    ``"home"``——工作区是家目录。全量快照会复制整个 AppData
+    （实测单次扫描 65 秒、每会话数百 MB），而"把家目录回滚到几分钟前"
+    本身就是危险动作。只影响**新建会话**；``--rollback`` 是人的恢复
+    动作，不受此门限制。
+    """
+    if no_checkpoint_flag:
+        return "--no-checkpoint"
+    if workspace.resolve() == Path.home().resolve():
+        return "home"
+    return None
 
 
 #: 面板/表格输出。markup/highlight 全关：CLI 的文本承载模型数据与中文方括号，
@@ -557,8 +650,11 @@ def run_rollback(
         _err(f"[harness 错误] {sessions_root} 里没有会话，无法回滚。")
         return EXIT_HARNESS_ERROR
 
+    # 独立入口也可能先于交互模式跑(--rollback 脚本化):迁移放构造**之前**——
+    # 先构造会让新路径先初始化成空库,旧库改名就被挡住了。
+    migrate_legacy_shadow_dir(workspace)
     shadow = ShadowCheckpoint(
-        root=shadow_git_dir_for(sessions_root, session_id), workspace=workspace
+        root=shadow_git_dir_for(workspace), workspace=workspace, branch=session_id
     )
     if not shadow.available:
         _err(f"[harness 错误] 影子库不可用：{shadow.unavailable_reason}")
@@ -634,6 +730,33 @@ def run_rollback(
     return EXIT_OK
 
 
+def run_timeline(args: argparse.Namespace, sessions_root: Path) -> int:
+    """``--timeline``：渲染一个会话的执行时间线。
+
+    与回滚同一条理由的**只读的人的动作**：不启动模型，所以排在
+    API key 检查之前——"看看上次跑了什么"不该被密钥挡住。
+    会话 JSONL 是主数据源（旧会话也能查）；trace 文件存在时叠加
+    精确延迟/TTFT 与审批留痕（详规 §2.4 的优先级）。
+    """
+    session_id = args.timeline or latest_session_id(sessions_root)
+    if session_id is None:
+        _err(f"[harness 错误] {sessions_root} 里没有会话，无法查看时间线。")
+        return EXIT_HARNESS_ERROR
+    safe = _safe_session_id(session_id)
+    path = session_path(sessions_root, safe)
+    if not path.is_file():
+        _err(f"[harness 错误] 没有这个会话：{safe}")
+        return EXIT_HARNESS_ERROR
+    trace_file = trace_path_for(sessions_root, safe)
+    report = build_timeline(safe, path, trace_file if trace_file.is_file() else None)
+    if args.json:
+        print(json.dumps(timeline_to_json(report), ensure_ascii=False, indent=2))
+    else:
+        for line in render_timeline(report):
+            _CONSOLE.print(line, soft_wrap=True)
+    return EXIT_OK
+
+
 async def _run_once(
     args: argparse.Namespace,
     workspace: Path,
@@ -647,8 +770,16 @@ async def _run_once(
     session_id: str,
     shadow_git_dir: Path | None = None,
     skills_root: Path | None = None,
+    approval: ApprovalHook | None = None,
+    ask: Any = None,
+    checkpoint_watermark_bytes: int | None = None,
+    enable_trace: bool = True,
 ) -> TurnResult:
-    """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。"""
+    """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。
+
+    ``approval``/``ask``：一次性模式**也弹确认**（批次 Q2 拍板）；
+    stdin 不可交互时 confirmer 自行回退为拒绝。
+    """
     provider = _make_provider(args, base_url, api_key)
     try:
         return await run_task(
@@ -666,6 +797,10 @@ async def _run_once(
             shadow_git_dir=shadow_git_dir,
             skills_root=skills_root,
             enable_sub_agent=args.sub_agent,
+            approval=approval,
+            ask=ask,
+            checkpoint_watermark_bytes=checkpoint_watermark_bytes,
+            enable_trace=enable_trace,
         )
     finally:
         await provider.aclose()
@@ -713,6 +848,10 @@ class SessionManager:
         binding: SessionBinding,
         shadow_git_dir: Path | None,
         skills_root: Path | None,
+        approval: ApprovalHook | None = None,
+        ask: Any = None,
+        checkpoint_watermark_bytes: int | None = None,
+        enable_trace: bool = True,
         make_provider: Callable[[], BaseProvider] | None = None,
     ) -> None:
         self._args = args
@@ -725,6 +864,14 @@ class SessionManager:
         self._sessions_root = sessions_root
         self._shadow_git_dir = shadow_git_dir
         self._skills_root = skills_root
+        # L3 审批门与 ask_user 通道：整个进程一份，跨会话共享
+        # （审批决定与 allowlist 不随会话切换而丢）。
+        self._approval = approval
+        self._ask = ask
+        #: 影子库水位(字节,批次8):None = 关。每个新建会话都带着同一份。
+        self._checkpoint_watermark_bytes = checkpoint_watermark_bytes
+        #: 观测层(P5-批次1,Q2 拍板默认开):--no-obs 整层关。
+        self._enable_trace = enable_trace
         self._binding = binding
         #: provider 的**造法**可注入：测试要离线跑（``FakeProvider``），
         #: 而默认路径要真造 ``OpenAICompatProvider``。注入的是"造法"不是
@@ -743,11 +890,11 @@ class SessionManager:
     ) -> InteractiveSession:
         """按一份 binding 造会话。
 
-        影子库路径**由 binding 的 session_id 现算**，不用 ``self._shadow_git_dir``：
-        那个字段是**启动时**那一个会话的路径，切换后必须换成新会话的。
-        直接用启动时的值会让新会话把快照写进旧会话的影子库——
-        于是 ``sigma --rollback`` 在新会话里回滚出旧会话的状态，
-        而工作区配对检查（``recorded_workspace``）**挡不住这个**，因为两者同工作区。
+        快照隔离靠**分支**（P4-批次7）：共享库里所有会话共用同一个
+        ``shadow_git_dir``，``InteractiveSession`` 用 ``session_id`` 当分支名——
+        切换会话即切换分支，互不可见。旧的"每会话独立影子库"时代，
+        这里必须按 session_id 现算路径，否则新会话把快照写进旧会话的库；
+        现在路径恒定，隔离责任移到了分支上（仍由 session_id 派生，同源）。
 
         ⚠️ 注册表传的是**克隆**（2026-09-24 review 修复）：``--sub-agent`` 时
         ``InteractiveSession`` 会往注册表里注册 TaskTool，而所有会话此前共享
@@ -765,11 +912,15 @@ class SessionManager:
             registry=self._registry.clone(),
             system_prompt=self._system_prompt,
             extra_hooks=[TerminalRenderer()],
+            checkpoint_watermark_bytes=self._checkpoint_watermark_bytes,
+            approval=self._approval,
+            ask=self._ask,
             session_id=binding.session_id,
             tree=binding.tree,
             shadow_git_dir=shadow_git_dir,
             skills_root=self._skills_root,
             enable_sub_agent=self._args.sub_agent,
+            enable_trace=self._enable_trace,
         )
 
     # -- 查询 ---------------------------------------------------------------
@@ -782,6 +933,11 @@ class SessionManager:
     @property
     def current_id(self) -> str:
         return self._binding.session_id
+
+    @property
+    def approval_gate(self) -> ApprovalHook | None:
+        """/allowlist 斜杠命令用;--no-approval 时为 None。"""
+        return self._approval
 
     @property
     def sessions_root(self) -> Path:
@@ -847,9 +1003,14 @@ class SessionManager:
         return SwitchOutcome(ok=True, session_id=safe, messages=messages, switched=switched)
 
     def _shadow_dir_for(self, session_id: str) -> Path | None:
+        """共享库时代路径恒定（P4-批次7）：所有会话同一个 root，
+        隔离由 ``InteractiveSession`` 内部的**分支**（session_id）承担。
+        ``session_id`` 参数保留——``switch_to`` 的调用行是注入实验
+        （``gate_injection_p5.py`` E76）的字面锚点，不动它。
+        """
         if self._shadow_git_dir is None:
             return None
-        return shadow_git_dir_for(self._sessions_root, session_id)
+        return self._shadow_git_dir
 
     # -- 生命周期 -----------------------------------------------------------
 
@@ -862,7 +1023,21 @@ class SessionManager:
         ``assert`` 一个基类字段。代价是拼错方法名不会在类型层被发现——
         所以下面那行断言把它钉住（拼错时 AttributeError 立刻暴露，
         而不是静默地永远不关连接）。
+
+        P4-批次7：关停前对共享影子库跑一次 ``gc``（30s 超时、失败静默）
+        ——loose objects 不打包会越攒越多。库里所有会话共享对象，
+        收尾打一次包全体受益；``gc.packRefs=false`` 保证松散 ref 不变量不被破坏。
         """
+        checkpoint = getattr(self._session, "checkpoint", None)
+        if checkpoint is not None:
+            try:
+                checkpoint.gc()
+                # 水位治理(批次8):收尾 gc 后是第二个触发点——退进度前
+                # 最后一次把库压回水位以下。失败静默,同 gc 的保险丝语义。
+                checkpoint.enforce_watermark()
+            except Exception:
+                # GC/水位是优化不是正确性：失败不打扰收尾（last_error 里留痕）。
+                pass
         closer = getattr(self._provider, "aclose", None)
         if closer is None:
             return
@@ -883,6 +1058,11 @@ async def _run_interactive(
     sessions_root: Path,
     shadow_git_dir: Path | None = None,
     skills_root: Path | None = None,
+    approval: ApprovalHook | None = None,
+    ask: Any = None,
+    broker: _LineBroker | None = None,
+    checkpoint_watermark_bytes: int | None = None,
+    enable_trace: bool = True,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。
 
@@ -902,9 +1082,15 @@ async def _run_interactive(
         binding=binding,
         shadow_git_dir=shadow_git_dir,
         skills_root=skills_root,
+        approval=approval,
+        ask=ask,
+        checkpoint_watermark_bytes=checkpoint_watermark_bytes,
+        enable_trace=enable_trace,
     )
+    if broker is not None:
+        _start_stdin_reader(broker)
     try:
-        return await run_repl(manager)
+        return await run_repl(manager, broker=broker)
     finally:
         await manager.aclose()
 
@@ -952,6 +1138,7 @@ def main(argv: list[str] | None = None) -> int:
         not args.prompt
         and not args.interactive
         and not wants_rollback
+        and args.timeline is None
         and not stdin_is_interactive()
     ):
         parser.print_help()
@@ -974,6 +1161,10 @@ def main(argv: list[str] | None = None) -> int:
         else DEFAULT_SESSIONS_DIR
     )
 
+    # 影子库路径迁移(P4-批次8):旧库 .sigma/shadow.git → .sigma/session/shadow.git。
+    # 必须排在回滚分支**之前**——回滚恰恰发生在旧库还在的时刻。
+    migrate_legacy_shadow_dir(workspace)
+
     # 回滚三件事（--rollback / --rollback-to / --list-checkpoints）**不启动模型**：
     # 它们是人的动作。所以它们**必须排在 API key 检查之前**——
     # 否则"模型密钥失效 / 没配 key"会顺带把"把工作区回滚回去"也堵死，
@@ -986,6 +1177,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_HARNESS_ERROR
         return run_rollback(args, sessions_root, workspace)
+    if args.timeline is not None:
+        return run_timeline(args, sessions_root)
     if not api_key:
         _err("[harness 错误] 缺少 API key。三种设置方式，任选一种：")
         _err(f"  1) 写进 {USER_CONFIG_DIR / '.env'}（推荐，在项目目录之外，不会被误提交）")
@@ -1027,11 +1220,61 @@ def main(argv: list[str] | None = None) -> int:
 
     binding = resolve_session(args, sessions_root)
 
-    shadow_dir = (
-        None
-        if args.no_checkpoint
-        else shadow_git_dir_for(sessions_root, binding.session_id)
+    # 家目录守门（P4-批次7 拍板 A）：判定收在 checkpoint_disabled_reason 一处，
+    # main 只消费它的结论；横幅按原因如实展示（见下方安全边界面板）。
+    disabled_reason = checkpoint_disabled_reason(
+        workspace, no_checkpoint_flag=args.no_checkpoint
     )
+    home_gate = disabled_reason == "home"
+    shadow_dir = None if disabled_reason else shadow_git_dir_for(workspace)
+    # 水位换算(批次8):旗标给 MB,checkpoint 层收字节;0 = 关闭治理。
+    checkpoint_watermark_bytes = (
+        args.checkpoint_watermark_mb * 1024 * 1024
+        if args.checkpoint_watermark_mb > 0
+        else None
+    )
+
+    # L3 审批门（P3-批次2）：allowlist 落工作区 .sigma/（回滚安全）；
+    # --no-approval 整层关闭（脚本场景），横幅如实展示。
+    # stdin 行仲裁器:整个进程一份。审批确认 / ask_user / 提示符读输入
+    # 都经过它——多线程 input() 会互相抢行,单读者是结构解。
+    broker = _LineBroker()
+
+    async def _cli_chooser(
+        title_lines: list[str], options: list[str], recommended_index: int | None
+    ) -> int | None:
+        """交互模式的决策入口:真终端按键选择;非 TTY 编号降级。"""
+        return await choose_option(
+            title_lines,
+            options,
+            recommended_index=recommended_index,
+            interactive_fallback=broker.ask_line,
+        )
+
+    async def _cli_ask(
+        question: str, options: list[str], recommended_index: int | None
+    ) -> str:
+        index = await _cli_chooser([question], options, recommended_index)
+        if index is None:
+            # 取消(EOF/Esc)→ ask_user 契约:回退推荐项,结果里显式注明
+            return ""
+        return options[index]
+
+    if args.no_approval:
+        approval_hook: ApprovalHook | None = None
+
+        async def ask_channel(
+            question: str, options: list[str], recommended_index: int | None
+        ) -> str:
+            return ""
+
+    else:
+        approval_hook = CliApprovalGate(
+            workspace=workspace,
+            chooser=_cli_chooser,
+            allowlist=Allowlist(workspace / ".sigma" / "allowlist.json"),
+        )
+        ask_channel = _cli_ask
 
     # 横幅面板（P4-批次6）：内容行与旧版逐字一致，只是从裸 print 换成
     # Panel 承载——"排版"归面板，"说什么"不归它改。
@@ -1078,12 +1321,40 @@ def main(argv: list[str] | None = None) -> int:
         # **不列全清单**（那是 `/help` 的事）——横幅里只放"存在斜杠命令"这件事，
         # 否则每加一个命令就要改两处文案，而漏改的那处会慢慢过期。
         lines.append("  交互    /help 看命令（/sessions 列会话、/switch 切会话、/new 开新的）")
+    if args.no_approval:
+        lines.append("  拦截    L1 写路径 · L2 影子快照 · L3 审批已按 --no-approval 关闭")
+    else:
+        # 非 --no-approval 分支必然已建门(run_rollback 式收窄:条件互斥保证)
+        allowlist_count = len(
+            Allowlist(workspace / ".sigma" / "allowlist.json").items()
+        )
+        # 家目录守门（P4-批次7）：L2 被禁时横幅不许再说"L2 影子快照"在岗。
+        l2_text = (
+            "L2 快照已禁用（家目录工作区）"
+            if home_gate
+            else "L2 影子快照"
+        )
+        lines.append(
+            f"  拦截    L1 写路径 · {l2_text} · L3 审批（危险模式 {len(DANGEROUS_PATTERNS)}"
+            f" · allowlist {allowlist_count} 条；命中即确认）"
+        )
     _CONSOLE.print(
         Panel("\n".join(lines), title=f"sigma {__version__}（{mode}模式）", border_style="cyan")
     )
     # 安全边界现状（P3-批次1 起**与代码同源**，不再是"什么都没有"）。
     # 这一段的每一句都要能在代码里指到对应实现，否则它又会变回"文档里的边界"。
-    if shadow_dir is None:
+    if shadow_dir is None and home_gate and not args.no_checkpoint:
+        _CONSOLE.print(
+            Panel(
+                "  ⚠ 安全提示：工作区是家目录，L2 影子快照已禁用——\n"
+                "     全量快照会复制整个 AppData（家目录实测单次扫描 65 秒、每会话数百 MB），\n"
+                "     而\"把家目录回滚到几分钟前\"本身就是危险动作。\n"
+                "     需要回滚保障：cd 到项目目录，或 --workspace 指向项目目录。\n"
+                "  仍未保护：bash 能以你的用户权限执行任意命令、可访问网络与工作区外的路径。",
+                border_style="yellow",
+            )
+        )
+    elif shadow_dir is None:
         _CONSOLE.print(
             Panel(
                 "  ⚠ 安全提示：影子 checkpoint 已按 --no-checkpoint 关闭——\n"
@@ -1095,7 +1366,8 @@ def main(argv: list[str] | None = None) -> int:
         _CONSOLE.print(
             Panel(
                 "  L1 写路径：write/edit/bash 的 cwd 不得越出工作区（越界即拒绝）。\n"
-                "  L2 可回滚：每次写操作前自动快照；必要时用 sigma --rollback 退回。\n"
+                "  L2 可回滚：每次写操作前自动快照（首个写批次快照即基线）；\n"
+                "     必要时用 sigma --rollback 退回。\n"
                 "  仍未保护：bash 能以你的用户权限执行任意命令、可访问网络与工作区外的路径——\n"
                 "  请只在**受控目录**里使用，且不要让它接触不信任的脚本。",
                 title="⚠ 安全边界（不是沙箱）",
@@ -1119,6 +1391,10 @@ def main(argv: list[str] | None = None) -> int:
                     session_id=binding.session_id,
                     shadow_git_dir=shadow_dir,
                     skills_root=skills_root,
+                    approval=approval_hook,
+                    ask=ask_channel,
+                    checkpoint_watermark_bytes=checkpoint_watermark_bytes,
+                    enable_trace=not args.no_obs,
                 )
             )
             if args.trace:
@@ -1139,6 +1415,11 @@ def main(argv: list[str] | None = None) -> int:
                 sessions_root=sessions_root,
                 shadow_git_dir=shadow_dir,
                 skills_root=skills_root,
+                approval=approval_hook,
+                ask=ask_channel,
+                broker=broker,
+                checkpoint_watermark_bytes=checkpoint_watermark_bytes,
+                enable_trace=not args.no_obs,
             )
         )
     except KeyboardInterrupt:
