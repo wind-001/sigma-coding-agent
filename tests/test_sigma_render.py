@@ -9,14 +9,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import StringIO
 
-from sigma.render import TerminalRenderer
-from sigma_agent.hooks import TextChunk, ToolEnd, ToolStart, TurnEnd
-from sigma_ai.messages import TextBlock
+from sigma.cli.render import TerminalRenderer
+from sigma.events.lifecycle import (
+    TextChunk,
+    ToolEnd,
+    ToolStart,
+    TurnEnd,
+)
+from sigma.providers.messages import TextBlock
 
 
 def _tool_end(name: str, ok: bool, preview: str) -> ToolEnd:
     """渲染门槛的 ToolEnd 构造器:补上 loop 才关心的 message 载荷。"""
-    from sigma_agent.agent_messages import ToolResultAgentMessage
+    from sigma.agent.messages import ToolResultAgentMessage
 
     return ToolEnd(
         name=name,

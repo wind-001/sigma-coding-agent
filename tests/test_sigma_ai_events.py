@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from sigma_ai.errors import ErrorCode, ProviderErrorPayload
-from sigma_ai.events import (
+from sigma.providers.errors import ErrorCode, ProviderErrorPayload
+from sigma.providers.events import (
     ErrorEvent,
     StopEvent,
     TextDelta,
@@ -26,7 +26,7 @@ from sigma_ai.events import (
     ToolCallDelta,
     UsageEvent,
 )
-from sigma_ai.messages import Usage
+from sigma.providers.messages import Usage
 
 # 每个样例都必须带"最不容易存活"的字段，否则 round-trip 测了等于没测。
 #

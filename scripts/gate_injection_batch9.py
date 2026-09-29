@@ -45,7 +45,7 @@ import sys
 
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
-TREE = "core/sigma_session/tree.py"
+TREE = "core/sigma.sessions/tree.py"
 
 TREE_TESTS = "tests/test_session_tree.py"
 

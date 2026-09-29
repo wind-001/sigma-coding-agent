@@ -18,17 +18,17 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel, Field
 
-from sigma_agent.agent_messages import AgentMessage, LlmMessageWrapper
-from sigma_agent.base import BaseTool
-from sigma_agent.checkpoint import ShadowCheckpoint
-from sigma_agent.loop import AgentLoop
-from sigma_agent.registry import DuplicateToolError, ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult
-from sigma_ai.base import CancelToken
-from sigma_ai.fake import FakeProvider, TranscriptExhausted
-from sigma_ai.messages import TextBlock, UserMessage
+from sigma.agent.messages import AgentMessage, LlmMessageWrapper
+from sigma.tools.base import BaseTool
+from sigma.security.shadow_checkpoint import ShadowCheckpoint
+from sigma.runtime.event_loop import AgentLoop
+from sigma.tools.registry import DuplicateToolError, ToolRegistry
+from sigma.agent.types import ToolContext, ToolResult
+from sigma.providers.base import CancelToken
+from sigma.providers.fake import FakeProvider, TranscriptExhausted
+from sigma.providers.messages import TextBlock, UserMessage
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 FIXED_TIME = ts(1_700_000_000)
 
 
@@ -400,7 +400,7 @@ async def test_two_tool_calls_in_one_round_keep_order() -> None:
     assert tool.seen == ["first", "second"]
 
     # 结果消息的 tool_call_id 必须与调用的 id 对应，不能错配
-    from sigma_agent.agent_messages import ToolResultAgentMessage
+    from sigma.agent.messages import ToolResultAgentMessage
 
     tool_results = [m for m in result.messages if isinstance(m, ToolResultAgentMessage)]
     assert [m.tool_call_id for m in tool_results] == ["call_a", "call_b"]
@@ -429,7 +429,7 @@ async def test_tool_error_is_visible_and_loop_continues() -> None:
     assert result.status == "completed"
     assert result.rounds == 2  # ← 关键：没有在失败处停下
 
-    from sigma_agent.agent_messages import ToolResultAgentMessage
+    from sigma.agent.messages import ToolResultAgentMessage
 
     tool_results = [m for m in result.messages if isinstance(m, ToolResultAgentMessage)]
     assert len(tool_results) == 1
@@ -449,7 +449,7 @@ async def test_tool_raising_exception_is_caught_by_loop() -> None:
     result = await loop.run_turn(_history())
 
     assert result.status == "completed"
-    from sigma_agent.agent_messages import ToolResultAgentMessage
+    from sigma.agent.messages import ToolResultAgentMessage
 
     tool_results = [m for m in result.messages if isinstance(m, ToolResultAgentMessage)]
     assert len(tool_results) == 1
@@ -475,8 +475,8 @@ async def test_invalid_json_arguments_becomes_visible_error() -> None:
 
     assert result.status == "completed"
     # 工具**没有**被执行
-    from sigma_agent.agent_messages import LlmMessageWrapper, ToolResultAgentMessage, UserMessage
-    from sigma_ai.messages import UserMessage as _UserMessage
+    from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage, UserMessage
+    from sigma.providers.messages import UserMessage as _UserMessage
 
     tool_results = [m for m in result.messages if isinstance(m, ToolResultAgentMessage)]
     assert tool_results == []  # 不再合成孤儿 tool_result
@@ -511,7 +511,7 @@ async def test_schema_violation_becomes_visible_error() -> None:
     # **工具没有被执行**——校验失败就不该执行
     assert tool.seen == []
 
-    from sigma_agent.agent_messages import ToolResultAgentMessage
+    from sigma.agent.messages import ToolResultAgentMessage
 
     tool_results = [m for m in result.messages if isinstance(m, ToolResultAgentMessage)]
     assert len(tool_results) == 1
@@ -533,7 +533,7 @@ async def test_unknown_tool_name_becomes_visible_error() -> None:
     result = await loop.run_turn(_history())
 
     assert result.status == "completed"
-    from sigma_agent.agent_messages import ToolResultAgentMessage
+    from sigma.agent.messages import ToolResultAgentMessage
 
     tool_results = [m for m in result.messages if isinstance(m, ToolResultAgentMessage)]
     assert tool_results[0].is_error is True
@@ -705,9 +705,9 @@ def test_only_one_class_defines_run_turn() -> None:
 
     **旧写法**断言 ``BaseLoop.__subclasses__() == [AgentLoop]``。
     但那依赖一个只有 1 个子类的基类存在——**那个基类本身是纯冗余**，
-    已在同日删除（理由见 ``sigma_agent/base.py`` 顶部注释）。
+    已在同日删除（理由见 ``sigma.agent/base.py`` 顶部注释）。
 
-    **新写法更强**：扫描 ``sigma_agent.loop`` 模块，确认只有 ``AgentLoop``
+    **新写法更强**：扫描 ``sigma.runtime.event_loop`` 模块，确认只有 ``AgentLoop``
     这一个类定义了 ``run_turn``。这样即使有人新写一个**不继承任何基类**的
     loop（旧断言拦不住的形态），也能被拦住。
 
@@ -717,7 +717,7 @@ def test_only_one_class_defines_run_turn() -> None:
     """
     import inspect
 
-    import sigma_agent.loop as loop_module
+    import sigma.runtime.event_loop as loop_module
 
     loop_classes = sorted(
         name
@@ -776,8 +776,8 @@ def test_builtin_tools_are_subclasses_with_matching_name() -> None:
     注册表查不到。症状是"模型调了个不存在的工具"，不指向根因。
     """
     from sigma.sdk import default_registry
-    from sigma_tools.read import ReadTool
-    from sigma_tools.write import WriteTool
+    from sigma.tools.builtin.read import ReadTool
+    from sigma.tools.builtin.write import WriteTool
 
     for tool_cls in (ReadTool, WriteTool):
         assert issubclass(tool_cls, BaseTool)

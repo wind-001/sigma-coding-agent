@@ -21,8 +21,11 @@ from pathlib import Path
 
 import pytest
 
-from sigma.cli import migrate_legacy_shadow_dir, shadow_git_dir_for
-from sigma_agent.checkpoint import ShadowCheckpoint
+from sigma.cli.main import (
+    migrate_legacy_shadow_dir,
+    shadow_git_dir_for,
+)
+from sigma.security.shadow_checkpoint import ShadowCheckpoint
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="本机没有 git,checkpoint 用例未验证"

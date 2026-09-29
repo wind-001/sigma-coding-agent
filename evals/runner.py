@@ -45,18 +45,18 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "core"))
 sys.path.insert(0, str(REPO / "tests"))
 
-from sigma_agent.agent_messages import LlmMessageWrapper, convert_to_llm  # noqa: E402
-from sigma_agent.loop import AgentLoop  # noqa: E402
-from sigma_agent.registry import ToolRegistry  # noqa: E402
-from sigma_ai.base import CancelToken  # noqa: E402
-from sigma_ai.fake import FakeProvider  # noqa: E402
-from sigma_ai.stamps import from_epoch as ts  # noqa: E402
-from sigma_ai.messages import UserMessage  # noqa: E402
-from sigma_tools.bash import BashTool  # noqa: E402
-from sigma_tools.edit import EditTool  # noqa: E402
-from sigma_tools.grep import GrepTool  # noqa: E402
-from sigma_tools.read import ReadTool  # noqa: E402
-from sigma_tools.write import WriteTool  # noqa: E402
+from sigma.agent.messages import LlmMessageWrapper, convert_to_llm  # noqa: E402
+from sigma.runtime.event_loop import AgentLoop  # noqa: E402
+from sigma.tools.registry import ToolRegistry  # noqa: E402
+from sigma.providers.base import CancelToken  # noqa: E402
+from sigma.providers.fake import FakeProvider  # noqa: E402
+from sigma.providers.stamps import from_epoch as ts  # noqa: E402
+from sigma.providers.messages import UserMessage  # noqa: E402
+from sigma.tools.builtin.bash import BashTool  # noqa: E402
+from sigma.tools.builtin.edit import EditTool  # noqa: E402
+from sigma.tools.builtin.grep import GrepTool  # noqa: E402
+from sigma.tools.builtin.read import ReadTool  # noqa: E402
+from sigma.tools.builtin.write import WriteTool  # noqa: E402
 
 from fixtures.transcripts._scenarios import SCENARIOS, Scenario, scenario_by_name  # noqa: E402
 from fixtures.workspace import write_fixture_workspace  # noqa: E402

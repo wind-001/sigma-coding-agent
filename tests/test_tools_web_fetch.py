@@ -22,15 +22,15 @@ from typing import Any
 import httpx
 import pytest
 
-from sigma_agent.types import ToolContext
-from sigma_ai.base import NeverCancelled
-from sigma_tools._firecrawl_quota import (
+from sigma.agent.types import ToolContext
+from sigma.providers.base import NeverCancelled
+from sigma.tools.quota.firecrawl import (
     FREE_MONTHLY_CREDITS,
     SCRAPE_COST,
     FirecrawlQuota,
 )
-from sigma_tools.truncate import MAX_BYTES
-from sigma_tools.web_fetch import MAX_URLS_PER_CALL, WebFetchTool
+from sigma.tools.truncate import MAX_BYTES
+from sigma.tools.builtin.web_fetch import MAX_URLS_PER_CALL, WebFetchTool
 
 NOW = 1000.0
 TODAY = "2026-09-21"

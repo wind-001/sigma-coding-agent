@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from sigma_ai.base import NeverCancelled
-from sigma_agent.types import ToolContext
-from sigma_tools.bash import BashTool
+from sigma.providers.base import NeverCancelled
+from sigma.agent.types import ToolContext
+from sigma.tools.builtin.bash import BashTool
 
 
 def _ctx(root: Path) -> ToolContext:

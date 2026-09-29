@@ -21,12 +21,12 @@
 **G18：为什么不新增契约文件**
 
     详规第 1 节已实测确认：现有的 `layers` 契约
-    （`sigma` / `sigma_tools` / `sigma_session` / `sigma_agent` / `sigma_ai`）
-    **已经覆盖** `sigma_ai → sigma_agent` 这个方向——
-    `layers` 禁止下层引用上层，而 `sigma_ai` 就在最下层。
+    （`sigma` / `sigma_tools` / `sigma.sessions` / `sigma.agent` / `sigma.providers`）
+    **已经覆盖** `sigma.providers → sigma.agent` 这个方向——
+    `layers` 禁止下层引用上层，而 `sigma.providers` 就在最下层。
 
     所以本文件要做的不是"新增契约"，而是**证明既有契约确实覆盖了它**：
-    把 `sigma_ai` 里的违规 import 造出来，确认它变红。
+    把 `sigma.providers` 里的违规 import 造出来，确认它变红。
     这就是 E18 的真实形态（留在本文件里，而不是只放在注入脚本里——
     前者每次跑测试都在验证，后者只在手动执行时验证一次）。
 
@@ -44,7 +44,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sigma_agent.agent_messages import (
+from sigma.agent.messages import (
     AgentMessage,
     LlmMessageWrapper,
     MessageDecodeError,
@@ -56,7 +56,7 @@ from sigma_agent.agent_messages import (
     messages_to_jsonl,
     register_message_type,
 )
-from sigma_ai.messages import (
+from sigma.providers.messages import (
     AssistantMessage,
     LlmMessage,
     TextBlock,
@@ -64,7 +64,7 @@ from sigma_ai.messages import (
     UserMessage,
 )
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------------------
@@ -384,7 +384,7 @@ def test_jsonl_each_line_is_independently_valid() -> None:
 
 
 # ---------------------------------------------------------------------------
-# G18：架构边界——`sigma_ai` 不得依赖 `sigma_agent`
+# G18：架构边界——`sigma.providers` 不得依赖 `sigma.agent`
 # ---------------------------------------------------------------------------
 
 
@@ -418,7 +418,7 @@ def _run_lint_imports() -> subprocess.CompletedProcess[str]:
 
 
 def test_layers_contract_rejects_ai_importing_agent() -> None:
-    """G18 本体：往 `sigma_ai` 注入 `import sigma_agent`，契约必须变红。
+    """G18 本体：往 `sigma.providers` 注入 `import sigma.agent`，契约必须变红。
 
     **这条是 E18 的真实形态**，而且它是**常驻的**——
     每次跑测试都会重新证伪一次，不依赖有人记得去手动执行注入脚本。
@@ -433,12 +433,12 @@ def test_layers_contract_rejects_ai_importing_agent() -> None:
     **还原放在 `finally` 里**：注入中途抛错却留下破坏，
     比不做实验更糟（批次 1 固化的纪律）。
     """
-    target = REPO_ROOT / "core" / "sigma_ai" / "messages.py"
+    target = REPO_ROOT / "src" / "sigma" / "providers" / "messages.py"
     original = target.read_text(encoding="utf-8")
 
     injection = (
         "\n\n# --- 注入（G18 证伪用）：下层引用上层 ---\n"
-        "from sigma_agent.agent_messages import AgentMessage  # noqa: F401\n"
+        "from sigma.agent.messages import AgentMessage  # noqa: F401\n"
     )
 
     try:
@@ -448,7 +448,7 @@ def test_layers_contract_rejects_ai_importing_agent() -> None:
         output = f"{result.stdout}\n{result.stderr}"
 
         assert result.returncode != 0, (
-            "往 sigma_ai 注入 import sigma_agent 后契约仍然全绿——"
+            "往 sigma.providers 注入 import sigma.agent 后契约仍然全绿——"
             f"分层契约没有覆盖这个方向：\n{output}"
         )
         assert "分层只允许向下依赖 BROKEN" in output, (

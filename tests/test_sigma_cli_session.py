@@ -23,14 +23,14 @@ from pathlib import Path
 import pytest
 
 from sigma import sdk
-from sigma.cli import (
+from sigma.cli.main import (
     DEFAULT_SESSIONS_DIR,
     SessionBinding,
     build_parser,
     resolve_session,
 )
-from sigma_ai.fake import FakeProvider
-from sigma_session.sessions import (
+from sigma.providers.fake import FakeProvider
+from sigma.sessions.sessions import (
     SESSION_SUFFIX,
     latest_session_id,
     list_sessions,
@@ -38,8 +38,8 @@ from sigma_session.sessions import (
     session_path,
     session_previews,
 )
-from sigma_session.store import JsonlStore
-from sigma_session.tree import SessionTree
+from sigma.sessions.store import JsonlStore
+from sigma.sessions.tree import SessionTree
 
 # ---------------------------------------------------------------------------
 # 辅助
@@ -113,7 +113,9 @@ def test_cli_shadow_dir_is_workspace_level(tmp_path: Path) -> None:
     库随项目走（删项目即删库），``--continue`` 续上会话就天然续上
     同一个库——快照隔离由分支（session_id）承担，不再靠每会话一个库。
     """
-    from sigma.cli import shadow_git_dir_for
+    from sigma.cli.main import (
+    shadow_git_dir_for,
+)
 
     assert shadow_git_dir_for(tmp_path) == tmp_path / ".sigma" / "session" / "shadow.git"
 
@@ -124,7 +126,9 @@ def test_home_workspace_disables_checkpoint() -> None:
     ``--no-checkpoint`` 显式关的优先级最高；家目录是自动关——
     全量快照复制 AppData（实测 65 秒/数百 MB），"回滚家目录"本身危险。
     """
-    from sigma.cli import checkpoint_disabled_reason
+    from sigma.cli.main import (
+    checkpoint_disabled_reason,
+)
 
     with tempfile.TemporaryDirectory() as td:
         project = Path(td) / "project"
@@ -473,7 +477,7 @@ def test_preview_limit_truncates_before_reading(
     ``_preview_one`` 被调几次）。它同时钉住"列表顺序沿用 ``list_sessions``"：
     截断发生在那份倒序列表上，所以留下的必须是**最新的**几个。
     """
-    from sigma_session import sessions as sessions_module
+    from sigma.sessions import sessions as sessions_module
 
     root = tmp_path
     root.mkdir(parents=True, exist_ok=True)
@@ -504,7 +508,10 @@ def test_preview_limit_truncates_before_reading(
 
 def _manager(tmp_path: Path, *, session_id: str, sessions_root: Path | None = None):  # type: ignore[no-untyped-def]
     """造一个离线 manager（provider 是 ``FakeProvider``，不碰网络）。"""
-    from sigma.cli import SessionBinding, SessionManager
+    from sigma.cli.main import (
+    SessionBinding,
+    SessionManager,
+)
 
     root = sessions_root if sessions_root is not None else tmp_path / "sessions"
     return SessionManager(
@@ -513,7 +520,7 @@ def _manager(tmp_path: Path, *, session_id: str, sessions_root: Path | None = No
         base_url="http://fake",
         model="fake",
         api_key="sk-test",
-        registry=__import__("sigma_agent.registry", fromlist=["ToolRegistry"]).ToolRegistry(),
+        registry=__import__("sigma.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry(),
         system_prompt="",
         sessions_root=root,
         binding=SessionBinding(session_id, SessionTree(), resumed=False, previous_messages=0),

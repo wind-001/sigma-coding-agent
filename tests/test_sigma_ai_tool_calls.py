@@ -8,8 +8,8 @@
 
 from __future__ import annotations
 
-from sigma_ai.events import ToolCallDelta
-from sigma_ai.tool_calls import ToolCallAssembler
+from sigma.providers.events import ToolCallDelta
+from sigma.providers.tool_calls import ToolCallAssembler
 
 
 def test_thought_signature_survives_assembly() -> None:

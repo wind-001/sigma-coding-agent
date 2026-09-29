@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from sigma_ai.base import BaseProvider, CancelToken, SamplingParams, StreamOptions
-from sigma_ai.errors import (
+from sigma.providers.base import BaseProvider, CancelToken, SamplingParams, StreamOptions
+from sigma.providers.errors import (
     ErrorCode,
     ProviderError,
     ProviderErrorPayload,
     classify_http_status,
 )
-from sigma_ai.messages import (
+from sigma.providers.messages import (
     AssistantMessage,
     ImageBlock,
     SystemMessage,
@@ -34,7 +34,7 @@ from sigma_ai.messages import (
 # ---------------------------------------------------------------------------
 
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 @pytest.mark.parametrize("abstract_cls", [BaseProvider, CancelToken])
 def test_abstract_base_cannot_be_instantiated(abstract_cls: type) -> None:
     """G1：忘实现抽象方法时，**实例化**就报错，而不是等到首次调用。

@@ -22,7 +22,7 @@ import sys
 
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
-LOOP = "core/sigma_agent/loop.py"
+LOOP = "core/sigma.agent/loop.py"
 RENDER = "core/sigma/render.py"
 SDK = "core/sigma/sdk.py"
 CLI = "core/sigma/cli.py"

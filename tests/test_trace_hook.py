@@ -15,26 +15,28 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from sigma_agent.base import BaseTool
-from sigma_agent.hooks import (
+from sigma.tools.base import BaseTool
+from sigma.events.lifecycle import (
     ApprovalDecision,
-    ApprovalHook,
-    HookManager,
     TurnEnd,
 )
-from sigma_agent.loop import AgentLoop
-from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult, TurnResult
-from sigma_ai.base import CancelToken
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock
-from sigma_session.context import SessionContext
-from sigma_session.persist_hook import SessionPersistHook
-from sigma_session.store import JsonlStore
-from sigma_session.trace import TraceHook, trace_path_for
-from sigma_session.tree import SessionTree
+from sigma.hooks.base import (
+    ApprovalHook,
+    HookManager,
+)
+from sigma.runtime.event_loop import AgentLoop
+from sigma.tools.registry import ToolRegistry
+from sigma.agent.types import ToolContext, ToolResult, TurnResult
+from sigma.providers.base import CancelToken
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import TextBlock
+from sigma.sessions.context import SessionContext
+from sigma.hooks.persist import SessionPersistHook
+from sigma.sessions.store import JsonlStore
+from sigma.observability.trace import TraceHook, trace_path_for
+from sigma.sessions.tree import SessionTree
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 
 FIXED_TIME = ts(1_700_000_000)
 

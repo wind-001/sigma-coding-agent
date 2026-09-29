@@ -20,22 +20,22 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sigma_agent.agent_messages import (
+from sigma.agent.messages import (
     AgentMessage,
     LlmMessageWrapper,
     ToolResultAgentMessage,
     convert_to_llm,
 )
-from sigma_ai.base import NeverCancelled
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import (
+from sigma.providers.base import NeverCancelled
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import (
     AssistantMessage,
     SystemMessage,
     TextBlock,
     Usage,
     UserMessage,
 )
-from sigma_session.compact import (
+from sigma.sessions.compaction import (
     DEFAULT_KEEP_RECENT_ROUNDS,
     DEFAULT_TRIGGER_RATIO,
     SUMMARY_PROMPT,
@@ -48,9 +48,9 @@ from sigma_session.compact import (
     render_history,
     split_for_compaction,
 )
-from sigma_session.context import SessionContext
+from sigma.sessions.context import SessionContext
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 CLOCK = lambda: ts(1_700_000_000)  # noqa: E731 - 固定时钟，保证可复现
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ def test_summary_prompt_forbids_inventing() -> None:
 
 def test_build_summary_prompt_includes_history() -> None:
     """提示词 + 历史要一起进去——只发提示词会让模型压一段空气。"""
-    from sigma_session.compact import build_summary_prompt
+    from sigma.sessions.compaction import build_summary_prompt
 
     prompt = build_summary_prompt("[user] 把 a.py 改成异步")
 

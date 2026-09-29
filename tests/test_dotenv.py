@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from sigma.dotenv import (
+from sigma.config.settings import (
     ENV_VAR_NAME,
     USER_CONFIG_DIR,
     load_env_file,

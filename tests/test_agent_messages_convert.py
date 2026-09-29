@@ -39,7 +39,7 @@ from __future__ import annotations
 import warnings
 
 import pytest
-from sigma_agent.agent_messages import (
+from sigma.agent.messages import (
     AgentMessage,
     LlmMessageWrapper,
     ToolResultAgentMessage,
@@ -49,7 +49,7 @@ from sigma_agent.agent_messages import (
     register_message_type,
     render_custom_as_user,
 )
-from sigma_ai.messages import (
+from sigma.providers.messages import (
     AssistantMessage,
     LlmMessage,
     SystemMessage,
@@ -65,7 +65,7 @@ from sigma_ai.messages import (
 # ---------------------------------------------------------------------------
 
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 def _assistant_with_all_signatures() -> AssistantMessage:
     """一条"把所有可选字段都填满"的 assistant 消息。
 
@@ -574,7 +574,7 @@ def test_encode_stays_strict_for_subclass() -> None:
     这条防的是"修一处顺手改另一处"——
     两个函数的判据长得一样，但一个要宽一个要严。
     """
-    from sigma_agent.agent_messages import message_to_dict
+    from sigma.agent.messages import message_to_dict
 
     with pytest.raises(UnknownMessageType):
         message_to_dict(

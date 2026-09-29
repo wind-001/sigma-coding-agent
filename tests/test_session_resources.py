@@ -17,8 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sigma_ai.tokens import estimate_text
-from sigma_session.resources import (
+from sigma.providers.tokens import estimate_text
+from sigma.sessions.resources import (
     AGENTS_MD_FILENAME,
     DEFAULT_MAX_TOKENS,
     ProjectInstructions,

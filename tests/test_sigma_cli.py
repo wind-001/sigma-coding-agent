@@ -12,8 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from sigma import cli as cli_module
-from sigma.cli import EXIT_HARNESS_ERROR, main
+import sigma.cli.main as cli_module
+from sigma.cli.main import (
+    EXIT_HARNESS_ERROR,
+    main,
+)
 
 
 def _fake_repl(entered: list[int]):  # type: ignore[no-untyped-def]

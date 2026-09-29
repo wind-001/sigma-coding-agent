@@ -20,7 +20,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sigma_agent.checkpoint import ShadowCheckpoint
+from sigma.security.shadow_checkpoint import ShadowCheckpoint
 
 #: 初始文件(全部参与快照:小文本、无 .gitignore 干扰)。
 INITIAL_FILES: dict[str, str] = {

@@ -58,13 +58,16 @@ from runner import _count_tool_calls  # noqa: E402
 
 from sigma.eval_profile import EvalProfile  # noqa: E402
 from sigma import sdk  # noqa: E402
-from sigma.cli import DEFAULT_PRESET, resolve_api_key  # noqa: E402
-from sigma_agent.types import TurnResult  # noqa: E402
-from sigma_ai.base import NeverCancelled, StreamOptions  # noqa: E402
-from sigma_ai.messages import LlmMessage, SystemMessage, Usage, UserMessage  # noqa: E402
-from sigma_ai.openai import OpenAICompatProvider  # noqa: E402
-from sigma_ai.registry import builtin_providers  # noqa: E402
-from sigma_ai.stamps import now as _stamp_now  # noqa: E402
+from sigma.cli.main import (
+    DEFAULT_PRESET,
+    resolve_api_key  # noqa: E402,
+)
+from sigma.agent.types import TurnResult  # noqa: E402
+from sigma.providers.base import NeverCancelled, StreamOptions  # noqa: E402
+from sigma.providers.messages import LlmMessage, SystemMessage, Usage, UserMessage  # noqa: E402
+from sigma.providers.openai import OpenAICompatProvider  # noqa: E402
+from sigma.providers.registry import builtin_providers  # noqa: E402
+from sigma.providers.stamps import now as _stamp_now  # noqa: E402
 
 DATASETS = EVALS / "datasets"
 REPORTS = EVALS / "reports"

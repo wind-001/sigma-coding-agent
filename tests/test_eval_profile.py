@@ -19,16 +19,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sigma_ai.fake import FakeProvider
-from sigma_session.compact import CompactionPolicy
+from sigma.providers.fake import FakeProvider
+from sigma.sessions.compaction import CompactionPolicy
 
 from sigma import sdk
 from sigma.eval_profile import EvalProfile
 
 # 与 test_session_compact.py 同款的最小轮次构造。
-from sigma_ai.messages import AssistantMessage, TextBlock, Usage, UserMessage
-from sigma_agent.agent_messages import LlmMessageWrapper
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.messages import AssistantMessage, TextBlock, Usage, UserMessage
+from sigma.agent.messages import LlmMessageWrapper
+from sigma.providers.stamps import from_epoch as ts
 
 
 def _text_round(text: str) -> list[dict[str, object]]:

@@ -5,17 +5,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sigma_agent.agent_messages import LlmMessageWrapper, ToolResultAgentMessage
-from sigma_ai.messages import AssistantMessage, TextBlock, Usage
-from sigma_session.store import JsonlStore
-from sigma_session.tree import SessionTree
-from sigma.timeline import (
+from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
+from sigma.providers.messages import AssistantMessage, TextBlock, Usage
+from sigma.sessions.store import JsonlStore
+from sigma.sessions.tree import SessionTree
+from sigma.observability.timeline import (
     build_timeline,
     render_timeline,
     timeline_to_json,
 )
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 
 SID = "oldsess"
 T0 = ts(1_700_000_000.000)
@@ -55,7 +55,7 @@ def _write_session(root: Path) -> Path:
 
 
 def _User(stamp: str):  # noqa: N802（测试内小工厂）
-    from sigma_ai.messages import UserMessage
+    from sigma.providers.messages import UserMessage
 
     # 落盘的是 agent 层消息：LLM 层消息必须包进 LlmMessageWrapper
     # （与 sdk.send 的装配同形——裸 UserMessage 落盘后加载即 UnknownMessageType）

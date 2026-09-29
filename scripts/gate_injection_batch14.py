@@ -51,7 +51,7 @@ import sys
 
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
-SKILLS = "core/sigma_agent/skills.py"
+SKILLS = "core/sigma.agent/skills.py"
 TOOL = "core/sigma_tools/skill.py"
 
 TESTS = "tests/test_agent_skills.py"

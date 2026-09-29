@@ -21,7 +21,7 @@ jobs:
         run: lint-imports
 
       - name: 类型检查
-        run: mypy core
+        run: mypy src
 
       - name: 单测（不需要 API key）
         run: |

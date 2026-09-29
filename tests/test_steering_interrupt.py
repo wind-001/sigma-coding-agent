@@ -15,16 +15,16 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from sigma_agent.agent_messages import LlmMessageWrapper, convert_to_llm
-from sigma_agent.base import BaseTool
-from sigma_agent.loop import AgentLoop
-from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult
-from sigma_ai.base import NeverCancelled, TurnCancelled
-from sigma_ai.events import TextDelta
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock, UserMessage
-from sigma_ai.stamps import from_epoch as ts
+from sigma.agent.messages import LlmMessageWrapper, convert_to_llm
+from sigma.tools.base import BaseTool
+from sigma.runtime.event_loop import AgentLoop
+from sigma.tools.registry import ToolRegistry
+from sigma.agent.types import ToolContext, ToolResult
+from sigma.providers.base import NeverCancelled, TurnCancelled
+from sigma.providers.events import TextDelta
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import TextBlock, UserMessage
+from sigma.providers.stamps import from_epoch as ts
 from sigma.sdk import InteractiveSession
 
 FIXED_TIME = ts(1_700_000_000)

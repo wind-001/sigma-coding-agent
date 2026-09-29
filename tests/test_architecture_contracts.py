@@ -7,7 +7,7 @@
 
 为什么每个 fixture 还要断言「只有一条契约坏掉」
     ``layers`` 契约是线性栈，它默认放行所有向下的 import，
-    无法表达「同级互不依赖」。所以 ``sigma_tools`` 与 ``sigma_session``
+    无法表达「同级互不依赖」。所以 ``sigma_tools`` 与 ``sigma.sessions``
     的兄弟关系必须靠单独的 ``independence`` 契约钉住。
     如果这个样例同时把 layers 也弄坏了，就说明它测的不是兄弟约束。
 
@@ -31,8 +31,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "arch"
 
 REAL_CONTRACTS = [
     "分层只允许向下依赖",
-    "核心层不得依赖评测与扩展",
-    "内置工具与会话层互不依赖",
+    "核心包不得依赖评测与扩展",
 ]
 
 

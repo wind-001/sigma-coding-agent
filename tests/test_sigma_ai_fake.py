@@ -27,24 +27,24 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sigma_ai.base import CancelToken
-from sigma_ai.errors import ErrorCode
-from sigma_ai.events import (
+from sigma.providers.base import CancelToken
+from sigma.providers.errors import ErrorCode
+from sigma.providers.events import (
     ErrorEvent,
     StopEvent,
     TextDelta,
     ToolCallDelta,
     UsageEvent,
 )
-from sigma_ai.fake import FakeProvider, TranscriptExhausted, load_transcript
-from sigma_ai.messages import UserMessage
+from sigma.providers.fake import FakeProvider, TranscriptExhausted, load_transcript
+from sigma.providers.messages import UserMessage
 
 # ---------------------------------------------------------------------------
 # 测试替身
 # ---------------------------------------------------------------------------
 
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 class _NeverCancelled(CancelToken):
     """永不取消。回放测试的默认信号。"""
 
@@ -352,7 +352,7 @@ async def test_signature_params_are_accepted_but_ignored() -> None:
     ``FakeProvider`` 对它们**无感**（这正是它会掩盖签名缺漏的原因），
     但至少要能接住。
     """
-    from sigma_ai.base import SamplingParams, StreamOptions
+    from sigma.providers.base import SamplingParams, StreamOptions
 
     provider = FakeProvider.from_rounds([_round_text("x")])
     events = [

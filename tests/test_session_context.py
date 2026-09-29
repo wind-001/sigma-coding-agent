@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from sigma_session.context import ResidentRegionChanged, SessionContext
+from sigma.sessions.context import ResidentRegionChanged, SessionContext
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 CLOCK = lambda: ts(1_700_000_000)  # noqa: E731 - 固定时钟，保证可复现
 
 
@@ -94,8 +94,8 @@ def test_history_preserves_append_order() -> None:
 
     本类只暴露 ``append``，**没有给插入留口子**（插入会破坏 prompt cache）。
     """
-    from sigma_agent.agent_messages import LlmMessageWrapper
-    from sigma_ai.messages import SystemMessage
+    from sigma.agent.messages import LlmMessageWrapper
+    from sigma.providers.messages import SystemMessage
 
     context = SessionContext(system_prompt="s", tools_schema=[], clock=CLOCK)
     for text in ("first", "second", "third"):
@@ -182,7 +182,7 @@ def test_resident_budget_exceeded_raises() -> None:
 
     超限的症状是**变慢变贵且不报错**，所以这里宁可崩。
     """
-    from sigma_session.context import ResidentBudgetExceeded
+    from sigma.sessions.context import ResidentBudgetExceeded
 
     context = SessionContext(
         system_prompt="s" * 100,
@@ -220,7 +220,7 @@ def test_default_budget_matches_d4() -> None:
     ``resident_caps.py``;分项和==总额由 G885 另行钉住——**这条测试现在
     防的是"预算常量被静默改动"**,任何再修订必须连数字带依据一起改。
     """
-    from sigma_session.context import DEFAULT_RESIDENT_BUDGET_TOKENS
+    from sigma.sessions.context import DEFAULT_RESIDENT_BUDGET_TOKENS
 
     context = SessionContext(system_prompt="s", tools_schema=[], clock=CLOCK)
     assert DEFAULT_RESIDENT_BUDGET_TOKENS == 5500
@@ -263,8 +263,8 @@ def test_history_goes_through_a_tree() -> None:
     同义：你在那条支上继续写，那条支就是当前支）。
     要回到原支必须显式 ``set_head``——**这不是副作用，是语义**。
     """
-    from sigma_agent.agent_messages import LlmMessageWrapper
-    from sigma_ai.messages import UserMessage
+    from sigma.agent.messages import LlmMessageWrapper
+    from sigma.providers.messages import UserMessage
 
     context = SessionContext(system_prompt="s", tools_schema=[], clock=CLOCK)
 

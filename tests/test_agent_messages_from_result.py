@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import pytest
 
-from sigma_agent.agent_messages import ToolResultAgentMessage
-from sigma_agent.types import ToolResult
-from sigma_ai.messages import TextBlock, ToolCallBlock
+from sigma.agent.messages import ToolResultAgentMessage
+from sigma.agent.types import ToolResult
+from sigma.providers.messages import TextBlock, ToolCallBlock
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 FIXED_TS = ts(1_700_000_000)
 
 
@@ -106,7 +106,7 @@ def test_timestamp_defaults_when_omitted() -> None:
     message = ToolResultAgentMessage.from_result(
         _call(), ToolResult(content=[TextBlock(text="x")])
     )
-    # 时间戳现在是可读字符串（sigma_ai.stamps），**不能再比大小**。
+    # 时间戳现在是可读字符串（sigma.providers.stamps），**不能再比大小**。
     # 要验的是"它被填上了"，用非空即可；格式本身由 stamps 的用例钉。
     assert isinstance(message.timestamp, str) and message.timestamp
 

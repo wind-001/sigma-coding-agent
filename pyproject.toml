@@ -41,16 +41,15 @@ dev = [
 ]
 
 [project.scripts]
-sigma = "sigma.cli:main"
+sigma = "sigma.cli.main:main"
 
-# 五个包放在 core/ 下，靠 package-dir 把它当成包根，
-# 否则 sigma_ai / sigma_agent 等不是顶层名字，
-# lint-imports 与 mypy 会静默找不到包。详见 docs/plans/P0-骨架.md。
+# 唯一顶层包 sigma 放在 src/ 下(P6 目录重构,星辰拍板 Q1:标准 src 布局)。
+# 旧布局(core/ 下五个 sigma_* 平级包)已废,见 docs/plans/P6-目录结构重构-详规.md。
 [tool.setuptools]
-package-dir = { "" = "core" }
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
-where = ["core"]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -62,7 +61,7 @@ asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.12"
-mypy_path = "core"
+mypy_path = "src"
 strict = true
 # **钉住目标平台 = CI 的平台**（2026-09-22 加）。
 #
@@ -72,7 +71,7 @@ strict = true
 # `# type: ignore[union-attr]` 在 Linux 上成了"多余注释"，
 # strict 的 `warn_unused_ignores` 直接把它报成错误（安装与契约都过了，mypy 挂）。
 #
-# 钉住之后的性质：**本地 `mypy core` 与 CI 完全同口径**，
+# 钉住之后的性质：**本地 `mypy src` 与 CI 完全同口径**，
 # "本地绿 → 推上去红"这类差异不再出现。
 platform = "linux"
 
@@ -84,59 +83,45 @@ platform = "linux"
 # 那是"声明的门槛大于实际执行的门槛"，属于名义约束。
 # 与其留一个名义门槛，不如删掉。
 
-# 分层依赖契约。列表自上而下 = 由高到低，
-# 低层不允许引用高层。
+# 分层依赖契约。P6 目录重构后:单顶层包 sigma,按功能域子包分层,
+# 列表自上而下 = 由高到低,低层不允许引用高层。
+# (旧的"内置工具与会话层互不依赖"independence 契约随旧布局废除——
+#  它只为钉住 sigma_tools/sigma_session 兄弟关系而存在,
+#  新结构里 tools 与 sessions 相隔多层,无歧义。)
 [tool.importlinter]
-root_packages = [
-    "sigma_ai",
-    "sigma_agent",
-    "sigma_session",
-    "sigma_tools",
-    "sigma",
-]
+root_packages = ["sigma"]
 # evals / extensions 不在 root_packages 里（它们不是被安装的包），
-# 但下面第二条契约要禁止核心层引用它们，所以必须打开这个开关。
+# 但下面第二条契约要禁止核心包引用它们，所以必须打开这个开关。
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "分层只允许向下依赖"
 type = "layers"
 layers = [
-    "sigma",
-    "sigma_tools",
-    "sigma_session",
-    "sigma_agent",
-    "sigma_ai",
+    "sigma.cli",
+    "sigma.sdk",
+    "sigma.observability",
+    "sigma.runtime",
+    "sigma.tools",
+    "sigma.skills",
+    "sigma.security",
+    "sigma.hooks",
+    "sigma.sessions",
+    "sigma.memory",
+    "sigma.events",
+    "sigma.agent",
+    "sigma.prompts",
+    "sigma.config",
+    "sigma.providers",
 ]
 
 [[tool.importlinter.contracts]]
-name = "核心层不得依赖评测与扩展"
+name = "核心包不得依赖评测与扩展"
 type = "forbidden"
 source_modules = [
-    "sigma_ai",
-    "sigma_agent",
-    "sigma_session",
-    "sigma_tools",
     "sigma",
 ]
 forbidden_modules = [
     "evals",
     "extensions",
-]
-
-# sigma_tools 与 sigma_session 是**兄弟层**，互不依赖。
-#
-# 为什么必须单列这一条：上面的 layers 契约是线性栈，语义只有
-# 「下层不许引用上层」，**它默认放行所有向下的 import**。
-# 把 sigma_tools 排在 sigma_session 之上，等于悄悄给了
-# sigma_tools -> sigma_session 一张通行证。
-#
-# 2026-09-20 实测确认过这个洞：向 sigma_tools 注入 import sigma_session，
-# 当时两条契约都是 KEPT、退出码 0。加这条之后才拦得住。
-[[tool.importlinter.contracts]]
-name = "内置工具与会话层互不依赖"
-type = "independence"
-modules = [
-    "sigma_tools",
-    "sigma_session",
 ]

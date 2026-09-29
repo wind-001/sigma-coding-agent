@@ -1,12 +1,12 @@
-"""时间戳格式（``sigma_ai.stamps``）的测试。
+"""时间戳格式（``sigma.providers.stamps``）的测试。
 
 **这一条来自星辰 2026-09-22 的要求**：会话存储里的时间戳改用
 「年月日时分秒毫秒」的具体时间，而不是 Unix 秒整数。
 
 **为什么值得单独一个文件**
 
-    它是**跨层契约**：``sigma_ai``（消息模型）、``sigma_agent``（loop 的时钟）、
-    ``sigma_session``（会话文件与 id）、``sigma``（CLI）都用它。
+    它是**跨层契约**：``sigma.providers``（消息模型）、``sigma.agent``（loop 的时钟）、
+    ``sigma.sessions``（会话文件与 id）、``sigma``（CLI）都用它。
     而"格式"这种东西最容易在某一处被悄悄改掉——
     症状不是报错，是**同一个会话文件里出现两种形状的时间戳**，
     直到有人打开文件才发现。
@@ -18,7 +18,7 @@ import re
 from datetime import datetime
 
 import pytest
-from sigma_ai import stamps
+from sigma.providers import stamps
 
 #: 年月日 T 时分秒 . 毫秒 —— 逐段钉住，而不是只比一个正则的整体
 STAMP_RE = re.compile(

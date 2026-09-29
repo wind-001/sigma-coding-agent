@@ -27,7 +27,7 @@ PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 
 print(f"[env] 仓库根 = {REPO}")
 print(f"[env] python  = {PYTHON}")
-assert (REPO / "core" / "sigma_session" / "trace.py").exists(), "仓库根解析错了"
+assert (REPO / "core" / "sigma.sessions" / "trace.py").exists(), "仓库根解析错了"
 
 
 class Repo:
@@ -105,8 +105,8 @@ def experiment(gate: str, what: str, target: str, inject) -> None:
 # 各门槛的注入
 # ---------------------------------------------------------------------------
 
-TRACE = "core/sigma_session/trace.py"
-LOOP = "core/sigma_agent/loop.py"
+TRACE = "core/sigma.sessions/trace.py"
+LOOP = "core/sigma.agent/loop.py"
 TIMELINE = "core/sigma/timeline.py"
 TRACE_TESTS = "tests/test_trace_hook.py"
 TIMELINE_TESTS = "tests/test_timeline_view.py"

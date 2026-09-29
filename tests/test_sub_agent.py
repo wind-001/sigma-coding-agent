@@ -22,13 +22,13 @@ from typing import Any
 import pytest
 
 from sigma.sdk import InteractiveSession, build_system_prompt
-from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext
-from sigma_ai.base import NeverCancelled
-from sigma_ai.fake import FakeProvider
+from sigma.tools.registry import ToolRegistry
+from sigma.agent.types import ToolContext
+from sigma.providers.base import NeverCancelled
+from sigma.providers.fake import FakeProvider
 
-from sigma_tools.task import SubAgentRounds, TaskParams
-from sigma_tools.todo import TodoTool
+from sigma.runtime.sub_agent import SubAgentRounds, TaskParams
+from sigma.tools.builtin.todo import TodoTool
 
 
 # ---------------------------------------------------------------------------

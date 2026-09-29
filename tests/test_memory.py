@@ -10,15 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from sigma_ai.base import CancelToken
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock
-from sigma_session.context import (
+from sigma.providers.base import CancelToken
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import TextBlock
+from sigma.sessions.context import (
     DEFAULT_RESIDENT_BUDGET_TOKENS,
     ResidentBudgetExceeded,
     SessionContext,
 )
-from sigma_session.memory import (
+from sigma.memory.file_store import (
     memory_dir_for,
     render_memory_index,
     scan_memory,
@@ -27,7 +27,7 @@ from sigma_session.memory import (
 import sigma.sdk as sdk_mod
 from sigma.sdk import InteractiveSession, build_system_prompt
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 
 FIXED_TIME = ts(1_700_000_000)
 
@@ -114,7 +114,7 @@ def test_g880_index_capped_and_truncation_visible(tmp_path: Path) -> None:
     assert len(scan.entries) == 20
 
     index = render_memory_index(scan)
-    from sigma_ai.tokens import estimate_text
+    from sigma.providers.tokens import estimate_text
 
     assert estimate_text(index) <= 250
     assert "未显示" in index  # 截断必须可见,不静默
@@ -156,7 +156,7 @@ def test_g882_memory_survives_rollback(tmp_path: Path) -> None:
     所以 restore 既不会删它(排除清单的意义),也不会找回它
     (记忆不是版本化数据,这是设计不是缺陷)。破坏对象用普通文件。
     """
-    from sigma_agent.checkpoint import ShadowCheckpoint
+    from sigma.security.shadow_checkpoint import ShadowCheckpoint
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -255,9 +255,9 @@ def test_g884_scan_happens_exactly_once(tmp_path: Path, monkeypatch: pytest.Monk
 def _echo_registry():
     from pydantic import BaseModel, Field
 
-    from sigma_agent.base import BaseTool
-    from sigma_agent.registry import ToolRegistry
-    from sigma_agent.types import ToolContext, ToolResult
+    from sigma.tools.base import BaseTool
+    from sigma.tools.registry import ToolRegistry
+    from sigma.agent.types import ToolContext, ToolResult
 
     class EchoParams(BaseModel):
         message: str = Field(description="内容")

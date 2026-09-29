@@ -19,15 +19,15 @@ from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
-from sigma_agent.base import BaseTool
-from sigma_agent.loop import AgentLoop
-from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult
-from sigma_ai.base import NeverCancelled
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock
+from sigma.tools.base import BaseTool
+from sigma.runtime.event_loop import AgentLoop
+from sigma.tools.registry import ToolRegistry
+from sigma.agent.types import ToolContext, ToolResult
+from sigma.providers.base import NeverCancelled
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import TextBlock
 
-from sigma_tools.todo import TodoTool
+from sigma.tools.builtin.todo import TodoTool
 
 
 class _EchoParams(BaseModel):

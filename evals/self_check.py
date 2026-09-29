@@ -26,21 +26,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sigma_agent.agent_messages import LlmMessageWrapper
-from sigma_agent.hooks import HookManager
-from sigma_agent.loop import AgentLoop
-from sigma_agent.registry import ToolRegistry
-from sigma_ai.base import BaseProvider, CancelToken
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import LlmMessage, UserMessage
-from sigma_ai.stamps import from_epoch as ts
-from sigma_ai.tokens import estimate_text
-from sigma_session.context import SessionContext
-from sigma_session.persist_hook import SessionPersistHook
-from sigma_session.sessions import TRACE_SUFFIX
-from sigma_session.store import JsonlStore
-from sigma_session.tree import SessionTree
-from sigma.cli import DEFAULT_SESSIONS_DIR
+from sigma.agent.messages import LlmMessageWrapper
+from sigma.hooks.base import (
+    HookManager,
+)
+from sigma.runtime.event_loop import AgentLoop
+from sigma.tools.registry import ToolRegistry
+from sigma.providers.base import BaseProvider, CancelToken
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import LlmMessage, UserMessage
+from sigma.providers.stamps import from_epoch as ts
+from sigma.providers.tokens import estimate_text
+from sigma.sessions.context import SessionContext
+from sigma.hooks.persist import SessionPersistHook
+from sigma.sessions.sessions import TRACE_SUFFIX
+from sigma.sessions.store import JsonlStore
+from sigma.sessions.tree import SessionTree
+from sigma.cli.main import (
+    DEFAULT_SESSIONS_DIR,
+)
 from sigma.sdk import build_system_prompt
 
 REPO = Path(__file__).resolve().parent.parent
@@ -122,7 +126,7 @@ def cache_stats(sessions_dir: Path) -> CacheStats:
 
 
 def _session_cache_row(session_id: str, path: Path) -> SessionCacheRow | None:
-    from sigma.timeline import build_timeline
+    from sigma.observability.timeline import build_timeline
 
     timeline = build_timeline(session_id, path, None)
     if not timeline.rounds:
@@ -263,7 +267,7 @@ def _run_steering_case(
             )
         ]
 
-    from sigma_tools.bash import BashTool
+    from sigma.tools.builtin.bash import BashTool
 
     registry = ToolRegistry()
     registry.register(BashTool())

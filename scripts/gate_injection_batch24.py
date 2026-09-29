@@ -38,7 +38,7 @@ PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 # 解析错时的症状（FileNotFoundError）很容易被误判成"文件真被删了"。
 print(f"[env] 仓库根 = {REPO}")
 print(f"[env] python  = {PYTHON}")
-assert (REPO / "core" / "sigma_agent" / "loop.py").exists(), "仓库根解析错了"
+assert (REPO / "core" / "sigma.agent" / "loop.py").exists(), "仓库根解析错了"
 
 
 class Repo:
@@ -265,13 +265,13 @@ def experiment(gate: str, what: str, target: str | list[str], inject) -> None:
 # 各门槛的注入
 # ---------------------------------------------------------------------------
 
-TOOL_BASE = "core/sigma_agent/base.py"
-TOOL_REGISTRY = "core/sigma_agent/registry.py"
-MSG = "core/sigma_agent/agent_messages.py"
-LOOP = "core/sigma_agent/loop.py"
-CONTEXT = "core/sigma_session/context.py"
+TOOL_BASE = "core/sigma.agent/base.py"
+TOOL_REGISTRY = "core/sigma.agent/registry.py"
+MSG = "core/sigma.agent/agent_messages.py"
+LOOP = "core/sigma.agent/loop.py"
+CONTEXT = "core/sigma.sessions/context.py"
 TRUNCATE = "core/sigma_tools/truncate.py"
-CALLS = "core/sigma_ai/tool_calls.py"
+CALLS = "core/sigma.providers/tool_calls.py"
 
 LOOP_TESTS = "tests/test_agent_loop.py"
 CONTEXT_TESTS = "tests/test_session_context.py"

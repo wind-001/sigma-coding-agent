@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from sigma_ai.base import NeverCancelled
-from sigma_agent.types import ToolContext
-from sigma_tools.grep import GrepTool
+from sigma.providers.base import NeverCancelled
+from sigma.agent.types import ToolContext
+from sigma.tools.builtin.grep import GrepTool
 
 
 def _ctx(root: Path) -> ToolContext:

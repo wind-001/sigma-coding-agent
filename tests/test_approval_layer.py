@@ -15,24 +15,29 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from sigma._approval import (
+from sigma.security.approval import (
     Allowlist,
     CliApprovalGate,
     allowlist_key,
     analyze_call,
 )
-from sigma_agent.agent_messages import ToolResultAgentMessage
-from sigma_agent.base import BaseTool
-from sigma_agent.hooks import ApprovalDecision, ApprovalHook
-from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult
-from sigma_ai.base import NeverCancelled
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock
-from sigma_ai.stamps import from_epoch as ts
-from sigma_tools.ask_user import AskUserTool
-from sigma_tools.bash import BashTool
-from sigma_tools.write import WriteTool
+from sigma.agent.messages import ToolResultAgentMessage
+from sigma.tools.base import BaseTool
+from sigma.events.lifecycle import (
+    ApprovalDecision,
+)
+from sigma.hooks.base import (
+    ApprovalHook,
+)
+from sigma.tools.registry import ToolRegistry
+from sigma.agent.types import ToolContext, ToolResult
+from sigma.providers.base import NeverCancelled
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import TextBlock
+from sigma.providers.stamps import from_epoch as ts
+from sigma.tools.builtin.ask_user import AskUserTool
+from sigma.tools.builtin.bash import BashTool
+from sigma.tools.builtin.write import WriteTool
 from sigma.sdk import InteractiveSession
 
 FIXED_TIME = ts(1_700_000_000)
