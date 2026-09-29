@@ -19,7 +19,6 @@ import json
 from typing import Any
 
 from sigma.providers.errors import (
-    ProviderError,
     ProviderErrorPayload,
     classify_http_status,
 )
@@ -120,7 +119,3 @@ def _error_from_response(status_code: int, body_text: str) -> ProviderErrorPaylo
         raw=raw,
         status_code=status_code,
     )
-
-
-# 未使用但导出，方便调用方构造异常：
-_ = ProviderError

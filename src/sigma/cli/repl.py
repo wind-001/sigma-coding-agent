@@ -85,7 +85,7 @@ class _ReplSession(Protocol):
 def _now_text(epoch: float) -> str:
     """把 mtime 打成 ``MM-DD HH:MM``。
 
-    **用 ``stamps.split`` 而不是自己 ``datetime.fromtimestamp``**：
+    **用 ``stamps.moment_and_millis`` 而不是自己 ``datetime.fromtimestamp``**：
     会话文件里的时间戳格式演进过一次（int 秒 → 本地可读串），
     而"换算在哪做"已经被收敛到 ``stamps`` 一处。在这里再写一遍
     ``fromtimestamp``，下次改格式时它会**不跟着改**，
@@ -96,7 +96,7 @@ def _now_text(epoch: float) -> str:
     id 本身就带完整时间戳（``YYYYMMDD-HHMMSS.mmm-xxxx``）——
     两处给不同的精度，是刻意的分工。
     """
-    moment, _ = stamps.split(epoch)
+    moment, _ = stamps.moment_and_millis(epoch)
     return f"{moment.month:02d}-{moment.day:02d} {moment.hour:02d}:{moment.minute:02d}"
 
 
