@@ -75,7 +75,8 @@ SUB_SYSTEM_PROMPT_PREFIX = (
 MAILBOX_WAIT_TIMEOUT_S = 300.0
 
 
-class SubAgentRounds(BaseModel):
+@dataclass(frozen=True)
+class SubAgentRounds:
     """子 agent 的轮数预算：三档，由**派发的模型**按任务难度选。
 
     三档取值与依据（全部来自本项目实测，不是拍脑袋）
@@ -97,6 +98,10 @@ class SubAgentRounds(BaseModel):
         证据）。**派发的模型是唯一知道任务难度的一方**：它刚拆完计划。
         低档猜错了也不致命：子会话跑不满会 stopped，回报里带"未正常收尾"
         注记，主 agent 可以立刻用 high 重派——闭环是通的。
+
+    P6 批次C 三问判定：不生成 schema、不落盘/跨进程、不校验外部输入
+    （构造方在本 harness 内，取值是写死的实测常量）——三问皆否，
+    降为 frozen dataclass。
     """
 
     low: int = 10

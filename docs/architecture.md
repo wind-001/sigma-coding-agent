@@ -283,43 +283,59 @@ SQLite session backend 主题系统          TUI 花哨渲染
 
 ## 3. 分层架构
 
-五个包，依赖方向严格单向。**层与层之间用 import-linter 强制契约**（沿用 interview-agent 已验证的做法，见第 8 节）。
+**P6 目录结构重构（2026-09-29，ADR D7）后的形态**：一个顶层包 `sigma`，
+内按功能域分 15 个子包，依赖方向严格单向，**层与层之间用 import-linter 强制契约**
+（沿用 interview-agent 已验证的做法，见第 8 节）。旧的五个平级包
+（`sigma_ai` / `sigma_agent` / `sigma_session` / `sigma_tools` / 应用壳 `sigma`）
+已整体重组，包名不再存在——历史对照见 3.0 节末尾的 P6 注记。
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  sigma  (CLI + SDK)                                 │
-│  组装依赖 · REPL · 一次性模式 · 会话加载             │
-└───────────────────────┬─────────────────────────────┘
-                        │
-┌───────────────────────▼─────────────────────────────┐
-│  sigma_tools                                        │
-│  内置工具实现：read / write / edit / bash / grep     │
-│  （与扩展工具走同一条注册路径）                       │
-└───────────────────────┬─────────────────────────────┘
-                        │
-┌───────────────────────▼─────────────────────────────┐
-│  sigma_session                                      │
-│  会话树 JSONL · 上下文组装 · 压缩 · 资源加载          │
-└───────────────────────┬─────────────────────────────┘
-                        │
-┌───────────────────────▼─────────────────────────────┐
-│  sigma_agent                                        │
-│  Agent loop · 工具注册表 · 钩子总线 · checkpoint       │
-└───────────────────────┬─────────────────────────────┘
-                        │
-┌───────────────────────▼─────────────────────────────┐
-│  sigma_ai                                           │
-│  Provider 抽象 · 流式事件 · 用量统计 · 错误归一化      │
+│  sigma.cli        终端薄壳：参数解析 · REPL · 渲染    │
+├─────────────────────────────────────────────────────┤
+│  sigma.sdk        唯一装配点：create_session()       │
+├─────────────────────────────────────────────────────┤
+│  sigma.observability  trace 落盘 · timeline 视图      │
+├─────────────────────────────────────────────────────┤
+│  sigma.runtime    事件主循环 · 子 agent               │
+├─────────────────────────────────────────────────────┤
+│  sigma.tools      工具基类 · 注册表 · 内置工具 · 额度  │
+├─────────────────────────────────────────────────────┤
+│  sigma.skills     技能发现与索引                      │
+├─────────────────────────────────────────────────────┤
+│  sigma.security   路径沙箱 · 影子 checkpoint · 审批门  │
+├─────────────────────────────────────────────────────┤
+│  sigma.hooks      订阅者 ABC · 钩子总线               │
+├─────────────────────────────────────────────────────┤
+│  sigma.sessions   会话树 · JSONL 存储 · 组装 · 压缩   │
+├─────────────────────────────────────────────────────┤
+│  sigma.memory     跨会话记忆（.sigma/memory/*.md）    │
+├─────────────────────────────────────────────────────┤
+│  sigma.events     生命周期事件定义（hooks 是订阅者）   │
+├─────────────────────────────────────────────────────┤
+│  sigma.agent      agent 层消息模型与工具载体类型       │
+├─────────────────────────────────────────────────────┤
+│  sigma.prompts    系统提示词资产（逐字节稳定）         │
+├─────────────────────────────────────────────────────┤
+│  sigma.config     .env 读取 · 常驻区预算表            │
+├─────────────────────────────────────────────────────┤
+│  sigma.providers  Provider 抽象 · 流事件 · 协议适配    │
 └─────────────────────────────────────────────────────┘
 ```
 
-**这张竖排图不是依赖顺序。** `sigma_tools` 与 `sigma_session` 是**兄弟层**——
-两者都只依赖 `sigma_agent` 与 `sigma_ai`，彼此之间没有任何依赖。
-竖排只是为了排版。它们的依赖关系由第 8 节的 `independence` 契约强制，不是靠约定。
+**与旧版竖排图的本质区别：这张图的排列就是依赖顺序。** 旧五包布局里
+`sigma_tools` 与 `sigma_session` 是兄弟层、竖排"只是为了排版"；
+P6 之后层表是线性栈（§8），上可依下、下不可依上，由 `layers` 契约强制。
+`security` 排在 `hooks` 之上（审批门实现 ApprovalHook）、`tools` 排在
+`security` 之上（写工具引用 path_sandbox）、`hooks` 排在 `sessions` 之上
+（persist 钩子引用会话树）——排位依据逐边实测，见 `pyproject.toml` 层表。
 
-**关键设计点：`sigma_tools` 与扩展工具共用同一个注册表接口。** 这样"用扩展替换内置工具"是免费的，`--no-builtin-tools` + 只加载扩展能直接演示。Pi 做到了这一点，值得照抄。
+**关键设计点保留不变：内置工具与扩展工具共用同一个注册表接口**（`tools/registry.py`）。
+"用扩展替换内置工具"依然是免费的，`--no-builtin-tools` + 只加载扩展能直接演示。
 
-**为什么 checkpoint 放在 `sigma_agent` 而不是 `sigma_tools`**：它需要感知"一个工具批次"的边界，这个边界只有 loop 知道。放在工具层会退化成"每个工具自己备份"，重复且不可控。
+**checkpoint（影子 git）落在 `security/shadow_checkpoint.py`**：它需要感知
+"一个工具批次"的边界，这个边界只有 loop 知道；归入 security 是因为它本质是
+"改坏了能回来"的安全网，与路径沙箱、审批门同属"执行安全"域。
 
 ### 3.0 手绘架构图与本节的对齐关系
 
@@ -352,67 +368,98 @@ SQLite session backend 主题系统          TUI 花哨渲染
 兄弟层这个结论来自本方案第 8 节的依赖边表，并由 `independence` 契约强制，
 不是从图里读出来的。
 
+> **P6 注记（2026-09-29）**：上表 `sigma_ai` / `sigma_agent` / `sigma_session`
+> / `sigma_tools` 的包名随目录重组已不存在，分别对应现在的 `providers` /
+> `agent`+`runtime` / `sessions`+`memory`+`config` / `tools`+`security`。
+> "五层 ≠ 图的四层"的历史论证保留，但兄弟层结论已被线性层表取代
+> （旧 `independence` 契约随之删除，理由见第 8 节）。
+
 ### 3.1 目录结构
 
+**P6 重构后（2026-09-29 起，src 布局 + 功能域分目录；此前 core/ 五包布局见 ADR D7）：**
+
 ```
-sigma/
-├── pyproject.toml                 # 打包依赖 + [tool.importlinter] 分层契约
-├── .github/workflows/ci.yml       # CI：lint-imports / mypy / pytest
-├── AGENTS.md                      # 本仓库自己的项目指令（自举：sigma 读它）
-├── README.md
-├── core/
-│   ├── sigma_ai/
-│   │   ├── base.py                # BaseProvider（ABC）
-│   │   ├── messages.py            # LLM 层：四个消息模型 + 内容块（4.0.1 / 4.0.2）
-│   │   ├── events.py              # StreamEvent 判别联合
-│   │   ├── openai/                # OpenAI 兼容协议（2026-09-20 从单文件拆开）
-│   │   │   ├── protocol.py        #   finish_reason 映射 / usage / 错误体解析
-│   │   │   ├── convert.py         #   LLM 消息 → 请求体
-│   │   │   ├── sse.py             #   SSE 分帧与行解析
-│   │   │   └── provider.py        #   OpenAICompatProvider
-│   │   ├── anthropic.py           # 【未创建】P4 之后的预留位（截至 2026-09-27 不存在）
-│   │   └── fake.py                # 确定性回放（见 7.2）
-│   ├── sigma_agent/
-│   │   ├── base.py                # BaseTool（ABC）；BaseLoop 已于 2026-09-20 删除
-│   │   ├── agent_messages.py      # agent 层：AgentMessage（ABC）+ 注册表 + convert_to_llm（4.0.3–4.0.6）
-│   │   ├── loop.py                # AgentLoop —— 唯一的循环实现（无基类）
-│   │   ├── registry.py            # 工具注册表 + 热重载
-│   │   ├── hooks.py               # 钩子总线（BaseHook ABC）
-│   │   ├── checkpoint.py          # 影子 git
-│   │   └── types.py               # ToolDefinition / ToolResult / ToolCall
-│   ├── sigma_session/
-│   │   ├── base.py                # 【未创建】BaseStore 抽象未做——store.py 直接实现（截至 2026-09-27）
-│   │   ├── tree.py                # SessionTree
-│   │   ├── store.py               # JSONL 追加读写
-│   │   ├── context.py             # 上下文组装 + 预算
-│   │   ├── compact.py             # 压缩
-│   │   └── resources.py           # AGENTS.md / skills 发现
-│   ├── sigma_tools/
-│   │   ├── read.py  write.py  edit.py  bash.py    # 各含一个 BaseTool 子类
-│   │   └── truncate.py            # 输出截断（见 5.3）
-│   └── sigma/
-│       ├── cli.py                 # 薄壳
-│       └── sdk.py                 # create_session()
-├── extensions/                    # 运行时加载，样例扩展放这里
-├── evals/                         # 评测（见第 7 节）
-│   ├── datasets/{reproduce,synthetic,adversarial}/
-│   ├── runner.py
-│   ├── judges/
-│   └── reports/
-├── tests/                         # 单测，无 API key 全绿
-│   └── fixtures/arch/{clean,violating}/   # 契约测试的正反两个样例
-└── docs/
-    ├── architecture.md            # 本文件
-    ├── pi-harness研究笔记.md       # 调研来源
-    ├── assets/                    # 架构图
-    ├── plans/                     # 各阶段实施计划与验收证据
-    └── decisions/                 # 每个决策一份 ADR
+pyproject.toml                 # 打包依赖 + [tool.importlinter] 分层契约
+.github/workflows/ci.yml       # CI：lint-imports / mypy src / pytest
+AGENTS.md                      # 本仓库自己的项目指令（自举：sigma 读它）
+README.md
+src/sigma/
+├── __init__.py  __main__.py   # python -m sigma
+├── sdk.py                     # 唯一装配点：create_session()（cli/evals 一律经它）
+├── cli/                       # 终端薄壳，零 agent 逻辑
+│   ├── main.py                # 参数解析与模式分派
+│   ├── repl.py                # 交互循环
+│   ├── render.py              # 渲染器
+│   └── interactive.py         # 按键式交互选择器
+├── runtime/                   # Agent Runtime 核心循环
+│   ├── event_loop.py          # 流式响应 → 工具调用 → 结果回灌 → 收敛（唯一 loop）
+│   └── sub_agent.py           # 子 agent（task 工具；由 sdk 注册）
+├── agent/                     # agent 层消息模型与工具载体类型
+│   ├── messages.py            # AgentMessage（ABC）+ 注册表 + convert_to_llm
+│   └── types.py               # ToolResult / ToolContext / TurnResult
+├── providers/                 # 多模型协议适配（最底层）
+│   ├── base.py                # BaseProvider（ABC）
+│   ├── messages.py            # LLM 层四消息模型 + 内容块
+│   ├── events.py              # StreamEvent 判别联合
+│   ├── stamps.py              # 时间戳（给人看的本地时间）
+│   ├── registry.py            # provider 连接参数注册表
+│   ├── errors.py              # 错误归一化
+│   ├── fake.py                # 确定性回放（评测地基）
+│   └── openai/                # protocol / convert / sse / provider
+├── events/                    # 生命周期事件定义（frozen dataclass，hooks 是订阅者）
+│   └── lifecycle.py
+├── hooks/                     # 钩子层：订阅者与总线
+│   ├── base.py                # BaseHook ABC + HookManager
+│   └── persist.py             # 会话持久化钩子（失败=中止，与 trace 相反）
+├── tools/                     # 工具层
+│   ├── base.py                # BaseTool ABC
+│   ├── registry.py            # 注册表 + 热重载
+│   ├── truncate.py            # 输出截断 / 落盘替换
+│   ├── builtin/               # 一文件一工具（read/write/edit/bash/grep/web_*/todo/skill/ask_user）
+│   └── quota/                 # 联网工具额度账本（credit_ledger/tavily/firecrawl）
+├── skills/
+│   └── scanner.py             # 技能发现 / 索引 / 正文加载
+├── sessions/
+│   ├── tree.py  store.py  sessions.py  repair.py
+│   ├── context.py             # 上下文组装 + 常驻区预算/指纹
+│   ├── compaction.py          # 短期压缩（会话内，对 prompt 有损）
+│   └── resources.py           # AGENTS.md 读取与硬截断
+├── memory/
+│   └── file_store.py          # 跨会话长期记忆（.sigma/memory/*.md）
+├── security/
+│   ├── path_sandbox.py        # 工作区写边界（L1）
+│   ├── shadow_checkpoint.py   # 影子 git 回滚
+│   └── approval.py            # 危险命令识别 + 审批门（L2/L3）
+├── observability/
+│   ├── trace.py               # 逐事件 JSONL（失败=自禁用，与 persist 相反）
+│   └── timeline.py            # --timeline 视图
+├── prompts/
+│   └── system_prompt.py       # SYSTEM_PROMPT / build_system_prompt（逐字节稳定）
+├── config/
+│   ├── settings.py            # .env / 密钥 / 开关
+│   └── resident_caps.py       # 常驻区预算表（表即常量）
+└── eval_profile.py            # 评测侧档位定义
+extensions/                    # 运行时加载，样例扩展放这里
+examples/                      # 真 API 演示（real_api_*.py）
+evals/                         # 评测（见第 7 节）
+├── datasets/{reproduce,synthetic,adversarial}/
+├── runner.py
+├── judges/
+└── reports/
+tests/                         # 单测，无 API key 全绿
+└── fixtures/arch/{clean,violating}/   # 契约测试的正反两个样例
+docs/
+├── architecture.md            # 本文件
+├── pi-harness研究笔记.md       # 调研来源
+├── pydantic-存留清单.md        # P6 批次C 交付物
+├── assets/                    # 架构图
+├── plans/                     # 各阶段实施计划与验收证据
+└── decisions/                 # 每个决策一份 ADR
 ```
 
-**读这棵树时注意**：包内的 `.py` 文件（`protocol.py` / `loop.py` / `tree.py` 等）
-是**规划中的文件**，P0 阶段尚未创建。
-P0 实际只落地了：五个包的 `__init__.py`、一个占位 `cli.py`、
-契约测试与 fixture、`pyproject.toml`、CI、以及文档。
+**读这棵树时注意**：目录名 = 功能域（对齐"配置/agent/运行时/会话/记忆/工具/技能/钩子/事件/安全/可观测/提示词"的简历词汇），**包内文件名保持搬移前语义**——
+`compaction.py`（短期压缩）与 `memory/file_store.py`（长期记忆）在 docstring
+里互相点名划界，这是刻意不从众叫 `context_compressor` 的决定。
 
 **分层契约的位置**：写在 `pyproject.toml` 的 `[tool.importlinter]` 里，
 **没有独立的 `importlinter.toml`**——实测 import-linter 2.14 从 `pyproject.toml` 读取。
@@ -1315,19 +1362,19 @@ tests/fixtures/transcripts/
 
 | 门禁 | 内容 | 违反时的表现 |
 | --- | --- | --- |
-| 分层契约 | `importlinter` 强制 5 层单向依赖，禁止反向 import | CI 失败 |
+| 分层契约 | `importlinter` 强制 15 个功能域子包单向依赖（P6 起），禁止反向 import | CI 失败 |
 | 常驻区稳定性 | 单测断言会话内常驻区哈希不变 | CI 失败 |
 | 引用缓存契约 | 单测断言 `registry.get()` 在热重载后返回新实例 | CI 失败 |
 | **抽象基类契约** | 单测断言：所有 Provider / Tool 实现都继承对应基类；基类含 `@abstractmethod` 则直接实例化必须抛 `TypeError` | CI 失败 |
 | **唯一 loop 契约** | 单测断言：全项目只有 `AgentLoop` 一个类定义 `run_turn`（**2026-09-20 改写**，原为 `BaseLoop.__subclasses__()`） | CI 失败 |
-| **消息层不混用** | `importlinter` 断言 `sigma_ai` 不认识 `AgentMessage`；`convert_to_llm` 是 agent→LLM 的唯一引用点 | CI 失败 |
+| **消息层不混用** | `importlinter` 层表断言 `providers` 不认识 `AgentMessage`（`agent` 层在其上）；`convert_to_llm` 是 agent→LLM 的唯一引用点 | CI 失败 |
 | **摘要降级位置** | 单测断言压缩摘要经 `convert_to_llm` 后 `role == "user"`，不是 `system`（关系 prompt cache） | CI 失败 |
 | **未知消息类型** | 单测断言未知类型**不被静默丢弃**（记录 warning 或抛错） | CI 失败 |
 | **不透明字段保真** | 单测断言 `*_signature` 类字段经 `convert_to_llm` 后逐字节不变 | CI 失败 |
 | 离线可测 | 全部单测在无 API key 下通过 | CI 失败 |
 | 依赖锁定 | 精确版本 + lockfile 校验 | CI 失败 |
 | 评测回归 | 评测报告与上一次对比，成功率下降超过阈值则报警 | 夜间任务产出报告 |
-| 类型检查 | `mypy --strict`（至少覆盖 `core/`） | CI 失败 |
+| 类型检查 | `mypy --strict`（覆盖 `src/`，P6 前为 `core/`） | CI 失败 |
 
 **中间两条是 2026-09-20 拍板 a2（一律继承制）之后新增的。**
 原因：`AGENTS.md` 第 2 条是一个**风格要求**，而风格要求默认会随时间腐化——
@@ -1335,38 +1382,50 @@ tests/fixtures/transcripts/
 把它变成两条可执行的断言，才是让"继承制"真正落地的唯一办法。
 这与 4.4 节那条教训同源：**能跑绿的配置不等于生效的约束，约束必须能被单独证伪。**
 
-**依赖方向契约的具体内容**（写在 `pyproject.toml` 的 `[tool.importlinter]`）：
+**依赖方向契约的具体内容**（P6 后写在 `pyproject.toml` 的 `[tool.importlinter]`，
+线性层表自上而下，上可依下、下不可依上）：
 
 ```
-sigma         → sigma_tools, sigma_session, sigma_agent, sigma_ai
-sigma_tools   → sigma_agent, sigma_ai
-sigma_session → sigma_agent, sigma_ai
-sigma_agent   → sigma_ai
-sigma_ai      → （无内部依赖）
+sigma.cli            （无内部下游；消费 sdk）
+sigma.sdk            （唯一装配点）
+sigma.observability  → hooks, sessions, agent, providers
+sigma.runtime        → tools, security, hooks, sessions, events, agent, providers
+sigma.tools          → skills, security, agent, providers
+sigma.skills         → providers
+sigma.security       → hooks, agent, events
+sigma.hooks          → sessions, events, agent
+sigma.sessions       → agent, providers, config
+sigma.memory         → providers
+sigma.events         → agent
+sigma.agent          → providers
+sigma.prompts        → providers
+sigma.config         → （无内部依赖）
+sigma.providers      → （无内部依赖，最底层）
 ```
 
-同时禁止：任何 `core/` 内的包 import `evals/` 或 `extensions/`。
+同时禁止：`sigma` 任何子包 import `evals/` 或 `extensions/`。
 
-**注意 `sigma_tools` 与 `sigma_session` 是兄弟层，互不依赖。**
-第 3 节那张竖排图只是为了排版，**不是依赖顺序**——照那张图去理解会得出
-「sigma_tools 依赖 sigma_session」的错误结论。
-
-这件事必须用**三条契约**才能钉住，只写 `layers` 是不够的：
+**契约数量从三条减为两条（P6）**：
 
 | 契约 | 类型 | 作用 |
 | --- | --- | --- |
-| 分层只允许向下依赖 | `layers` | 禁止下层引用上层 |
-| 核心层不得依赖评测与扩展 | `forbidden` | 禁止 core 引用 `evals` / `extensions` |
-| 内置工具与会话层互不依赖 | `independence` | 钉住兄弟层 |
+| 分层只允许向下依赖 | `layers` | 禁止下层引用上层（15 层线性栈） |
+| 核心包不得依赖评测与扩展 | `forbidden` | 禁止核心包引用 `evals` / `extensions` |
 
-**为什么 `layers` 表达不了兄弟关系**：它是线性栈，语义只有「下层不许引用上层」，
-**默认放行所有向下的 import**。把 `sigma_tools` 排在 `sigma_session` 之上，
-就等于给了 `sigma_tools → sigma_session` 一张通行证。
+旧的第三条 `independence`（内置工具与会话层互不依赖）被删除：
+它只为钉住旧布局里 `sigma_tools` 与 `sigma_session` 的兄弟关系而存在；
+P6 后 tools 与 sessions 相隔三层，方向由线性层表唯一确定，无歧义可言。
 
+**历史教训保留（为什么当初需要三条契约）**：`layers` 是线性栈，语义只有
+「下层不许引用上层」，**默认放行所有向下的 import**。旧布局把 `sigma_tools`
+排在 `sigma_session` 之上，就等于给了 `sigma_tools → sigma_session` 一张通行证。
 这一点在 2026-09-20 被实测确认过：当时只配了两条契约，向 `sigma_tools`
-注入 `import sigma_session`，结果两条契约都是 KEPT、退出码 0 ——
+注入 `import sigma_session`，结果两条契约都是 KEPT、退出码 0——
 **配置在放行文档明令禁止的依赖**。补上 `independence` 契约后才拦得住，
-且双向都能拦。
+且双向都能拦。P6 的线性层表让"向下的 import 全部放行"重新变得
+**与文档语义一致**，这条教训的当代版本是：**层表排位必须逐边实测核对**
+（§3 的 security/tools/hooks 排位就是这么定的），排错一位，
+契约就在放行一条它以为在禁止的依赖。
 
 ---
 

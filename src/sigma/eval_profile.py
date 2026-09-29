@@ -21,14 +21,19 @@ P4-批次2 扩了两个字段（``todo`` / ``sub_agent``），它们**一落地�
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from dataclasses import dataclass
 
 
-class EvalProfile(BaseModel):
+@dataclass
+class EvalProfile:
     """消融档位。**只影响 harness 行为，不影响模型与工具本身。**
 
     报告里每一行数据都必须带 ``name``：没有档位名，两个月后没人说得清
     ``reports/`` 里那份 JSON 是在什么配置下产生的。
+
+    P6 批次C 三问判定：不生成 schema、不落盘/跨进程（报告里只写
+    ``name`` 字符串）、不校验外部输入（档位由代码与命令行声明）——
+    三问皆否，降为 dataclass。
     """
 
     name: str = "B2"

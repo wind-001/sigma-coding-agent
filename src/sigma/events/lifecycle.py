@@ -24,12 +24,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel
-
 from sigma.agent.messages import AgentMessage
 
 
-class ApprovalDecision(BaseModel):
+@dataclass(frozen=True)
+class ApprovalDecision:
     """一次审批的**决定**。
 
     ``allowed=False`` 时 ``reason`` 必填——它会进工具结果,模型要能读到
@@ -38,6 +37,11 @@ class ApprovalDecision(BaseModel):
     ``approve_outside``:本次调用需要**越出工作区**(write/edit 的目标路径
     在工作区之外)且审批方明示豁免 → loop 把它传进 ``ToolContext``,
     L1(``resolve_write_path``)据此放行。默认 False:L1 的拒绝语义不动。
+
+    P6 批次C 三问判定：不生成 schema、不落盘/跨进程(trace 只取字段拼自己的
+    dict)、不校验外部输入(构造方在本 harness 内)——三问皆否，降为
+    frozen dataclass,与本文件其余事件同款("事件载荷不落盘,落盘的是
+    AgentMessage")。
     """
 
     allowed: bool

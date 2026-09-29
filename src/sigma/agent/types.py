@@ -18,11 +18,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Literal
-
-from pydantic import BaseModel, ConfigDict
 
 from sigma.providers.base import CancelToken
 from sigma.providers.messages import ContentBlock, Usage
@@ -35,7 +33,8 @@ if TYPE_CHECKING:
     from sigma.agent.messages import AgentMessage
 
 
-class ToolResult(BaseModel):
+@dataclass
+class ToolResult:
     """工具执行结果。**两段式**（调研笔记 9.5.8 / 14.1 第 4 条）。
 
     ``content`` 进上下文、给模型看；``details`` 不进上下文，只给 UI / 审计 / 评测。
@@ -50,14 +49,19 @@ class ToolResult(BaseModel):
     2. 把 ``stderr`` 放进 ``details``——**这是功能性错误**：
        模型看不到报错就无法纠错，而"能纠错"是「纠错增益」这个核心指标的全部前提。
        见详规 3.6 节。
+
+    为什么是 dataclass 而不是 BaseModel（P6 批次C 三问判定）：
+    不生成 JSON schema、不落盘/跨进程（落盘的是 ``ToolResultAgentMessage``，
+    它逐字段拷贝本类）、不校验外部输入——三问皆否。
     """
 
     content: list[ContentBlock]
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = field(default_factory=dict)
     is_error: bool = False
 
 
-class ToolContext(BaseModel):
+@dataclass
+class ToolContext:
     """工具执行上下文。
 
     ``signal`` 必须在 P1 就进接口——**取消与超时后加是破坏性变更**
@@ -66,9 +70,12 @@ class ToolContext(BaseModel):
 
     ``emit`` 在 P1 只用于 CLI 打点：P1 没有 TUI，不做流式渲染。
     用 :meth:`say` 而不是直接调 ``emit``，免得每个工具都判一次 None。
-    """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    为什么是 dataclass 而不是 BaseModel（P6 批次C 三问判定）：
+    三问皆否（无 schema/无落盘/无外部输入），而它裹着
+    ``CancelToken`` 与 ``Callable``——pydantic 在这里只会逼出
+    ``arbitrary_types_allowed`` 这种"让报错消失"的逃逸舱，纯负债。
+    """
 
     session_id: str
     workspace_root: Path

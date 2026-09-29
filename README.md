@@ -263,17 +263,25 @@ reset = self._git("reset", "--hard", "--quiet", ref)
 ## 目录
 
 ```
-core/           五个包（package-dir 指向 core/，所以它们是顶层包）
-  sigma_ai/     协议层：Provider 抽象、消息模型、流式事件
-  sigma_agent/  agent loop、工具注册表、观测事件、影子 checkpoint
-  sigma_session/会话树、上下文组装、压缩、会话目录操作
-  sigma_tools/  内置工具、输出截断、路径约束
-  sigma/        产品壳：CLI / REPL / SDK 入口
-tests/          716 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
+src/sigma/      唯一顶层包，按功能域分子包（P6 重构，ADR D7）
+  runtime/      Agent 核心循环：事件主循环、子 agent
+  providers/    协议层：Provider 抽象、消息模型、流式事件、OpenAI 兼容适配
+  tools/        工具基类、注册表、内置工具、联网额度账本
+  security/     路径沙箱、影子 git checkpoint、审批门
+  sessions/     会话树、JSONL 存储、上下文组装、短期压缩
+  memory/       跨会话长期记忆（.sigma/memory/*.md）
+  hooks/ events/  钩子总线与订阅者 / 生命周期事件定义
+  skills/       技能发现与索引
+  observability/ trace 逐事件落盘、timeline 视图
+  prompts/      系统提示词资产（逐字节稳定）
+  config/       .env 读取、常驻区预算表
+  cli/  sdk.py  终端薄壳 / 唯一装配点
+tests/          724 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
 evals/          评测运行器 + 报告（adversarial 20+10 条已落地；synthetic 12/30；reproduce 0/20）
+examples/       真 API 演示脚本
 extensions/     运行时加载的扩展样例（P4）
 docs/           架构方案、调研笔记、计划、决策记录
-scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
+scripts/        门槛注入实验、demo 工作区生成
 ```
 
 ## 文档
@@ -281,7 +289,7 @@ scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
 | 文件 | 内容 |
 | --- | --- |
 | [`docs/architecture.md`](docs/architecture.md) | 架构方案：六项决策、消息模型两层结构、上下文预算、安全边界、可验证性设计 |
-| [`docs/decisions/`](docs/decisions/) | ADR：D1 语言 / D2 harness 边界 / D3 扩展层形态 / D4 常驻区预算 / D5 安全边界 / D6 不做容器 |
+| [`docs/decisions/`](docs/decisions/) | ADR：D1 语言 / D2 harness 边界 / D3 扩展层形态 / D4 常驻区预算 / D5 安全边界 / D6 不做容器 / D7 目录按功能域重组 |
 | [`docs/plans/`](docs/plans/) | 各批次实施计划与验收记录（含门槛表、风险、实现中发现的问题） |
 | [`docs/pi-harness研究笔记.md`](docs/pi-harness研究笔记.md) | 参照对象 Pi Agent Harness 的调研笔记，带来源可信度分级 |
 | [`docs/技术债登记.md`](docs/技术债登记.md) | 已知技术债的登记册：**只收有凭据的债**（路径 + 现象 + 判据），清掉即删条 |
