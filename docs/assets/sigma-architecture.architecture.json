@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "sigma:自研 coding agent harness 分层架构",
+    "title": "sigma:自研 coding agent harness 功能域架构(P6)",
     "locale": "zh-CN",
     "quality_profile": "showcase",
     "viewBox": [
@@ -20,25 +20,24 @@
           "provider",
           "model-api"
         ],
-        "note": "组装上下文 → 流式请求 → 模型返回工具调用,循环往复直到任务完成"
+        "note": "装配上下文 → 流式请求 → 模型返回工具调用,循环往复直到任务完成"
       },
       {
         "id": "safety",
         "label": "安全与回滚",
         "focus": [
           "loop",
-          "checkpoint",
+          "security",
           "tools",
           "disk"
         ],
-        "note": "写批次前影子快照;L1 拦越界写,sigma --rollback 可整体回退"
+        "note": "L1 拦越界写;写批次前影子快照,sigma --rollback 可整体回退"
       },
       {
         "id": "tools-view",
         "label": "工具与扩展",
         "focus": [
           "shell",
-          "registry",
           "tools",
           "web-api"
         ],
@@ -50,9 +49,9 @@
     {
       "id": "shell",
       "type": "frontend",
-      "label": "sigma 产品壳",
-      "sublabel": "CLI · REPL · SDK",
-      "tag": "core/sigma",
+      "label": "sigma.cli + sdk 装配层",
+      "sublabel": "CLI · REPL · 唯一组装点",
+      "tag": "sigma.cli · sigma.sdk",
       "pos": [
         36,
         244
@@ -67,7 +66,7 @@
       "type": "backend",
       "label": "SessionContext 上下文组装",
       "sublabel": "常驻区指纹 + 预算断言",
-      "tag": "sigma_session",
+      "tag": "sigma.sessions",
       "pos": [
         306,
         244
@@ -82,7 +81,7 @@
       "type": "backend",
       "label": "SessionTree 会话树",
       "sublabel": "只追加 · 可回溯",
-      "tag": "sigma_session",
+      "tag": "sigma.sessions",
       "pos": [
         306,
         440
@@ -93,11 +92,11 @@
       ]
     },
     {
-      "id": "registry",
-      "type": "backend",
-      "label": "ToolRegistry 注册表",
-      "sublabel": "按名解析 · 热重载",
-      "tag": "sigma_agent",
+      "id": "hooks",
+      "type": "messagebus",
+      "label": "events/ + hooks/",
+      "sublabel": "9 生命周期事件 · 订阅者总线",
+      "tag": "sigma.events · sigma.hooks",
       "pos": [
         591,
         48
@@ -112,7 +111,7 @@
       "type": "backend",
       "label": "AgentLoop 唯一循环",
       "sublabel": "只读并发 · 写顺序",
-      "tag": "sigma_agent",
+      "tag": "sigma.runtime",
       "pos": [
         591,
         244
@@ -123,32 +122,32 @@
       ]
     },
     {
-      "id": "checkpoint",
+      "id": "security",
       "type": "security",
-      "label": "ShadowCheckpoint 影子 git",
-      "sublabel": "写批次前自动快照",
-      "tag": "sigma_agent",
+      "label": "security/ 三层软边界",
+      "sublabel": "L1 沙箱 · L2 快照 · L3 审批",
+      "tag": "sigma.security",
       "pos": [
         591,
         440
       ],
       "size": [
-        190,
+        200,
         76
       ]
     },
     {
       "id": "tools",
       "type": "backend",
-      "label": "工具集",
+      "label": "ToolRegistry + 内置工具",
       "sublabel": "read/write/edit/bash/grep 等",
-      "tag": "sigma_tools",
+      "tag": "sigma.tools",
       "pos": [
         881,
         48
       ],
       "size": [
-        190,
+        200,
         76
       ]
     },
@@ -157,13 +156,28 @@
       "type": "backend",
       "label": "BaseProvider 抽象",
       "sublabel": "OpenAI 兼容 + 回放实现",
-      "tag": "sigma_ai",
+      "tag": "sigma.providers",
       "pos": [
         886,
         244
       ],
       "size": [
         190,
+        76
+      ]
+    },
+    {
+      "id": "memory",
+      "type": "database",
+      "label": "memory/ 跨会话记忆",
+      "sublabel": ".sigma/memory · 索引进常驻区",
+      "tag": "sigma.memory",
+      "pos": [
+        881,
+        440
+      ],
+      "size": [
+        200,
         76
       ]
     },
@@ -201,7 +215,7 @@
       "id": "disk",
       "type": "database",
       "label": "工作区 + ~/.sigma",
-      "sublabel": "会话 JSONL · shadow.git",
+      "sublabel": "会话 JSONL · shadow.git · trace",
       "tag": "本机磁盘",
       "pos": [
         36,
@@ -216,14 +230,14 @@
   "boundaries": [
     {
       "kind": "region",
-      "label": "产品壳 · sigma",
+      "label": "产品壳 · sigma.cli + sigma.sdk",
       "wraps": [
         "shell"
       ]
     },
     {
       "kind": "region",
-      "label": "会话层 · sigma_session",
+      "label": "会话层 · sigma.sessions",
       "wraps": [
         "ctx",
         "tree"
@@ -231,25 +245,44 @@
     },
     {
       "kind": "region",
-      "label": "循环层 · sigma_agent",
+      "label": "循环层 · sigma.runtime",
       "wraps": [
-        "loop",
-        "registry",
-        "checkpoint"
+        "loop"
       ]
     },
     {
       "kind": "region",
-      "label": "工具层 · sigma_tools",
+      "label": "安全层 · sigma.security",
+      "wraps": [
+        "security"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "工具层 · sigma.tools",
       "wraps": [
         "tools"
       ]
     },
     {
       "kind": "region",
-      "label": "协议层 · sigma_ai",
+      "label": "协议层 · sigma.providers",
       "wraps": [
         "provider"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "事件与钩子 · sigma.events + sigma.hooks",
+      "wraps": [
+        "hooks"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "记忆层 · sigma.memory",
+      "wraps": [
+        "memory"
       ]
     }
   ],
@@ -273,7 +306,8 @@
       "from": "loop",
       "to": "provider",
       "label": "stream() 流式请求",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "labelDy": 16
     },
     {
       "id": "provider-to-model",
@@ -285,30 +319,26 @@
       "toSide": "left"
     },
     {
-      "id": "shell-to-registry",
-      "from": "shell",
-      "to": "registry",
-      "label": "组装注册(同一条路径)",
-      "fromSide": "top",
-      "toSide": "left"
-    },
-    {
-      "id": "loop-to-registry",
+      "id": "loop-to-tools",
       "from": "loop",
-      "to": "registry",
+      "to": "tools",
       "label": "get(name) 按名解析"
     },
     {
-      "id": "registry-to-tools",
-      "from": "registry",
-      "to": "tools"
+      "id": "loop-to-hooks",
+      "from": "loop",
+      "to": "hooks",
+      "label": "emit 生命周期事件",
+      "labelDy": -40
     },
     {
-      "id": "loop-to-checkpoint",
+      "id": "loop-to-security",
       "from": "loop",
-      "to": "checkpoint",
-      "label": "写批次前 mark",
-      "labelDy": 24
+      "to": "security",
+      "label": "写批次前 mark(L2)",
+      "labelDy": 24,
+      "fromSide": "bottom",
+      "toSide": "top"
     },
     {
       "id": "loop-to-tree",
@@ -330,8 +360,8 @@
       "toSide": "right"
     },
     {
-      "id": "checkpoint-to-disk",
-      "from": "checkpoint",
+      "id": "security-to-disk",
+      "from": "security",
       "to": "disk",
       "label": "独立 GIT_DIR 快照",
       "fromSide": "bottom",
@@ -350,29 +380,30 @@
       "dot": "cyan",
       "title": "分层契约(CI 强制)",
       "items": [
-        "依赖严格单向:壳 → 工具/会话 → agent → ai",
-        "sigma_tools 与 sigma_session 兄弟层,互不依赖(independence)",
-        "内置与扩展工具同一条注册路径;task 可派后台 sub_agent(≤3)",
-        "三道门禁:lint-imports · mypy --strict · pytest"
+        "单顶层包 sigma:15 个功能域子包按层排序,lint-imports 15 层契约",
+        "events 是机制,hooks 是订阅者;内置与扩展工具同一条注册路径",
+        "task 可派后台 sub_agent(轮数三档 low/medium/high)",
+        "三道门禁:lint-imports · mypy --strict · pytest(724 passed)"
       ]
     },
     {
       "dot": "emerald",
-      "title": "上下文预算",
+      "title": "上下文预算(D4 v2)",
       "items": [
-        "常驻区 ≤ 3500 token 且逐字节稳定,是 prompt cache 的充要条件",
+        "常驻区 ≤ 5500 token 且逐字节稳定;实测缓存命中率 93.8%",
+        "prompts/ 提示词资产独立成包,与工具注册表同源",
         "压缩是视图不是改写:树上原文不动,摘要降级成 user 追加尾部",
-        "技能目录进常驻区,正文由 load_skill 按需追加,不破坏缓存前缀"
+        "记忆索引进常驻(cap 250),正文按需 read,不破坏缓存前缀"
       ]
     },
     {
       "dot": "rose",
       "title": "安全边界(不是沙箱)",
       "items": [
-        "L1 写路径:write / edit / bash.cwd 越出工作区即拒绝",
-        "L2 影子 git:写批次前快照,sigma --rollback 整体回退且可再回滚",
-        "L3 钩子未做;bash 仍以用户权限执行任意命令",
-        "web_search / web_fetch 有 key 才注册,额度用尽自动禁用"
+        "L1 写路径越界即拒绝(path_sandbox)",
+        "L2 影子 git:写批次前快照,sigma --rollback 整体回退(回滚实测 30/30)",
+        "L3 审批门:危险指令执行前交人确认(对抗集拦截 20/20 · 误拦 0/10)",
+        "bash 仍以用户权限执行——挡不住的(python -c / base64)写进文档"
       ]
     }
   ]

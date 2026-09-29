@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 2.17.0-dev.1">
-  <title>sigma:自研 coding agent harness 分层架构</title>
+  <title>sigma:自研 coding agent harness 功能域架构(P6)</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -5081,11 +5081,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
            data-preset-badge-blueprint="蓝图 / 修订 01"
            data-preset-badge-editorial="编辑风格 / 现场笔记">
         <div class="pulse-dot"></div>
-        <h1>sigma:自研 coding agent harness 分层架构</h1>
+        <h1>sigma:自研 coding agent harness 功能域架构(P6)</h1>
       </div>
     </div>
 
-    <script id="archify-guided-views-data" type="application/json">[{"id":"main-path","label":"一轮任务主路径","focus":["shell","ctx","loop","provider","model-api"],"note":"组装上下文 → 流式请求 → 模型返回工具调用,循环往复直到任务完成"},{"id":"safety","label":"安全与回滚","focus":["loop","checkpoint","tools","disk"],"note":"写批次前影子快照;L1 拦越界写,sigma --rollback 可整体回退"},{"id":"tools-view","label":"工具与扩展","focus":["shell","registry","tools","web-api"],"note":"内置与扩展工具走同一条注册路径;联网工具有 key 才注册"}]</script>
+    <script id="archify-guided-views-data" type="application/json">[{"id":"main-path","label":"一轮任务主路径","focus":["shell","ctx","loop","provider","model-api"],"note":"装配上下文 → 流式请求 → 模型返回工具调用,循环往复直到任务完成"},{"id":"safety","label":"安全与回滚","focus":["loop","security","tools","disk"],"note":"L1 拦越界写;写批次前影子快照,sigma --rollback 可整体回退"},{"id":"tools-view","label":"工具与扩展","focus":["shell","tools","web-api"],"note":"内置与扩展工具走同一条注册路径;联网工具有 key 才注册"}]</script>
 
     <script id="archify-i18n-data" type="application/json">{"locale":"zh-CN","messages":{"viewer.kind.frontend":"前端","viewer.kind.backend":"后端","viewer.kind.database":"数据库","viewer.kind.cloud":"云服务","viewer.kind.security":"安全","viewer.kind.messagebus":"消息总线","viewer.kind.external":"外部系统","viewer.kind.neutral":"中性","viewer.kind.node":"节点","viewer.kind.start":"开始","viewer.kind.active":"活动","viewer.kind.waiting":"等待","viewer.kind.decision":"决策","viewer.kind.success":"成功","viewer.kind.failure":"失败","viewer.toolbar.actions":"图表操作","viewer.theme.toggle.title":"切换主题（T）","viewer.theme.toggle":"切换颜色主题","viewer.theme.dark":"深色","viewer.theme.light":"浅色","viewer.preset.choose.title":"选择视觉风格（S 循环切换）","viewer.preset.choose":"选择视觉风格","viewer.preset.style":"风格","viewer.preset.menu":"视觉风格","viewer.preset.identity":"视觉表达","viewer.preset.cycles":"S 循环切换","viewer.preset.classic":"经典","viewer.preset.classic.short":"经典","viewer.preset.classic.hint":"稳定的技术默认风格","viewer.preset.flow":"信号流","viewer.preset.flow.short":"流动","viewer.preset.flow.hint":"突出动态流向","viewer.preset.blueprint":"蓝图","viewer.preset.blueprint.hint":"工程评审","viewer.preset.editorial":"编辑风格","viewer.preset.editorial.hint":"适合发布与上线说明","viewer.preset.badge.signalFlow":"信号流","viewer.preset.badge.blueprint":"蓝图 / 修订 01","viewer.preset.badge.editorial":"编辑风格 / 现场笔记","viewer.preset.badge.editorialPlate":"ARCHIFY / 图版 04","viewer.preset.current":"当前视觉风格：{style}。选择视觉风格","viewer.motion.live":"动态","viewer.motion.still":"静态","viewer.motion.pause":"暂停动效","viewer.motion.resume":"恢复动效","viewer.motion.reduced":"已根据减少动态效果偏好暂停动效","viewer.motion.hidden":"页面不可见时已暂停动效","viewer.motion.yielding":"暂停动效；当前让位于{owner}","viewer.motion.yielding.title":"动态预览已启用 · 正在让位于{owner}","viewer.owner.story":"引导故事","viewer.owner.chapter":"当前章节","viewer.owner.chapterPreview":"章节差异预览","viewer.owner.handoff":"章节交接","viewer.owner.route":"路径探测","viewer.owner.lens":"语义透镜","viewer.owner.relationship":"关系预览","viewer.owner.intent":"意图追踪","viewer.owner.focus":"语义聚焦","viewer.owner.legend":"图例预览","viewer.owner.reader":"读者交互","viewer.present.enter":"进入演示模式","viewer.present.enter.title":"演示模式（F）","viewer.present.exit":"退出演示模式","viewer.present.exit.title":"退出演示模式（F 或 Escape）","viewer.present.present":"演示","viewer.present.exit.label":"退出","viewer.export.button":"导出","viewer.export.button.title":"导出图表（E）","viewer.export.diagram":"导出图表","viewer.export.menu":"导出","viewer.export.subtitle":"便携、整洁的输出","viewer.export.share":"分享","viewer.export.shareCard":"分享卡片","viewer.export.routeShareCard":"路径分享卡片","viewer.export.reachShareCard":"可达范围分享卡片","viewer.export.copyShareCard":"复制分享卡片","viewer.export.copyDiagram":"复制图表","viewer.export.clipboardPng":"复制 PNG 到剪贴板","viewer.export.raster":"位图","viewer.export.image":"图像","viewer.export.lossless":"无损图像","viewer.export.compact":"紧凑图像","viewer.export.modern":"现代图像格式","viewer.export.vectorMotion":"矢量与动效","viewer.export.vectorMotion.heading":"矢量与动效","viewer.export.editable":"可编辑矢量图","viewer.export.motion6s":"6 秒动效","viewer.export.unsupported":"当前浏览器不支持","viewer.export.clipboardUnsupported":"当前浏览器不支持写入图片剪贴板","viewer.export.clipboardUnsupported.period":"当前浏览器不支持写入图片剪贴板。","viewer.export.clipboardUnsupported.short":"此浏览器不支持写入图片剪贴板。","viewer.export.motionUnavailable":"当前浏览器无法录制动效","viewer.export.webmUnavailable":"当前浏览器不支持 WebM","viewer.export.failed":"导出失败：{message}","viewer.export.unknownVariant":"未知的分享卡片类型：{variant}","viewer.export.routeRequired":"请先追踪路径，再导出路径分享卡片","viewer.export.reachRequired":"请先追踪编写可达范围，再导出可达范围分享卡片","viewer.export.unknown":"未知错误","viewer.export.routeFailed":"路径分享卡片导出失败：{message}","viewer.export.reachFailed":"可达范围分享卡片导出失败：{message}","viewer.export.copyFailed":"复制失败：{message}","viewer.export.copiedPng":"已将 PNG 复制到剪贴板","viewer.export.copiedShare":"已复制分享卡片","viewer.export.downloadedShare":"已下载分享卡片","viewer.export.downloadedRoute":"已下载路径分享卡片","viewer.export.downloadedReach":"已下载可达范围分享卡片","viewer.export.downloadedWebm":"已下载 WebM","viewer.export.recording":"正在录制 6 秒动效…","viewer.export.card.routeSummary.one":"路径：{source} → {target} · {count} 个有向跳转","viewer.export.card.routeSummary.other":"路径：{source} → {target} · {count} 个有向跳转","viewer.export.card.reachSummary":"从{origin}开始的编写{direction} · {nodes} · {links} · 最深 {hops}","viewer.export.card.node.one":"{count} 个节点","viewer.export.card.node.other":"{count} 个节点","viewer.export.card.link.one":"{count} 条连接","viewer.export.card.link.other":"{count} 条连接","viewer.export.card.hop.one":"{count} 跳","viewer.export.card.hop.other":"{count} 跳","viewer.export.card.routeBadge":"ARCHIFY · 路径 · {hops}","viewer.export.card.reachBadge":"ARCHIFY · {direction}可达范围","viewer.export.card.defaultBadge":"ARCHIFY · {preset} · {theme}","viewer.export.direction.upstream":"上游","viewer.export.direction.downstream":"下游","viewer.export.error.canvasUnavailable":"无法为{label}使用画布","viewer.export.error.contextUnavailable":"无法为{label}创建二维画布上下文","viewer.export.error.toBlobUnavailable":"{label}无法使用 canvas.toBlob","viewer.export.error.toBlobNull":"{label}的 canvas.toBlob 未返回数据","viewer.export.error.variantsCombined":"无法同时组合多种分享卡片类型","viewer.export.error.viewerState":"分享卡片导出无法移除临时 Viewer 状态","viewer.export.error.routeState":"路径卡片导出无法安全保留已解析路径","viewer.export.error.reachState":"可达范围卡片导出无法安全保留编写的可达范围","viewer.export.error.webmRequirements":"WebM 动效导出需要追踪动画及浏览器 MediaRecorder 支持","viewer.export.error.mediaRecorder":"MediaRecorder 录制失败","viewer.export.error.emptyWebm":"MediaRecorder 生成了空的 WebM","viewer.export.error.webmBackground":"无法为 WebM 导出加载 SVG 背景","viewer.guided.region":"图表引导视图","viewer.guided.previous":"上一个引导视图","viewer.guided.previous.title":"上一个引导视图（[）","viewer.guided.next":"下一个引导视图","viewer.guided.next.title":"下一个引导视图（]）","viewer.guided.views":"引导视图","viewer.guided.explore":"探索此系统","viewer.guided.intro":"沿精选路径逐步查看，而不改变源图表。","viewer.guided.trail":"故事轨迹","viewer.guided.beat":"节点","viewer.guided.nextBeat":"下一步","viewer.guided.play":"播放引导故事","viewer.guided.play.title":"播放引导故事（P）","viewer.guided.pause":"暂停引导故事","viewer.guided.pause.title":"暂停引导故事（P）","viewer.guided.replay":"重播引导故事","viewer.guided.replay.title":"重播引导故事（P）","viewer.guided.playStory":"播放故事","viewer.guided.pauseStory":"暂停","viewer.guided.replayStory":"重播故事","viewer.guided.motionUnavailable":"静态模式下无法播放故事","viewer.guided.enableMotion":"切换为动态模式以播放引导故事","viewer.guided.selectBeatLink":"选择故事节点以复制其精确链接","viewer.guided.copyMoment":"复制此刻","viewer.guided.momentCopied":"已复制时刻链接","viewer.guided.momentCopyFailed":"无法复制故事时刻链接","viewer.guided.copied":"已复制","viewer.guided.copyFailed":"复制失败","viewer.guided.showAll":"显示全部","viewer.guided.showAll.aria":"显示完整图表","viewer.guided.chapters":"故事章节","viewer.guided.storyTrail":"{label}的故事轨迹：{count} 个节点","viewer.guided.chapter.open":"打开第 {index}/{total} 章：{label}，{count} 个停靠点","viewer.guided.chapter.current":"当前第 {index}/{total} 章：{label}，{count} 个停靠点","viewer.guided.chapter.selectedNodes":"已选择 {count} 个节点","viewer.guided.chapter.stops":"{count} 个停靠点","viewer.guided.chapter.stop.one":"{count} 个停靠点","viewer.guided.chapter.stop.other":"{count} 个停靠点","viewer.guided.chapter.current.title":"{label} — 当前章节，{count} 个停靠点","viewer.guided.chapter.delta.expanded":"{stay} 个保留，{enter} 个进入，{leave} 个离开","viewer.guided.chapter.delta.aria":"打开第 {index}/{total} 章：{label}。章节聚焦差异：{delta}","viewer.guided.chapter.delta.title":"{label} — 章节聚焦 {delta}","viewer.guided.handoff":"{from} → {to} · 经由{label}","viewer.guided.share.chapter":"章节 {index} / {total}","viewer.guided.share.initial":"章节 01 / 01","viewer.guided.share.default":"引导章节","viewer.guided.state.ready":"就绪","viewer.guided.state.playing":"播放中","viewer.guided.state.settled":"已完成","viewer.guided.state.paused":"已暂停","viewer.guided.state.pinned":"已固定","viewer.guided.state.still":"静态","viewer.guided.share.step":"步骤 {index} / {total} · {label}","viewer.guided.share.staticMoment":"{step} · 静态时刻","viewer.guided.share.complete":"{count} 个步骤已完成 · {note}","viewer.guided.share.settled":"路径已稳定，可供阅读。","viewer.guided.share.staticPath":"{count} 个步骤 · 静态路径","viewer.guided.share.ready":"{count} 个步骤 · 就绪","viewer.guided.share.aria":"{state}，第 {index}/{total} 章：{label}。{beat}。{route}","viewer.guided.beat.start":"节点 {index} / {total} · {label} · 起点","viewer.guided.beat.forward":"节点 {index} / {total} · {from} → {to}","viewer.guided.beat.reverse":"节点 {index} / {total} · {from} → {to} · 反向编写连接","viewer.guided.beat.multiple":"节点 {index} / {total} · {from} ⇄ {to} · {count} 条编写连接","viewer.guided.beat.group":"节点 {index} / {total} · {from} · {to} · 分组 · 无直接连接","viewer.guided.beat.aria.prefix":"故事节点 {index}/{total}：{label}。","viewer.guided.beat.aria.start":"起点。","viewer.guided.beat.aria.forward":"从{from}经一条正向编写关系到达。","viewer.guided.beat.aria.reverse":"从{from}出发；编写关系实际由{to}指向{from}。","viewer.guided.beat.aria.multiple":"从{from}经 {count} 条编写关系到达；不使用任意动效。","viewer.guided.beat.aria.group":"与{from}分组展示，没有直接编写关系。","viewer.guided.caption.start":"起点","viewer.guided.caption.grouped":"分组过渡 · 无直接编写连接","viewer.guided.caption.more":" +另外 {count} 条","viewer.guided.caption.reverse":"反向编写关系","viewer.guided.caption.relationships":"{count} 条编写关系","viewer.guided.caption.relationship":"编写关系","viewer.guided.caption.direction":"编写方向：{from} → {to}","viewer.guided.caption.starting":"编写起点","viewer.guided.beatLink":"复制当前故事时刻链接：第 {index}/{total} 个节点：{label}","viewer.guided.noStory":"此图表没有编写引导故事。","viewer.guide.eyebrow":"图表指南","viewer.guide.close":"关闭图表指南","viewer.guide.inspecting":"正在检查已编译语义","viewer.guide.actions":"图表探索操作","viewer.guide.find":"查找任意节点","viewer.guide.find.hint":"搜索标签、职责、类型和稳定 ID。","viewer.guide.route":"追踪路径","viewer.guide.route.aria":"追踪有向路径","viewer.guide.route.hint":"查看两个语义节点如何按编写方向连接。","viewer.guide.map":"查看完整系统","viewer.guide.map.hint":"打开带实时视口和稳定节点的语义雷达。","viewer.guide.lens":"比较语义类型","viewer.guide.lens.hint":"统计角色、显示流量并比较直接编写的连接。","viewer.guide.story":"播放引导故事","viewer.guide.story.hint":"浏览已编写的章节和真实关系。","viewer.guide.present":"进入演示模式","viewer.guide.present.hint":"让实时图表占满视口，同时不改变导出。","viewer.guide.shortcuts":"其他键盘快捷键","viewer.guide.shortcut.export":"导出","viewer.guide.shortcut.theme":"主题","viewer.guide.shortcut.style":"风格","viewer.guide.shortcut.reset":"重置","viewer.guide.shortcut.zoomIn":"放大","viewer.guide.shortcut.zoomOut":"缩小","viewer.guide.shortcut.close":"关闭","viewer.guide.facts":"{nodes} · {relationships} · {views}","viewer.guide.fact.node.one":"{count} 个语义节点","viewer.guide.fact.node.other":"{count} 个语义节点","viewer.guide.fact.relationship.one":"{count} 条关系","viewer.guide.fact.relationship.other":"{count} 条关系","viewer.guide.fact.view.one":"{count} 个引导视图","viewer.guide.fact.view.other":"{count} 个引导视图","viewer.guide.story.available.one":"浏览 {count} 个已编写章节及其真实关系。","viewer.guide.story.available.other":"浏览 {count} 个已编写章节及其真实关系。","viewer.guide.story.unavailable":"此图表没有编写引导故事。","viewer.guide.open":"打开图表指南","viewer.guide.noStory":"此图表没有编写引导故事。","viewer.finder.title":"查找节点","viewer.finder.close":"关闭节点查找器","viewer.finder.placeholder":"搜索标签或 ID","viewer.finder.search":"搜索图表节点","viewer.finder.results":"图表节点","viewer.finder.empty":"没有匹配的节点","viewer.finder.result.focus":"聚焦{label}","viewer.finder.result.routeStart":"选择{label}作为路径起点","viewer.finder.result.routeTarget":"选择{label}作为路径终点，{links}","viewer.finder.status.empty":"没有匹配的节点","viewer.finder.status.count.one":"{count} 个匹配节点","viewer.finder.status.count.other":"{count} 个匹配节点","viewer.finder.noun.nodes":"个节点","viewer.finder.link.one":"{count} 条连接","viewer.finder.link.other":"{count} 条连接","viewer.finder.result.focus.one":"聚焦{label}，{count} 条相关连接","viewer.finder.result.focus.other":"聚焦{label}，{count} 条相关连接","viewer.finder.status.filtered":"{visible}/{available} {noun}","viewer.finder.status.all":"{available} {noun}","viewer.passport.eyebrow":"语义护照","viewer.passport.metadata":"节点元数据","viewer.passport.evidence":"已验证的源代码证据","viewer.passport.verified":"已验证来源","viewer.passport.verificationScope":"已按固定修订版本验证本地 Git 证据，未检查远程访问权限。","viewer.passport.reach":"编写可达范围","viewer.passport.reach.trace":"追踪编写的可达性","viewer.passport.upstream":"上游","viewer.passport.downstream":"下游","viewer.passport.upstream.trace":"追踪上游编写可达性","viewer.passport.downstream.trace":"追踪下游编写可达性","viewer.passport.close":"关闭语义护照","viewer.passport.copy":"复制链接","viewer.passport.copy.focus":"复制聚焦节点的链接","viewer.passport.relations":"关系","viewer.passport.relations.show":"显示关联关系","viewer.passport.relations.hide":"隐藏关联关系","viewer.passport.relations.list":"关联关系","viewer.passport.copyRelation":"复制关系","viewer.passport.copyNode":"复制节点","viewer.passport.copyPinned":"复制固定关系的链接","viewer.passport.copySource":"复制来源节点的链接","viewer.passport.copy.focused.success":"已复制聚焦节点链接","viewer.passport.copy.pinned.success":"已复制固定关系链接","viewer.passport.copy.focused.failed":"无法复制聚焦节点链接","viewer.passport.copy.pinned.failed":"无法复制固定关系链接","viewer.passport.relationship.none":"没有关联关系","viewer.passport.relationship.count.one":"{count} 条关系","viewer.passport.relationship.count.other":"{count} 条关系","viewer.passport.relationship.show.one":"显示 {count} 条关联关系","viewer.passport.relationship.show.other":"显示 {count} 条关联关系","viewer.passport.relationship.summary":"{out} 条出向 · {in} 条入向{loops}","viewer.passport.relationship.loops":" · {count} 条自环","viewer.passport.relationship.explorer":"直接关系浏览器","viewer.passport.relationship.help":"使用方向键浏览关系。按 Enter 或空格键固定详情；按 Escape 清除。","viewer.passport.relationship.loopsBack":"回环","viewer.passport.relationship.connectsTo":"连接到","viewer.passport.relationship.connectsFrom":"连接自","viewer.passport.relationship.pinned":"已固定关系 · {from} → {to} · {label}","viewer.passport.relationship.inspect":"检查第 {index}/{total} 条关系：{from} 到 {to}，{label}。按 Enter 查看详情。","viewer.passport.relationship.group.out":"出向","viewer.passport.relationship.group.in":"入向","viewer.passport.relationship.group.loop":"自环","viewer.passport.relationship.row":"{group}：{relationship}，{neighbor}","viewer.passport.relationship.direction.out":"出 →","viewer.passport.relationship.direction.in":"← 入","viewer.passport.relationship.direction.loop":"自环","viewer.passport.sourceCount.one":"{count} 个已验证来源引用","viewer.passport.sourceCount.other":"{count} 个已验证来源引用","viewer.passport.sourceMarker":"来源","viewer.passport.beacon.one":"{count} 个已验证来源；聚焦此节点以检查","viewer.passport.beacon.other":"{count} 个已验证来源；聚焦此节点以检查","viewer.passport.repository.open":"打开已验证的仓库修订版本 {revision}","viewer.passport.source.open":"打开修订版本 {revision} 中已验证的来源 {path}","viewer.passport.source.openLink":"打开 ↗","viewer.passport.reach.upstream.one":"追踪 {count} 个上游编写节点","viewer.passport.reach.upstream.other":"追踪 {count} 个上游编写节点","viewer.passport.reach.downstream.one":"追踪 {count} 个下游编写节点","viewer.passport.reach.downstream.other":"追踪 {count} 个下游编写节点","viewer.passport.reach.noUpstream":"没有上游编写节点","viewer.passport.reach.noDownstream":"没有下游编写节点","viewer.passport.reach.status":"{direction} · {nodes} 个节点 · {links} 条连接 · 最深 {hops} 跳","viewer.route.eyebrow":"路径探测","viewer.route.start":"选择起点节点","viewer.route.start.find":"查找起点","viewer.route.start.find.aria":"查找路径起点","viewer.route.copy":"复制链接","viewer.route.copy.aria":"复制已追踪路径的链接","viewer.route.clear":"清除","viewer.route.clear.aria":"清除路径探测","viewer.route.traced":"已追踪路径","viewer.route.pickTwo":"在图表中选择两个语义节点","viewer.route.pickOne":"在图表中选择一个语义节点","viewer.route.controls":"路径旅程控制","viewer.route.previous":"上一个路径位置","viewer.route.play":"播放路径旅程","viewer.route.pause":"暂停路径旅程","viewer.route.replay":"重播路径旅程","viewer.route.next":"下一个路径位置","viewer.route.journey":"旅程","viewer.route.pause.label":"暂停","viewer.route.replay.label":"重播","viewer.route.overview":"总览","viewer.route.overview.aria":"显示完整路径总览","viewer.route.instructions":"先选择来源，再选择目标；方向很重要。","viewer.route.destination":"选择从{label}出发的目标","viewer.route.destination.find":"查找目标","viewer.route.destination.find.aria":"查找可达的路径目标","viewer.route.differentDestination":"选择其他目标","viewer.route.distinct":"一条路径需要两个不同的语义节点。","viewer.route.unreachable":"没有通往{label}的有向路径","viewer.route.unreachable.detail":"从{source}无法到达{target}。请选择高亮的目标。","viewer.route.start.instructions":"选择来源。下一步只会显示有向可达的目标。","viewer.route.copy.success":"已复制路径链接","viewer.route.copy.failed":"无法复制路径链接","viewer.route.position":"路径位置 {index}/{total}：{label}","viewer.route.step":"第 {index}/{total} 步 · {phase} · {label}","viewer.route.motionRequired":"自动旅程需要动态模式","viewer.route.trigger.clear":"清除已追踪路径","viewer.route.overview.status":"{nodes} · {hops} · 最短编写路径","viewer.route.overview.node.one":"{count} 个节点","viewer.route.overview.node.other":"{count} 个节点","viewer.route.overview.hop.one":"{count} 个有向跳转","viewer.route.overview.hop.other":"{count} 个有向跳转","viewer.route.phase.playing":"播放中","viewer.route.phase.complete":"已完成","viewer.route.phase.inspecting":"检查中","viewer.route.destination.count.one":"有 {count} 个有向目标可用。请选择高亮节点。","viewer.route.destination.count.other":"有 {count} 个有向目标可用。请选择高亮节点。","viewer.route.noOutgoing":"此处没有可用的出向路径。请清除后选择其他来源。","viewer.route.result.title":"{source} 到 {target}","viewer.route.finder.source.title":"选择路径起点","viewer.route.finder.source.placeholder":"搜索路径来源","viewer.route.finder.source.empty":"没有匹配的路径来源","viewer.route.finder.source.results":"可作为路径起点的节点","viewer.route.finder.source.noun":"个路径来源","viewer.route.finder.source.badge":"起点","viewer.route.finder.target.title":"从{label}出发的目标","viewer.route.finder.target.placeholder":"搜索可达目标","viewer.route.finder.target.empty":"没有匹配的可达目标","viewer.route.finder.target.results":"可达路径目标","viewer.route.finder.target.noun":"个可达目标","viewer.route.hop.one":"{count} 跳","viewer.route.hop.other":"{count} 跳","viewer.lens.eyebrow":"语义透镜","viewer.lens.title":"比较系统角色","viewer.lens.close":"关闭语义透镜","viewer.lens.instruction":"最多选择两种语义类型。选择一种可显示其真实流量；选择两种只比较直接编写的关系。","viewer.lens.kinds":"语义类型","viewer.lens.choose":"选择一种类型以检查其节点和相连关系。","viewer.lens.copy":"复制语义透镜链接","viewer.lens.clear":"清除语义透镜","viewer.lens.open":"打开语义透镜","viewer.lens.openActive":"打开当前语义透镜","viewer.lens.legend":"语义图例","viewer.lens.legend.inspect.one":"检查{label}，{count} 个节点","viewer.lens.legend.inspect.other":"检查{label}，{count} 个节点","viewer.lens.kind.count.one":"{label}，{count} 个节点","viewer.lens.kind.count.other":"{label}，{count} 个节点","viewer.lens.compare.one":"{first} → {second}：{forward} · {second} → {first}：{reverse} · 共 {count} 条直接关系","viewer.lens.compare.other":"{first} → {second}：{forward} · {second} → {first}：{reverse} · 共 {count} 条直接关系","viewer.lens.single":"{nodes} · {relationships} · 已连接节点保持可见","viewer.lens.node.one":"{count} 个{label}节点","viewer.lens.node.other":"{count} 个{label}节点","viewer.lens.relationship.one":"{count} 条相连关系","viewer.lens.relationship.other":"{count} 条相连关系","viewer.radar.title":"语义雷达","viewer.radar.building":"正在构建总览","viewer.radar.openFull":"打开完整语义雷达","viewer.radar.open":"打开雷达","viewer.radar.close":"关闭语义雷达","viewer.radar.surface":"图表总览。点击节点进行聚焦，或使用方向键平移。","viewer.radar.click":"点击节点","viewer.radar.drag":"拖动平移","viewer.radar.space":"语义雷达需要更多地图可见空间。","viewer.radar.nodes":"语义图表雷达节点","viewer.radar.focus":"从语义雷达聚焦{label}","viewer.radar.status":"{count} 个节点 · {viewport}","viewer.radar.fullMap":"{count} 个节点 · 完整地图","viewer.radar.compacted":"已收紧雷达，避免遮挡语义护照或地图控件。","viewer.radar.cancelWaiting":"取消等待更多地图空间的语义雷达","viewer.radar.needsSpace":"语义雷达需要更多可见地图空间","viewer.radar.viewport.full":"完整地图","viewer.radar.viewport.width":"宽度 {percent}%","viewer.radar.viewport.scale":"视口 {percent}%","viewer.nav.controls":"图表视图控制","viewer.nav.route":"追踪有向路径","viewer.nav.route.title":"追踪路径（R）","viewer.nav.route.short":"路径","viewer.nav.radar":"打开语义雷达","viewer.nav.radar.title":"语义雷达（M）","viewer.nav.radar.short":"地图","viewer.nav.lens":"打开语义透镜","viewer.nav.lens.title":"语义透镜（L）","viewer.nav.lens.short":"透镜","viewer.nav.find":"查找节点","viewer.nav.find.title":"查找节点（/）","viewer.nav.guide":"打开图表指南","viewer.nav.guide.title":"图表指南（?）","viewer.nav.zoomOut":"缩小","viewer.nav.zoomOut.title":"缩小（-）","viewer.nav.reset":"重置图表视图","viewer.nav.reset.title":"重置视图（0）","viewer.nav.read":"阅读","viewer.nav.zoomIn":"放大","viewer.nav.zoomIn.title":"放大（+）","viewer.nav.camera":"{hint}。重置图表视图","viewer.nav.camera.title":"{semantic}{hint} · 重置视图（0）","viewer.nav.camera.semantic":"语义相机已启用 · ","viewer.nav.level.map":"概览","viewer.nav.level.read":"阅读","viewer.nav.level.full":"完整","viewer.nav.level.auto":"自动","viewer.nav.detail.map":"放大以显示关系标签和节点上下文","viewer.nav.detail.read":"再次放大以显示标签和注释","viewer.nav.detail.full":"完整图表详情","viewer.intent.summary":"{label}。{out} 条出向，{in} 条入向{loops}。共 {total} 条连接。按 Enter 查看详情。","viewer.intent.loops":"，{count} 条自环","viewer.common.copied":"已复制","viewer.common.copyFailed":"复制失败","viewer.common.copyLink":"复制链接","viewer.common.clear":"清除","viewer.common.close":"关闭"}}</script>
     <div class="guided-views no-print" id="guided-views" hidden aria-label="图表引导视图">
@@ -5131,7 +5131,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     <div class="diagram-container" data-detail-level="read"
          data-preset-badge-editorial-plate="ARCHIFY / 图版 04">
       <svg viewBox="0 0 1360 580" role="img" lang="zh-CN" aria-labelledby="archify-diagram-title archify-diagram-description" data-preset="classic" data-quality-profile="showcase">
-        <title id="archify-diagram-title">sigma:自研 coding agent harness 分层架构</title>
+        <title id="archify-diagram-title">sigma:自研 coding agent harness 功能域架构(P6)</title>
         <desc id="archify-diagram-description">由 Archify 生成的架构图。</desc>
         <!-- Definitions -->
         <defs>
@@ -5156,34 +5156,39 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Boundaries (behind everything) -->
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="产品壳 · sigma" x="6" y="214" width="230" height="126" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="产品壳 · sigma.cli + sigma.sdk" x="6" y="214" width="230" height="126" rx="12" class="c-region" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="1" data-composition-frame-label="会话层 · sigma_session" x="276" y="214" width="240" height="322" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="1" data-composition-frame-label="会话层 · sigma.sessions" x="276" y="214" width="240" height="322" rx="12" class="c-region" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="2" data-composition-frame-label="循环层 · sigma_agent" x="561" y="18" width="250" height="518" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="2" data-composition-frame-label="循环层 · sigma.runtime" x="561" y="214" width="250" height="126" rx="12" class="c-region" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="3" data-composition-frame-label="工具层 · sigma_tools" x="851" y="18" width="250" height="126" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="3" data-composition-frame-label="安全层 · sigma.security" x="561" y="410" width="260" height="126" rx="12" class="c-region" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="4" data-composition-frame-label="协议层 · sigma_ai" x="856" y="214" width="250" height="126" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="4" data-composition-frame-label="工具层 · sigma.tools" x="851" y="18" width="260" height="126" rx="12" class="c-region" stroke-width="1"/>
+
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="5" data-composition-frame-label="协议层 · sigma.providers" x="856" y="214" width="250" height="126" rx="12" class="c-region" stroke-width="1"/>
+
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="6" data-composition-frame-label="事件与钩子 · sigma.events + sigma.hooks" x="561" y="18" width="250" height="126" rx="12" class="c-region" stroke-width="1"/>
+
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="7" data-composition-frame-label="记忆层 · sigma.memory" x="851" y="410" width="260" height="126" rx="12" class="c-region" stroke-width="1"/>
 
         <!-- Connection paths (before components for correct z-order) -->
         <path data-edge-from="shell" data-edge-to="ctx" data-edge-label="build_messages()" data-edge-key="0" data-edge-id="shell-to-ctx" data-composition-points="206,282;306,282" d="M 206 282 L 306 282" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="ctx" data-edge-to="loop" data-edge-label="convert_to_llm()" data-edge-key="1" data-edge-id="ctx-to-loop" data-composition-points="486,275;591,275" d="M 486 275 L 591 275" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="loop" data-edge-to="provider" data-edge-label="stream() 流式请求" data-edge-key="2" data-edge-id="loop-to-provider" data-composition-points="781,282;886,282" d="M 781 282 L 886 282" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="loop" data-edge-to="provider" data-edge-label="stream() 流式请求" data-edge-key="2" data-edge-id="loop-to-provider" data-composition-points="781,289;886,289" d="M 781 289 L 886 289" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="provider" data-edge-to="model-api" data-edge-label="OpenAI 兼容 SSE" data-edge-key="3" data-edge-id="provider-to-model" data-composition-points="981,320;981,344;1137,344;1137,476;1161,476" d="M 981 320 L 981 336 Q 981 344 989 344 L 1129 344 Q 1137 344 1137 352 L 1137 468 Q 1137 476 1145 476 L 1161 476" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="shell" data-edge-to="registry" data-edge-label="组装注册(同一条路径)" data-edge-key="4" data-edge-id="shell-to-registry" data-composition-points="121,244;121,220;567,220;567,86;591,86" d="M 121 244 L 121 228 Q 121 220 129 220 L 559 220 Q 567 220 567 212 L 567 94 Q 567 86 575 86 L 591 86" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="loop" data-edge-to="registry" data-edge-label="get(name) 按名解析" data-edge-key="5" data-edge-id="loop-to-registry" data-composition-points="686,244;686,124" d="M 686 244 L 686 124" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="registry" data-edge-to="tools" data-edge-key="6" data-edge-id="registry-to-tools" data-composition-points="781,86;881,86" d="M 781 86 L 881 86" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="loop" data-edge-to="checkpoint" data-edge-label="写批次前 mark" data-edge-key="7" data-edge-id="loop-to-checkpoint" data-composition-points="686,320;686,440" d="M 686 320 L 686 440" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="loop" data-edge-to="tree" data-edge-label="追加结果" data-edge-key="8" data-edge-id="loop-to-tree" data-composition-points="591,289;538.5,289;538.5,478;486,478" d="M 591 289 L 546.5 289 Q 538.5 289 538.5 297 L 538.5 470 Q 538.5 478 530.5 478 L 486 478" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="tree" data-edge-to="ctx" data-edge-label="树上历史 + 压缩视图" data-edge-key="9" data-edge-id="tree-to-ctx" data-composition-points="396,440;396,320" d="M 396 440 L 396 320" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="tree" data-edge-to="disk" data-edge-key="10" data-edge-id="tree-to-disk" data-composition-points="306,478;226,478" d="M 306 478 L 226 478" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="checkpoint" data-edge-to="disk" data-edge-label="独立 GIT_DIR 快照" data-edge-key="11" data-edge-id="checkpoint-to-disk" data-composition-points="686,516;686,540;131,540;131,516" d="M 686 516 L 686 532 Q 686 540 678 540 L 139 540 Q 131 540 131 532 L 131 516" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="tools" data-edge-to="web-api" data-edge-label="有 key 才注册" data-edge-key="12" data-edge-id="tools-to-web" data-composition-points="1071,86;1161,86" d="M 1071 86 L 1161 86" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="loop" data-edge-to="tools" data-edge-label="get(name) 按名解析" data-edge-key="4" data-edge-id="loop-to-tools" data-composition-points="781,275;831,275;831,86;881,86" d="M 781 275 L 823 275 Q 831 275 831 267 L 831 94 Q 831 86 839 86 L 881 86" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="loop" data-edge-to="hooks" data-edge-label="emit 生命周期事件" data-edge-key="5" data-edge-id="loop-to-hooks" data-composition-points="686,244;686,124" d="M 686 244 L 686 124" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="loop" data-edge-to="security" data-edge-label="写批次前 mark(L2)" data-edge-key="6" data-edge-id="loop-to-security" data-composition-points="686,320;686,344;707,344;707,416;691,416;691,440" d="M 686 320 L 686 336 Q 686 344 694 344 L 699 344 Q 707 344 707 352 L 707 408 Q 707 416 699 416 L 699 416 Q 691 416 691 424 L 691 440" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="loop" data-edge-to="tree" data-edge-label="追加结果" data-edge-key="7" data-edge-id="loop-to-tree" data-composition-points="591,289;538.5,289;538.5,478;486,478" d="M 591 289 L 546.5 289 Q 538.5 289 538.5 297 L 538.5 470 Q 538.5 478 530.5 478 L 486 478" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="tree" data-edge-to="ctx" data-edge-label="树上历史 + 压缩视图" data-edge-key="8" data-edge-id="tree-to-ctx" data-composition-points="396,440;396,320" d="M 396 440 L 396 320" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="tree" data-edge-to="disk" data-edge-key="9" data-edge-id="tree-to-disk" data-composition-points="306,478;226,478" d="M 306 478 L 226 478" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="security" data-edge-to="disk" data-edge-label="独立 GIT_DIR 快照" data-edge-key="10" data-edge-id="security-to-disk" data-composition-points="691,516;691,540;131,540;131,516" d="M 691 516 L 691 532 Q 691 540 683 540 L 139 540 Q 131 540 131 532 L 131 516" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="tools" data-edge-to="web-api" data-edge-label="有 key 才注册" data-edge-key="11" data-edge-id="tools-to-web" data-composition-points="1081,86;1161,86" d="M 1081 86 L 1161 86" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
 
         <!-- Components -->
-        <g id="node-shell" data-node-id="shell" data-node-label="sigma 产品壳" tabindex="0" role="button" aria-label="聚焦sigma 产品壳，CLI · REPL · SDK, 产品壳 · sigma" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="CLI · REPL · SDK" data-node-tag="core/sigma" data-node-context="产品壳 · sigma">
-          <title>sigma 产品壳 · CLI · REPL · SDK · 产品壳 · sigma · core/sigma</title>
+        <g id="node-shell" data-node-id="shell" data-node-label="sigma.cli + sdk 装配层" tabindex="0" role="button" aria-label="聚焦sigma.cli + sdk 装配层，CLI · REPL · 唯一组装点, 产品壳 · sigma.cli + sigma.sdk" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="CLI · REPL · 唯一组装点" data-node-tag="sigma.cli · sigma.sdk" data-node-context="产品壳 · sigma.cli + sigma.sdk">
+          <title>sigma.cli + sdk 装配层 · CLI · REPL · 唯一组装点 · 产品壳 · sigma.cli + sigma.sdk · sigma.cli · sigma.sdk</title>
           <rect x="36" y="244" width="170" height="76" rx="6" class="c-mask"/>
           <rect x="36" y="244" width="170" height="76" rx="6" class="c-frontend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(42 250) scale(0.6875)">
@@ -5192,13 +5197,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="121" y="280" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">sigma 产品壳</text>
-        <text data-detail="context" x="121" y="296" class="t-muted" font-size="9" text-anchor="middle">CLI · REPL · SDK</text>
-        <text data-detail="fine" x="121" y="312" class="t-frontend" font-size="7" text-anchor="middle">core/sigma</text>
+          <text data-node-label="" data-detail-anchor="" x="121" y="280" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">sigma.cli + sdk 装配层</text>
+        <text data-detail="context" x="121" y="296" class="t-muted" font-size="9" text-anchor="middle">CLI · REPL · 唯一组装点</text>
+        <text data-detail="fine" x="121" y="312" class="t-frontend" font-size="7" text-anchor="middle">sigma.cli · sigma.sdk</text>
         </g>
 
-        <g id="node-ctx" data-node-id="ctx" data-node-label="SessionContext 上下文组装" tabindex="0" role="button" aria-label="聚焦SessionContext 上下文组装，常驻区指纹 + 预算断言, 会话层 · sigma_session" aria-pressed="false" data-node-kind="backend" data-node-sublabel="常驻区指纹 + 预算断言" data-node-tag="sigma_session" data-node-context="会话层 · sigma_session">
-          <title>SessionContext 上下文组装 · 常驻区指纹 + 预算断言 · 会话层 · sigma_session · sigma_session</title>
+        <g id="node-ctx" data-node-id="ctx" data-node-label="SessionContext 上下文组装" tabindex="0" role="button" aria-label="聚焦SessionContext 上下文组装，常驻区指纹 + 预算断言, 会话层 · sigma.sessions" aria-pressed="false" data-node-kind="backend" data-node-sublabel="常驻区指纹 + 预算断言" data-node-tag="sigma.sessions" data-node-context="会话层 · sigma.sessions">
+          <title>SessionContext 上下文组装 · 常驻区指纹 + 预算断言 · 会话层 · sigma.sessions · sigma.sessions</title>
           <rect x="306" y="244" width="180" height="76" rx="6" class="c-mask"/>
           <rect x="306" y="244" width="180" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(312 250) scale(0.6875)">
@@ -5206,11 +5211,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="396" y="280" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">SessionContext 上下文组装</text>
         <text data-detail="context" x="396" y="296" class="t-muted" font-size="9" text-anchor="middle">常驻区指纹 + 预算断言</text>
-        <text data-detail="fine" x="396" y="312" class="t-backend" font-size="7" text-anchor="middle">sigma_session</text>
+        <text data-detail="fine" x="396" y="312" class="t-backend" font-size="7" text-anchor="middle">sigma.sessions</text>
         </g>
 
-        <g id="node-tree" data-node-id="tree" data-node-label="SessionTree 会话树" tabindex="0" role="button" aria-label="聚焦SessionTree 会话树，只追加 · 可回溯, 会话层 · sigma_session" aria-pressed="false" data-node-kind="backend" data-node-sublabel="只追加 · 可回溯" data-node-tag="sigma_session" data-node-context="会话层 · sigma_session">
-          <title>SessionTree 会话树 · 只追加 · 可回溯 · 会话层 · sigma_session · sigma_session</title>
+        <g id="node-tree" data-node-id="tree" data-node-label="SessionTree 会话树" tabindex="0" role="button" aria-label="聚焦SessionTree 会话树，只追加 · 可回溯, 会话层 · sigma.sessions" aria-pressed="false" data-node-kind="backend" data-node-sublabel="只追加 · 可回溯" data-node-tag="sigma.sessions" data-node-context="会话层 · sigma.sessions">
+          <title>SessionTree 会话树 · 只追加 · 可回溯 · 会话层 · sigma.sessions · sigma.sessions</title>
           <rect x="306" y="440" width="180" height="76" rx="6" class="c-mask"/>
           <rect x="306" y="440" width="180" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(312 446) scale(0.6875)">
@@ -5218,23 +5223,26 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="396" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">SessionTree 会话树</text>
         <text data-detail="context" x="396" y="492" class="t-muted" font-size="9" text-anchor="middle">只追加 · 可回溯</text>
-        <text data-detail="fine" x="396" y="508" class="t-backend" font-size="7" text-anchor="middle">sigma_session</text>
+        <text data-detail="fine" x="396" y="508" class="t-backend" font-size="7" text-anchor="middle">sigma.sessions</text>
         </g>
 
-        <g id="node-registry" data-node-id="registry" data-node-label="ToolRegistry 注册表" tabindex="0" role="button" aria-label="聚焦ToolRegistry 注册表，按名解析 · 热重载, 循环层 · sigma_agent" aria-pressed="false" data-node-kind="backend" data-node-sublabel="按名解析 · 热重载" data-node-tag="sigma_agent" data-node-context="循环层 · sigma_agent">
-          <title>ToolRegistry 注册表 · 按名解析 · 热重载 · 循环层 · sigma_agent · sigma_agent</title>
+        <g id="node-hooks" data-node-id="hooks" data-node-label="events/ + hooks/" tabindex="0" role="button" aria-label="聚焦events/ + hooks/，9 生命周期事件 · 订阅者总线, 事件与钩子 · sigma.events + sigma.hooks" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="9 生命周期事件 · 订阅者总线" data-node-tag="sigma.events · sigma.hooks" data-node-context="事件与钩子 · sigma.events + sigma.hooks">
+          <title>events/ + hooks/ · 9 生命周期事件 · 订阅者总线 · 事件与钩子 · sigma.events + sigma.hooks · sigma.events · sigma.hooks</title>
           <rect x="591" y="48" width="190" height="76" rx="6" class="c-mask"/>
-          <rect x="591" y="48" width="190" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(597 54) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          <rect x="591" y="48" width="190" height="76" rx="6" class="c-messagebus" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(597 54) scale(0.6875)">
+            <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
+            <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
+            <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
+            <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="686" y="84" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ToolRegistry 注册表</text>
-        <text data-detail="context" x="686" y="100" class="t-muted" font-size="9" text-anchor="middle">按名解析 · 热重载</text>
-        <text data-detail="fine" x="686" y="116" class="t-backend" font-size="7" text-anchor="middle">sigma_agent</text>
+          <text data-node-label="" data-detail-anchor="" x="686" y="84" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">events/ + hooks/</text>
+        <text data-detail="context" x="686" y="100" class="t-muted" font-size="9" text-anchor="middle">9 生命周期事件 · 订阅者总线</text>
+        <text data-detail="fine" x="686" y="116" class="t-messagebus" font-size="7" text-anchor="middle">sigma.events · sigma.hooks</text>
         </g>
 
-        <g id="node-loop" data-node-id="loop" data-node-label="AgentLoop 唯一循环" tabindex="0" role="button" aria-label="聚焦AgentLoop 唯一循环，只读并发 · 写顺序, 循环层 · sigma_agent" aria-pressed="false" data-node-kind="backend" data-node-sublabel="只读并发 · 写顺序" data-node-tag="sigma_agent" data-node-context="循环层 · sigma_agent">
-          <title>AgentLoop 唯一循环 · 只读并发 · 写顺序 · 循环层 · sigma_agent · sigma_agent</title>
+        <g id="node-loop" data-node-id="loop" data-node-label="AgentLoop 唯一循环" tabindex="0" role="button" aria-label="聚焦AgentLoop 唯一循环，只读并发 · 写顺序, 循环层 · sigma.runtime" aria-pressed="false" data-node-kind="backend" data-node-sublabel="只读并发 · 写顺序" data-node-tag="sigma.runtime" data-node-context="循环层 · sigma.runtime">
+          <title>AgentLoop 唯一循环 · 只读并发 · 写顺序 · 循环层 · sigma.runtime · sigma.runtime</title>
           <rect x="591" y="244" width="190" height="76" rx="6" class="c-mask"/>
           <rect x="591" y="244" width="190" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(597 250) scale(0.6875)">
@@ -5242,36 +5250,36 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="686" y="280" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">AgentLoop 唯一循环</text>
         <text data-detail="context" x="686" y="296" class="t-muted" font-size="9" text-anchor="middle">只读并发 · 写顺序</text>
-        <text data-detail="fine" x="686" y="312" class="t-backend" font-size="7" text-anchor="middle">sigma_agent</text>
+        <text data-detail="fine" x="686" y="312" class="t-backend" font-size="7" text-anchor="middle">sigma.runtime</text>
         </g>
 
-        <g id="node-checkpoint" data-node-id="checkpoint" data-node-label="ShadowCheckpoint 影子 git" tabindex="0" role="button" aria-label="聚焦ShadowCheckpoint 影子 git，写批次前自动快照, 循环层 · sigma_agent" aria-pressed="false" data-node-kind="security" data-node-sublabel="写批次前自动快照" data-node-tag="sigma_agent" data-node-context="循环层 · sigma_agent">
-          <title>ShadowCheckpoint 影子 git · 写批次前自动快照 · 循环层 · sigma_agent · sigma_agent</title>
-          <rect x="591" y="440" width="190" height="76" rx="6" class="c-mask"/>
-          <rect x="591" y="440" width="190" height="76" rx="6" class="c-security" stroke-width="1.5"/>
+        <g id="node-security" data-node-id="security" data-node-label="security/ 三层软边界" tabindex="0" role="button" aria-label="聚焦security/ 三层软边界，L1 沙箱 · L2 快照 · L3 审批, 安全层 · sigma.security" aria-pressed="false" data-node-kind="security" data-node-sublabel="L1 沙箱 · L2 快照 · L3 审批" data-node-tag="sigma.security" data-node-context="安全层 · sigma.security">
+          <title>security/ 三层软边界 · L1 沙箱 · L2 快照 · L3 审批 · 安全层 · sigma.security · sigma.security</title>
+          <rect x="591" y="440" width="200" height="76" rx="6" class="c-mask"/>
+          <rect x="591" y="440" width="200" height="76" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(597 446) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="686" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ShadowCheckpoint 影子 git</text>
-        <text data-detail="context" x="686" y="492" class="t-muted" font-size="9" text-anchor="middle">写批次前自动快照</text>
-        <text data-detail="fine" x="686" y="508" class="t-security" font-size="7" text-anchor="middle">sigma_agent</text>
+          <text data-node-label="" data-detail-anchor="" x="691" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">security/ 三层软边界</text>
+        <text data-detail="context" x="691" y="492" class="t-muted" font-size="9" text-anchor="middle">L1 沙箱 · L2 快照 · L3 审批</text>
+        <text data-detail="fine" x="691" y="508" class="t-security" font-size="7" text-anchor="middle">sigma.security</text>
         </g>
 
-        <g id="node-tools" data-node-id="tools" data-node-label="工具集" tabindex="0" role="button" aria-label="聚焦工具集，read/write/edit/bash/grep 等, 工具层 · sigma_tools" aria-pressed="false" data-node-kind="backend" data-node-sublabel="read/write/edit/bash/grep 等" data-node-tag="sigma_tools" data-node-context="工具层 · sigma_tools">
-          <title>工具集 · read/write/edit/bash/grep 等 · 工具层 · sigma_tools · sigma_tools</title>
-          <rect x="881" y="48" width="190" height="76" rx="6" class="c-mask"/>
-          <rect x="881" y="48" width="190" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
+        <g id="node-tools" data-node-id="tools" data-node-label="ToolRegistry + 内置工具" tabindex="0" role="button" aria-label="聚焦ToolRegistry + 内置工具，read/write/edit/bash/grep 等, 工具层 · sigma.tools" aria-pressed="false" data-node-kind="backend" data-node-sublabel="read/write/edit/bash/grep 等" data-node-tag="sigma.tools" data-node-context="工具层 · sigma.tools">
+          <title>ToolRegistry + 内置工具 · read/write/edit/bash/grep 等 · 工具层 · sigma.tools · sigma.tools</title>
+          <rect x="881" y="48" width="200" height="76" rx="6" class="c-mask"/>
+          <rect x="881" y="48" width="200" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(887 54) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="976" y="84" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">工具集</text>
-        <text data-detail="context" x="976" y="100" class="t-muted" font-size="9" text-anchor="middle">read/write/edit/bash/grep 等</text>
-        <text data-detail="fine" x="976" y="116" class="t-backend" font-size="7" text-anchor="middle">sigma_tools</text>
+          <text data-node-label="" data-detail-anchor="" x="981" y="84" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ToolRegistry + 内置工具</text>
+        <text data-detail="context" x="981" y="100" class="t-muted" font-size="9" text-anchor="middle">read/write/edit/bash/grep 等</text>
+        <text data-detail="fine" x="981" y="116" class="t-backend" font-size="7" text-anchor="middle">sigma.tools</text>
         </g>
 
-        <g id="node-provider" data-node-id="provider" data-node-label="BaseProvider 抽象" tabindex="0" role="button" aria-label="聚焦BaseProvider 抽象，OpenAI 兼容 + 回放实现, 协议层 · sigma_ai" aria-pressed="false" data-node-kind="backend" data-node-sublabel="OpenAI 兼容 + 回放实现" data-node-tag="sigma_ai" data-node-context="协议层 · sigma_ai">
-          <title>BaseProvider 抽象 · OpenAI 兼容 + 回放实现 · 协议层 · sigma_ai · sigma_ai</title>
+        <g id="node-provider" data-node-id="provider" data-node-label="BaseProvider 抽象" tabindex="0" role="button" aria-label="聚焦BaseProvider 抽象，OpenAI 兼容 + 回放实现, 协议层 · sigma.providers" aria-pressed="false" data-node-kind="backend" data-node-sublabel="OpenAI 兼容 + 回放实现" data-node-tag="sigma.providers" data-node-context="协议层 · sigma.providers">
+          <title>BaseProvider 抽象 · OpenAI 兼容 + 回放实现 · 协议层 · sigma.providers · sigma.providers</title>
           <rect x="886" y="244" width="190" height="76" rx="6" class="c-mask"/>
           <rect x="886" y="244" width="190" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(892 250) scale(0.6875)">
@@ -5279,7 +5287,20 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="981" y="280" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">BaseProvider 抽象</text>
         <text data-detail="context" x="981" y="296" class="t-muted" font-size="9" text-anchor="middle">OpenAI 兼容 + 回放实现</text>
-        <text data-detail="fine" x="981" y="312" class="t-backend" font-size="7" text-anchor="middle">sigma_ai</text>
+        <text data-detail="fine" x="981" y="312" class="t-backend" font-size="7" text-anchor="middle">sigma.providers</text>
+        </g>
+
+        <g id="node-memory" data-node-id="memory" data-node-label="memory/ 跨会话记忆" tabindex="0" role="button" aria-label="聚焦memory/ 跨会话记忆，.sigma/memory · 索引进常驻区, 记忆层 · sigma.memory" aria-pressed="false" data-node-kind="database" data-node-sublabel=".sigma/memory · 索引进常驻区" data-node-tag="sigma.memory" data-node-context="记忆层 · sigma.memory">
+          <title>memory/ 跨会话记忆 · .sigma/memory · 索引进常驻区 · 记忆层 · sigma.memory · sigma.memory</title>
+          <rect x="881" y="440" width="200" height="76" rx="6" class="c-mask"/>
+          <rect x="881" y="440" width="200" height="76" rx="6" class="c-database" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(887 446) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="981" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">memory/ 跨会话记忆</text>
+        <text data-detail="context" x="981" y="492" class="t-muted" font-size="9" text-anchor="middle">.sigma/memory · 索引进常驻区</text>
+        <text data-detail="fine" x="981" y="508" class="t-database" font-size="7" text-anchor="middle">sigma.memory</text>
         </g>
 
         <g id="node-web-api" data-node-id="web-api" data-node-label="Tavily / Firecrawl" tabindex="0" role="button" aria-label="聚焦Tavily / Firecrawl，联网搜索 · 网页精读, 架构组件" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="联网搜索 · 网页精读" data-node-tag="额度硬闸" data-node-context="架构组件">
@@ -5307,8 +5328,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="fine" x="1251" y="504" class="t-external" font-size="7" text-anchor="middle">OpenAI 兼容</text>
         </g>
 
-        <g id="node-disk" data-node-id="disk" data-node-label="工作区 + ~/.sigma" tabindex="0" role="button" aria-label="聚焦工作区 + ~/.sigma，会话 JSONL · shadow.git, 架构组件" aria-pressed="false" data-node-kind="database" data-node-sublabel="会话 JSONL · shadow.git" data-node-tag="本机磁盘" data-node-context="架构组件">
-          <title>工作区 + ~/.sigma · 会话 JSONL · shadow.git · 架构组件 · 本机磁盘</title>
+        <g id="node-disk" data-node-id="disk" data-node-label="工作区 + ~/.sigma" tabindex="0" role="button" aria-label="聚焦工作区 + ~/.sigma，会话 JSONL · shadow.git · trace, 架构组件" aria-pressed="false" data-node-kind="database" data-node-sublabel="会话 JSONL · shadow.git · trace" data-node-tag="本机磁盘" data-node-context="架构组件">
+          <title>工作区 + ~/.sigma · 会话 JSONL · shadow.git · trace · 架构组件 · 本机磁盘</title>
           <rect x="36" y="440" width="190" height="76" rx="6" class="c-mask"/>
           <rect x="36" y="440" width="190" height="76" rx="6" class="c-database" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(42 446) scale(0.6875)">
@@ -5316,7 +5337,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="131" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">工作区 + ~/.sigma</text>
-        <text data-detail="context" x="131" y="492" class="t-muted" font-size="9" text-anchor="middle">会话 JSONL · shadow.git</text>
+        <text data-detail="context" x="131" y="492" class="t-muted" font-size="9" text-anchor="middle">会话 JSONL · shadow.git · trace</text>
         <text data-detail="fine" x="131" y="508" class="t-database" font-size="7" text-anchor="middle">本机磁盘</text>
         </g>
 
@@ -5330,68 +5351,82 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text x="538.5" y="265" class="t-backend" font-size="8" text-anchor="middle">convert_to_llm()</text>
         </g>
         <g data-detail="context" data-edge-from="loop" data-edge-to="provider" data-edge-label="stream() 流式请求" data-edge-key="2" data-edge-id="loop-to-provider">
-          <rect x="787.7" y="262" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="833.5" y="272" class="t-backend" font-size="8" text-anchor="middle">stream() 流式请求</text>
+          <rect x="787.7" y="285" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="833.5" y="295" class="t-backend" font-size="8" text-anchor="middle">stream() 流式请求</text>
         </g>
         <g data-detail="context" data-edge-from="provider" data-edge-to="model-api" data-edge-label="OpenAI 兼容 SSE" data-edge-key="3" data-edge-id="provider-to-model">
           <rect x="1018" y="324" width="82" height="14" rx="3" class="c-mask"/>
           <text x="1059" y="334" class="t-backend" font-size="8" text-anchor="middle">OpenAI 兼容 SSE</text>
         </g>
-        <g data-detail="context" data-edge-from="shell" data-edge-to="registry" data-edge-label="组装注册(同一条路径)" data-edge-key="4" data-edge-id="shell-to-registry">
-          <rect x="291" y="200" width="106" height="14" rx="3" class="c-mask"/>
-          <text x="344" y="210" class="t-muted" font-size="8" text-anchor="middle">组装注册(同一条路径)</text>
+        <g data-detail="context" data-edge-from="loop" data-edge-to="tools" data-edge-label="get(name) 按名解析" data-edge-key="4" data-edge-id="loop-to-tools">
+          <rect x="782.8" y="160.5" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="831" y="170.5" class="t-muted" font-size="8" text-anchor="middle">get(name) 按名解析</text>
         </g>
-        <g data-detail="context" data-edge-from="loop" data-edge-to="registry" data-edge-label="get(name) 按名解析" data-edge-key="5" data-edge-id="loop-to-registry">
-          <rect x="637.8" y="224" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="686" y="234" class="t-muted" font-size="8" text-anchor="middle">get(name) 按名解析</text>
+        <g data-detail="context" data-edge-from="loop" data-edge-to="hooks" data-edge-label="emit 生命周期事件" data-edge-key="5" data-edge-id="loop-to-hooks">
+          <rect x="640.2" y="184" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="686" y="194" class="t-muted" font-size="8" text-anchor="middle">emit 生命周期事件</text>
         </g>
-
-        <g data-detail="context" data-edge-from="loop" data-edge-to="checkpoint" data-edge-label="写批次前 mark" data-edge-key="7" data-edge-id="loop-to-checkpoint">
-          <rect x="649.8" y="324" width="72.4" height="14" rx="3" class="c-mask"/>
-          <text x="686" y="334" class="t-muted" font-size="8" text-anchor="middle">写批次前 mark</text>
+        <g data-detail="context" data-edge-from="loop" data-edge-to="security" data-edge-label="写批次前 mark(L2)" data-edge-key="6" data-edge-id="loop-to-security">
+          <rect x="650.7" y="348" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="696.5" y="358" class="t-muted" font-size="8" text-anchor="middle">写批次前 mark(L2)</text>
         </g>
-        <g data-detail="context" data-edge-from="loop" data-edge-to="tree" data-edge-label="追加结果" data-edge-key="8" data-edge-id="loop-to-tree">
+        <g data-detail="context" data-edge-from="loop" data-edge-to="tree" data-edge-label="追加结果" data-edge-key="7" data-edge-id="loop-to-tree">
           <rect x="514.3" y="363.5" width="48.4" height="14" rx="3" class="c-mask"/>
           <text x="538.5" y="373.5" class="t-muted" font-size="8" text-anchor="middle">追加结果</text>
         </g>
-        <g data-detail="context" data-edge-from="tree" data-edge-to="ctx" data-edge-label="树上历史 + 压缩视图" data-edge-key="9" data-edge-id="tree-to-ctx">
+        <g data-detail="context" data-edge-from="tree" data-edge-to="ctx" data-edge-label="树上历史 + 压缩视图" data-edge-key="8" data-edge-id="tree-to-ctx">
           <rect x="345.4" y="420" width="101.2" height="14" rx="3" class="c-mask"/>
           <text x="396" y="430" class="t-muted" font-size="8" text-anchor="middle">树上历史 + 压缩视图</text>
         </g>
 
-        <g data-detail="context" data-edge-from="checkpoint" data-edge-to="disk" data-edge-label="独立 GIT_DIR 快照" data-edge-key="11" data-edge-id="checkpoint-to-disk">
-          <rect x="362.7" y="520" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="408.5" y="530" class="t-muted" font-size="8" text-anchor="middle">独立 GIT_DIR 快照</text>
+        <g data-detail="context" data-edge-from="security" data-edge-to="disk" data-edge-label="独立 GIT_DIR 快照" data-edge-key="10" data-edge-id="security-to-disk">
+          <rect x="365.2" y="520" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="411" y="530" class="t-muted" font-size="8" text-anchor="middle">独立 GIT_DIR 快照</text>
         </g>
-        <g data-detail="context" data-edge-from="tools" data-edge-to="web-api" data-edge-label="有 key 才注册" data-edge-key="12" data-edge-id="tools-to-web">
-          <rect x="1079.8" y="66" width="72.4" height="14" rx="3" class="c-mask"/>
-          <text x="1116" y="76" class="t-messagebus" font-size="8" text-anchor="middle">有 key 才注册</text>
+        <g data-detail="context" data-edge-from="tools" data-edge-to="web-api" data-edge-label="有 key 才注册" data-edge-key="11" data-edge-id="tools-to-web">
+          <rect x="1084.8" y="66" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="1121" y="76" class="t-messagebus" font-size="8" text-anchor="middle">有 key 才注册</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="产品壳 · sigma">
-          <rect data-graph-role="structural-frame-label-mask" x="10" y="224" width="85.6" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="14" y="237" class="t-cloud" font-size="9" font-weight="600">产品壳 · sigma</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="产品壳 · sigma.cli + sigma.sdk">
+          <rect data-graph-role="structural-frame-label-mask" x="10" y="224" width="172" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="14" y="237" class="t-cloud" font-size="9" font-weight="600">产品壳 · sigma.cli + sigma.sdk</text>
         </g>
 
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="region" data-composition-frame-label="会话层 · sigma_session">
-          <rect data-graph-role="structural-frame-label-mask" x="280" y="224" width="128.8" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="284" y="237" class="t-cloud" font-size="9" font-weight="600">会话层 · sigma_session</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="region" data-composition-frame-label="会话层 · sigma.sessions">
+          <rect data-graph-role="structural-frame-label-mask" x="280" y="224" width="134.2" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="284" y="237" class="t-cloud" font-size="9" font-weight="600">会话层 · sigma.sessions</text>
         </g>
 
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="2" data-composition-frame-kind="region" data-composition-frame-label="循环层 · sigma_agent">
-          <rect data-graph-role="structural-frame-label-mask" x="565" y="28" width="118" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="569" y="41" class="t-cloud" font-size="9" font-weight="600">循环层 · sigma_agent</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="2" data-composition-frame-kind="region" data-composition-frame-label="循环层 · sigma.runtime">
+          <rect data-graph-role="structural-frame-label-mask" x="565" y="224" width="128.8" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="569" y="237" class="t-cloud" font-size="9" font-weight="600">循环层 · sigma.runtime</text>
         </g>
 
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="3" data-composition-frame-kind="region" data-composition-frame-label="工具层 · sigma_tools">
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="3" data-composition-frame-kind="region" data-composition-frame-label="安全层 · sigma.security">
+          <rect data-graph-role="structural-frame-label-mask" x="565" y="420" width="134.2" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="569" y="433" class="t-cloud" font-size="9" font-weight="600">安全层 · sigma.security</text>
+        </g>
+
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="4" data-composition-frame-kind="region" data-composition-frame-label="工具层 · sigma.tools">
           <rect data-graph-role="structural-frame-label-mask" x="855" y="28" width="118" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="859" y="41" class="t-cloud" font-size="9" font-weight="600">工具层 · sigma_tools</text>
+          <text data-boundary-label="" x="859" y="41" class="t-cloud" font-size="9" font-weight="600">工具层 · sigma.tools</text>
         </g>
 
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="4" data-composition-frame-kind="region" data-composition-frame-label="协议层 · sigma_ai">
-          <rect data-graph-role="structural-frame-label-mask" x="860" y="224" width="101.8" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="864" y="237" class="t-cloud" font-size="9" font-weight="600">协议层 · sigma_ai</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="5" data-composition-frame-kind="region" data-composition-frame-label="协议层 · sigma.providers">
+          <rect data-graph-role="structural-frame-label-mask" x="860" y="224" width="139.6" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="864" y="237" class="t-cloud" font-size="9" font-weight="600">协议层 · sigma.providers</text>
+        </g>
+
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="6" data-composition-frame-kind="region" data-composition-frame-label="事件与钩子 · sigma.events + sigma.hooks">
+          <rect data-graph-role="structural-frame-label-mask" x="565" y="28" width="220.6" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="569" y="41" class="t-cloud" font-size="9" font-weight="600">事件与钩子 · sigma.events + sigma.hooks</text>
+        </g>
+
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="7" data-composition-frame-kind="region" data-composition-frame-label="记忆层 · sigma.memory">
+          <rect data-graph-role="structural-frame-label-mask" x="855" y="420" width="123.39999999999999" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="859" y="433" class="t-cloud" font-size="9" font-weight="600">记忆层 · sigma.memory</text>
         </g>
 
         <!-- Legend -->
@@ -5588,22 +5623,23 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>分层契约(CI 强制)</h3>
         </div>
         <ul>
-          <li>&bull; 依赖严格单向:壳 → 工具/会话 → agent → ai</li>
-          <li>&bull; sigma_tools 与 sigma_session 兄弟层,互不依赖(independence)</li>
-          <li>&bull; 内置与扩展工具同一条注册路径;task 可派后台 sub_agent(≤3)</li>
-          <li>&bull; 三道门禁:lint-imports · mypy --strict · pytest</li>
+          <li>&bull; 单顶层包 sigma:15 个功能域子包按层排序,lint-imports 15 层契约</li>
+          <li>&bull; events 是机制,hooks 是订阅者;内置与扩展工具同一条注册路径</li>
+          <li>&bull; task 可派后台 sub_agent(轮数三档 low/medium/high)</li>
+          <li>&bull; 三道门禁:lint-imports · mypy --strict · pytest(724 passed)</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot emerald"></div>
-          <h3>上下文预算</h3>
+          <h3>上下文预算(D4 v2)</h3>
         </div>
         <ul>
-          <li>&bull; 常驻区 ≤ 3500 token 且逐字节稳定,是 prompt cache 的充要条件</li>
+          <li>&bull; 常驻区 ≤ 5500 token 且逐字节稳定;实测缓存命中率 93.8%</li>
+          <li>&bull; prompts/ 提示词资产独立成包,与工具注册表同源</li>
           <li>&bull; 压缩是视图不是改写:树上原文不动,摘要降级成 user 追加尾部</li>
-          <li>&bull; 技能目录进常驻区,正文由 load_skill 按需追加,不破坏缓存前缀</li>
+          <li>&bull; 记忆索引进常驻(cap 250),正文按需 read,不破坏缓存前缀</li>
         </ul>
       </div>
 
@@ -5613,10 +5649,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>安全边界(不是沙箱)</h3>
         </div>
         <ul>
-          <li>&bull; L1 写路径:write / edit / bash.cwd 越出工作区即拒绝</li>
-          <li>&bull; L2 影子 git:写批次前快照,sigma --rollback 整体回退且可再回滚</li>
-          <li>&bull; L3 钩子未做;bash 仍以用户权限执行任意命令</li>
-          <li>&bull; web_search / web_fetch 有 key 才注册,额度用尽自动禁用</li>
+          <li>&bull; L1 写路径越界即拒绝(path_sandbox)</li>
+          <li>&bull; L2 影子 git:写批次前快照,sigma --rollback 整体回退(回滚实测 30/30)</li>
+          <li>&bull; L3 审批门:危险指令执行前交人确认(对抗集拦截 20/20 · 误拦 0/10)</li>
+          <li>&bull; bash 仍以用户权限执行——挡不住的(python -c / base64)写进文档</li>
         </ul>
       </div>
     </div>
