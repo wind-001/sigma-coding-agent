@@ -8,7 +8,8 @@
     sigma_ai
 
 实现状态
-    P0：仅包声明，无实现。实现计划见 docs/plans/。
+    P0 时仅包声明——已失效的历史状态，现 loop/注册表/钩子/
+    checkpoint 均已落地（本行 2026-09-27 评审时补注日期）。
 """
 
 from __future__ import annotations

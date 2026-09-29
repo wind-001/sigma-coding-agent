@@ -439,13 +439,13 @@ async def _feed_during_turn(
         session = manager.current
         if text in ("!!", "/stop"):
             if session.interrupt():
-                print("' + bs + 'n[打断请求已受理] 当前工具完成后停止,进度已保存。")
+                print("\n[打断请求已受理] 当前工具完成后停止,进度已保存。")
         elif text.startswith("!") and len(text) > 1:
             session.submit_steering(text[1:].strip())
-            print("' + bs + 'n[已注入指导] 下一轮模型调用前生效。")
+            print("\n[已注入指导] 下一轮模型调用前生效。")
         else:
             session.submit_followup(text)
-            print("' + bs + 'n[已排队] 当前任务完成后自动执行。")
+            print("\n[已排队] 当前任务完成后自动执行。")
 
 
 async def _send_with_feeder(
@@ -458,7 +458,7 @@ async def _send_with_feeder(
     try:
         result = await turn_task
     except TurnCancelled:
-        print("' + bs + 'n[已打断] 进度已保存,直接输入下一条任务即可断点续跑。")
+        print("\n[已打断] 进度已保存,直接输入下一条任务即可断点续跑。")
         return None
     finally:
         await feeder

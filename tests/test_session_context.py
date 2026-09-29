@@ -213,12 +213,18 @@ def test_resident_budget_within_limit_passes() -> None:
 
 
 def test_default_budget_matches_d4() -> None:
-    """默认上限就是 D4 的 3 500——**不要为了通过而偷偷放宽**。"""
+    """默认上限与 D4 一致——**不要为了通过而偷偷改**。
+
+    D4 v2(2026-09-28,星辰拍板):3500 → 5500。依据与 5.1.2 "不放宽" 的
+    区别见 ``context.DEFAULT_RESIDENT_BUDGET_TOKENS`` 的修订记录与
+    ``resident_caps.py``;分项和==总额由 G885 另行钉住——**这条测试现在
+    防的是"预算常量被静默改动"**,任何再修订必须连数字带依据一起改。
+    """
     from sigma_session.context import DEFAULT_RESIDENT_BUDGET_TOKENS
 
     context = SessionContext(system_prompt="s", tools_schema=[], clock=CLOCK)
-    assert DEFAULT_RESIDENT_BUDGET_TOKENS == 3500
-    assert context.resident_budget_tokens == 3500
+    assert DEFAULT_RESIDENT_BUDGET_TOKENS == 5500
+    assert context.resident_budget_tokens == 5500
 
 
 def test_resident_tokens_counts_instructions_and_schema() -> None:

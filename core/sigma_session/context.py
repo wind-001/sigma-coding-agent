@@ -60,12 +60,24 @@ if TYPE_CHECKING:
     from sigma_agent.agent_messages import AgentMessage
     from sigma_ai.base import BaseProvider, CancelToken, SamplingParams
 
-DEFAULT_RESIDENT_BUDGET_TOKENS = 3500
-"""常驻区 token 上限（D4 / 架构 5.1 节）。
+DEFAULT_RESIDENT_BUDGET_TOKENS = 5500
+"""常驻区 token 上限（D4 v2 / 架构 5.1 节，2026-09-28 修订）。
 
-**这个数字不要为了让实现通过而放宽。** D4 是 prompt cache 的经济性主张——
-放宽它等于把主张改掉以迁就实现。超了应当**砍常驻区里的东西**，
-或者明确记下"这条主张现在不成立"。
+**修订记录（D4 v2，星辰拍板"常驻区太小，释放扩大给后续功能休闲空间"）**：
+3500 是 2026-09-20 零实测时拍的初值（5.1.0 重排时实测只有 2374）。
+本次修订有数据：93.8% 缓存命中率（P5-批次1 实测）证明主张的核心是
+**逐字节稳定**而非 3500 这个数；+2000 的真金成本约每会话半分钱
+（miss 一次 + 后续轮缓存价 ≈ 1/10）。与 5.1.2 "不放宽" 的区别：
+那次是无数据迁就单一实现，这次是数据修订未测初值——已记 ADR。
+
+**总额为什么是 5500 而不是提案的 5000**：实测核心工具 schema 1857
+超提案估计 357，按 5000 重排会把具名预留挤没——先报数字再上调总额，
+是预留纪律的第一次执行。分项表见 ``resident_caps.py``（G885 断言
+分项之和==本值）。
+
+**不变的主张**：逐字节稳定（指纹断言）、预算有硬闸（G59）。
+**具名预留区的消费纪律**：吃预留必须连实测数字一起进表——
+余量是"给已规划的下一项留的"，不是"给随手塞东西留的"。
 """
 
 
@@ -106,6 +118,7 @@ class SessionContext:
         session_id: str = "sigma-session",
         project_instructions: str = "",
         skill_index: str = "",
+        memory_index: str = "",
         tree: SessionTree | None = None,
         resident_budget_tokens: int = DEFAULT_RESIDENT_BUDGET_TOKENS,
     ) -> None:
@@ -123,6 +136,11 @@ class SessionContext:
         # 而这两件事必须在本层做，否则技能索引就成了预算管不到的盲区
         # （门槛 G59 会漏掉它），那和"偷偷往常驻区加东西"没区别。
         self._skill_index = skill_index
+        # 已经**渲染好**的记忆索引（sigma_session.memory.render_memory_index 的产物，P5-批次3）。
+        # 与 skill_index 同一套纪律：文本进、本类不读文件；**会话内冻结**——
+        # 模型本会话新写的记忆不在索引里（刷新=常驻区变化=缓存失效，D4），
+        # 下个会话可见。进 resident 后自动被指纹与预算两道断言覆盖（G883）。
+        self._memory_index = memory_index
         self._resident_budget = resident_budget_tokens
         # 不传 store 的树就是纯内存的：一个实现覆盖两种用法。
         self._tree = tree if tree is not None else SessionTree()
@@ -155,6 +173,8 @@ class SessionContext:
             parts.append(self._project_instructions)
         if self._skill_index:
             parts.append(self._skill_index)
+        if self._memory_index:
+            parts.append(self._memory_index)
         return "\n\n".join(parts)
 
     def _compute_fingerprint(self) -> str:

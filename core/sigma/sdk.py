@@ -59,6 +59,7 @@ from sigma_ai.messages import UserMessage
 from sigma_session.compact import CompactionOutcome, CompactionPolicy
 from sigma_session.context import SessionContext
 from sigma_session.persist_hook import SessionPersistHook
+from sigma_session.memory import memory_dir_for, render_memory_index, scan_memory
 from sigma_session.trace import TraceHook
 from sigma_session.repair import repair_dangling_tool_results
 from sigma_session.tree import SessionTree
@@ -160,6 +161,26 @@ SYSTEM_PROMPT = (
 )
 
 
+def _memory_discipline_section() -> str:
+    """跨会话记忆的"纪律段"（P5-批次3，memory=True 时追加，≈80 token）。
+
+    为什么是**行为规程**而不是工具行：记忆没有专用工具（write/read 就是
+    接口，详规 T7），所以这段教的是"什么值得记、写到哪、两条边界"。
+    两条边界各有一层理由：
+    - **不得与 AGENTS.md 矛盾**——AGENTS.md 是用户写的第一权威（详规 §1 边界表）；
+    - **刚写的本会话索引不含**——索引在会话启动时冻结（D4：中途刷新=
+      常驻区变化=缓存失效），这句必须告诉模型，否则它会以为"写了没生效"。
+    """
+    return (
+        "\n\n记忆纪律（跨会话记忆已开启）：\n"
+        "- 值得写入 .sigma/memory/<slug>.md（首行 # 标题）：用户拍板、项目坑、"
+        "失败尝试、环境事实；一次一篇，别写大杂烩。\n"
+        "- 不值得写：一次性任务细节；与 AGENTS.md 矛盾的内容不写（它是第一权威）。\n"
+        "- 刚写的记忆本会话的索引里没有（索引在会话开始时冻结），正文自己记住、"
+        "直接用；下个会话自动出现在索引里。"
+    )
+
+
 #: 联网工具的工具行。**只在启用时拼进系统提示词**——它进常驻区，
 #: 所以"关掉时提示词逐字节不变"是有意义的性质（D4）。
 #:
@@ -231,6 +252,7 @@ def build_system_prompt(
     skills: bool = False,
     task: bool = False,
     todo: bool = True,
+    memory: bool = False,
 ) -> str:
     """按启用的工具集生成系统提示词。
 
@@ -252,9 +274,16 @@ def build_system_prompt(
     工具行与「工作方式」第 3 条一起换掉，注册表侧的同源开关是
     ``default_registry(todo=False)``。默认路径返回 ``SYSTEM_PROMPT`` 本身
     （逐字节一致由 test_system_prompt_is_byte_identical_when_disabled 钉住）。
+
+    ``memory``（P5-批次3）：跨会话记忆的"纪律段"。注意它**不是工具行**——
+    记忆没有专用工具（write/read 就是接口，详规 T7），这段是行为规程；
+    索引本体由 ``SessionContext(memory_index=)`` 注入，两者必须同开同关
+    （调用方用同一个旗标喂两处），否则"提示词说能记、常驻区没有索引"
+    就是自相矛盾的常驻区。
     """
     head = _SYSTEM_PROMPT_HEAD + (TODO_TOOL_LINE if todo else "") + ASK_USER_TOOL_LINE
     rules_section = _rules_section(todo)
+    memory_section = _memory_discipline_section() if memory else ""
     tool_lines: list[str] = []
     if web_search:
         tool_lines.append(WEB_SEARCH_TOOL_LINE)
@@ -265,7 +294,7 @@ def build_system_prompt(
     if task:
         tool_lines.append(TASK_TOOL_LINE)
     if not tool_lines:
-        return head + "\n" + rules_section
+        return head + "\n" + rules_section + memory_section
 
     block = "".join(tool_lines)
     # 调研纪律**只在联网时**加：它是给联网工具用的操作规程，
@@ -278,7 +307,7 @@ def build_system_prompt(
         numbered = "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, start=1))
         block += "\n调研纪律（联网时按这个顺序做）：\n" + numbered + "\n"
 
-    return f"{head}\n{block}\n{rules_section}"
+    return f"{head}\n{block}\n{rules_section}{memory_section}"
 
 
 #: 联网搜索的额度账本落点。**在用户级配置目录**（仓库外）：
@@ -479,6 +508,7 @@ class InteractiveSession:
         repair_dangling: bool = True,
         checkpoint_watermark_bytes: int | None = None,
         enable_trace: bool = True,
+        enable_memory: bool = True,
     ) -> None:
         """``sub_agent_rounds``：子 agent 的轮数预算**三档**（low/medium/high）。
 
@@ -585,6 +615,20 @@ class InteractiveSession:
         self._skill_scan, self._skill_index = scan_skills(
             workspace_root, skills_root=skills_root
         )
+        # 跨会话记忆（P5-批次3，D4 v2 预算修订后默认开）：扫 .sigma/memory/
+        # 一次、渲染索引进常驻区。**快照语义**（G884）：会话内不重扫——
+        # 模型刚写的记忆本会话不可见，下个会话自动出现。
+        # 空目录 → 空索引 → 常驻区与无记忆机制逐字节一致（G881）。
+        # --no-memory 时整段跳过，连目录探测都不做。
+        self._enable_memory = enable_memory
+        self._memory_scan = (
+            scan_memory(memory_dir_for(workspace_root)) if enable_memory else None
+        )
+        self._memory_index = (
+            render_memory_index(self._memory_scan)
+            if self._memory_scan is not None
+            else ""
+        )
         # 有技能就必须有 load_skill。**这里会往调用方传进来的注册表里补一个工具**——
         # 看似越权，但反过来（有技能却没这个工具）的后果是"模型看得到技能却调不动"，
         # 在运行期表现成"它就是不用技能"，排查方向完全错。
@@ -636,6 +680,7 @@ class InteractiveSession:
             session_id=session_id,
             project_instructions=self._instructions.text,
             skill_index=self._skill_index,
+            memory_index=self._memory_index,
             tree=tree,
         )
         # 钩子总线（P4-批次5，星辰拍板）：持久化是**订阅事件的钩子**，
@@ -736,6 +781,9 @@ class InteractiveSession:
                 # 子 agent 不透传观测（P5-批次1 R5）：子任务的开销经信箱
                 # 注入的部分可见于主 trace；完整覆盖属 task 深度观测，另立批次。
                 enable_trace=False,
+                # 子 agent 不透传记忆（P5-批次3）：子任务短生命周期，
+                # 索引属主会话；子任务需要上下文由派发方在 description 里给。
+                enable_memory=False,
                 # 取消传播：主会话被取消时子任务同步停（signal 从派发时的
                 # ToolContext 里来——那是主 loop 的取消令牌）。
                 signal=ctx.signal,
@@ -999,6 +1047,7 @@ async def run_task(
     sub_agent_rounds: SubAgentRounds | None = None,
     checkpoint_watermark_bytes: int | None = None,
     enable_trace: bool = True,
+    enable_memory: bool = True,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -1048,5 +1097,6 @@ async def run_task(
         sub_agent_rounds=sub_agent_rounds,
         checkpoint_watermark_bytes=checkpoint_watermark_bytes,
         enable_trace=enable_trace,
+        enable_memory=enable_memory,
     )
     return await session.send(task)

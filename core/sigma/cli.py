@@ -66,6 +66,7 @@ from sigma._approval import DANGEROUS_PATTERNS, Allowlist, CliApprovalGate
 from sigma._selector import choose_option
 from sigma.repl import _LineBroker, _start_stdin_reader
 from sigma.timeline import build_timeline, render_timeline, timeline_to_json
+from sigma_session.memory import memory_dir_for, scan_memory
 from sigma_session.trace import trace_path_for
 from sigma.render import TerminalRenderer
 from sigma_agent.hooks import ApprovalHook
@@ -184,6 +185,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "关闭观测层（trace 文件采集，P5-批次1）。默认开启——trace 与会话文件"
             "同目录、不进模型上下文、不进会话树；采集失败只停用观测、不影响任务"
+        ),
+    )
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help=(
+            "关闭跨会话记忆（P5-批次3）。默认开启——模型可把学到的东西写进"
+            ".sigma/memory/（你随时可读可改可删），下个会话的常驻区会带上"
+            "记忆索引；关闭后不扫描、不注入，行为与没有该机制完全一致"
         ),
     )
     parser.add_argument(
@@ -774,6 +784,7 @@ async def _run_once(
     ask: Any = None,
     checkpoint_watermark_bytes: int | None = None,
     enable_trace: bool = True,
+    enable_memory: bool = True,
 ) -> TurnResult:
     """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。
 
@@ -801,6 +812,7 @@ async def _run_once(
             ask=ask,
             checkpoint_watermark_bytes=checkpoint_watermark_bytes,
             enable_trace=enable_trace,
+            enable_memory=enable_memory,
         )
     finally:
         await provider.aclose()
@@ -852,6 +864,7 @@ class SessionManager:
         ask: Any = None,
         checkpoint_watermark_bytes: int | None = None,
         enable_trace: bool = True,
+        enable_memory: bool = True,
         make_provider: Callable[[], BaseProvider] | None = None,
     ) -> None:
         self._args = args
@@ -872,6 +885,8 @@ class SessionManager:
         self._checkpoint_watermark_bytes = checkpoint_watermark_bytes
         #: 观测层(P5-批次1,Q2 拍板默认开):--no-obs 整层关。
         self._enable_trace = enable_trace
+        #: 跨会话记忆(P5-批次3,默认开):--no-memory 整层关。
+        self._enable_memory = enable_memory
         self._binding = binding
         #: provider 的**造法**可注入：测试要离线跑（``FakeProvider``），
         #: 而默认路径要真造 ``OpenAICompatProvider``。注入的是"造法"不是
@@ -921,6 +936,7 @@ class SessionManager:
             skills_root=self._skills_root,
             enable_sub_agent=self._args.sub_agent,
             enable_trace=self._enable_trace,
+            enable_memory=self._enable_memory,
         )
 
     # -- 查询 ---------------------------------------------------------------
@@ -1063,6 +1079,7 @@ async def _run_interactive(
     broker: _LineBroker | None = None,
     checkpoint_watermark_bytes: int | None = None,
     enable_trace: bool = True,
+    enable_memory: bool = True,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。
 
@@ -1086,6 +1103,7 @@ async def _run_interactive(
         ask=ask,
         checkpoint_watermark_bytes=checkpoint_watermark_bytes,
         enable_trace=enable_trace,
+        enable_memory=enable_memory,
     )
     if broker is not None:
         _start_stdin_reader(broker)
@@ -1216,6 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
         web_fetch=web_fetch_on,
         skills=bool(skill_scan.skills),
         task=args.sub_agent,
+        memory=not args.no_memory,
     )
 
     binding = resolve_session(args, sessions_root)
@@ -1302,6 +1321,17 @@ def main(argv: list[str] | None = None) -> int:
         lines.append(f"  技能    {len(skill_scan.skills)} 个：{names}")
     for problem in skill_scan.problems:
         lines.append(f"          ⚠ {problem}")
+    # 记忆横幅行（P5-批次3）：条数让人知道"它记了多少"，与 sdk 的扫描
+    # 同一次语义（各扫一次——与技能"宁可多读一个目录"同一取舍）。
+    # 格式异常条数也要打：静默的问题会变成"写了怎么不用"的悬案。
+    if args.no_memory:
+        lines.append("  记忆    未开启（--no-memory）")
+    else:
+        memory_scan = scan_memory(memory_dir_for(workspace))
+        memory_line = f"  记忆    {len(memory_scan.entries)} 条（.sigma/memory/，--no-memory 关闭）"
+        if memory_scan.problems:
+            memory_line += f"｜⚠ {len(memory_scan.problems)} 条格式异常"
+        lines.append(memory_line)
     if binding.resumed:
         lines.append(
             f"  会话    已续接 {binding.session_id}"
@@ -1395,6 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
                     ask=ask_channel,
                     checkpoint_watermark_bytes=checkpoint_watermark_bytes,
                     enable_trace=not args.no_obs,
+                    enable_memory=not args.no_memory,
                 )
             )
             if args.trace:
@@ -1420,6 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
                 broker=broker,
                 checkpoint_watermark_bytes=checkpoint_watermark_bytes,
                 enable_trace=not args.no_obs,
+                enable_memory=not args.no_memory,
             )
         )
     except KeyboardInterrupt:

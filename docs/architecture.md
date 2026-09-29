@@ -54,6 +54,25 @@
 >   差异只剩校准端点与响应解析。批次 7 的 G37–G41 门槛随之重跑（E37 锚点迁移）。
 > - 完整详规与门槛（G42–G47）：`docs/plans/P1-批次8-联网调研与精读-详规.md`。
 >
+> **v1.8 变更**（2026-09-28，P5-批次3）：
+> - **D4 v2：常驻区预算 3,500 → 5,500**（星辰拍板"常驻区太小，释放扩大给后续功能休闲空间"）。
+>   依据：93.8% 缓存命中率（P5-批次1 实测）证明主张核心是**逐字节稳定**而非数字本身；
+>   扩大的真金成本 ≈ 每会话半分钱。与 5.1.2 "不放宽" 的区别 = 数据修订未测初值
+>   vs 无数据迁就实现。分项 cap 重排进代码常量（`sigma_session/resident_caps.py`），
+>   **G885 断言分项之和==总额**（5.1.0 教训的代码化）；**具名预留 500 + 消费纪律**
+>   （吃预留必须连实测数字一起进表）。总额比详规提案多 500 的原因：实测核心工具
+>   schema 1857 超估计 357——先报数字再上调总额，是预留纪律的第一次执行。
+> - **跨会话记忆落地**（默认开，`--no-memory` 关）：文件式 `.sigma/memory/<slug>.md`
+>   （首行 `# 标题`，无 YAML）；**零新工具**（write/read 即接口，详规 T7）；
+>   索引进常驻（cap 250、单条 25、截断可见）+ 正文按需 read（渐进披露第三次复用）；
+>   **会话内索引冻结**（写了下会话可见——D4 的直接推论）；只有 agent 写、无自动抽取；
+>   回滚安全（`.sigma/` 在 checkpoint excludes）；空工作区零注入（G881）。
+> - **环境漂移修复**：回放 fixture 的 `python3` 在本机解析到商店占位 stub
+>   （退出码 49、无输出），两个转录改回 `python`。
+> - 门槛 G879–G886 + 注入 `scripts/gate_injection_batch18.py` 7/7 证伪；
+>   **724 passed**、mypy --strict 65 文件零错误、回放 6/6。
+> - 详规（v1→v2 的变更理由全文）：`docs/plans/P5-批次3-跨会话记忆-详规.md`。
+>
 > **v1.7 变更**（2026-09-28，P5-批次1）：
 > - **观测层落地**（采集 = 钩子订阅者，"日志/渲染也是钩子义务"的第三位住客）：
 >   - **新增两个通知事件**：`LlmRequested`（请求锚点，订阅者配对测单次延迟/TTFT）与
@@ -166,7 +185,14 @@ Pi 的能力是"agent 改自己的扩展文件、jiti 热重载、当轮生效"�
 
 而"agent 给自己写新工具"这个更亮眼的能力，**由工具写文件 + 手动触发热重载来实现**——效果上和 Pi 一致，但实现边界清晰。这个取舍要写进 README，它是一个有意的设计选择，不是能力缺失。
 
-### D4. 上下文预算：常驻区 ≤ 3,500 token，且逐字节稳定
+### D4. 上下文预算：常驻区 ≤ 5,500 token（v2），且逐字节稳定
+
+**v2 修订（2026-09-28，星辰）**：3,500 → 5,500。依据与边界见
+`sigma_session/resident_caps.py` 的修订记录：93.8% 缓存命中率证明主张的
+核心是**逐字节稳定**而非数字本身；扩大的真金成本 ≈ 每会话半分钱。
+5.1.2 那条"不放宽"针对的是**无数据迁就实现**；本修订是**数据修订未测初值**
+（3500 拍自 2026-09-20 零实测），两者不矛盾。分项表见 5.1 节（G885 钉住
+分项之和==总额）。
 
 见第 5 节。
 
@@ -245,6 +271,11 @@ SQLite session backend 主题系统          TUI 花哨渲染
 **Slack Bot / Web UI / RPC Mode 三项都不做**。手绘图里的这一层是目标形态，
 不是 P1–P4 的交付范围；架构留出了接口位（`core/sigma/sdk.py`），
 但不实现任何一个接入端。
+
+**2026-09-27 注**：清单里的"待办追踪"与"子代理"已分别在 P4 落地
+（`sigma_tools/todo.py` 内置、`sigma_tools/task.py` 可选 `--sub-agent`）——
+那是**经拍板的范围变更**（P4-任务清单工具 / P4-task 工具两份详规），
+不是对本清单的无声违反；除这两项外，本清单其余各项维持不做。
 
 砍掉的每一条都要在 README 里给出"代替路径"（例如：要 MCP → 写一个扩展；要后台任务 → tmux），**照抄 Pi 的做法**。这是它最值得学的叙事方式：让"不做"看起来是设计而不是缺失。
 
@@ -339,7 +370,7 @@ sigma/
 │   │   │   ├── convert.py         #   LLM 消息 → 请求体
 │   │   │   ├── sse.py             #   SSE 分帧与行解析
 │   │   │   └── provider.py        #   OpenAICompatProvider
-│   │   ├── anthropic.py           # P4 之后
+│   │   ├── anthropic.py           # 【未创建】P4 之后的预留位（截至 2026-09-27 不存在）
 │   │   └── fake.py                # 确定性回放（见 7.2）
 │   ├── sigma_agent/
 │   │   ├── base.py                # BaseTool（ABC）；BaseLoop 已于 2026-09-20 删除
@@ -350,7 +381,7 @@ sigma/
 │   │   ├── checkpoint.py          # 影子 git
 │   │   └── types.py               # ToolDefinition / ToolResult / ToolCall
 │   ├── sigma_session/
-│   │   ├── base.py                # BaseStore（ABC）
+│   │   ├── base.py                # 【未创建】BaseStore 抽象未做——store.py 直接实现（截至 2026-09-27）
 │   │   ├── tree.py                # SessionTree
 │   │   ├── store.py               # JSONL 追加读写
 │   │   ├── context.py             # 上下文组装 + 预算
@@ -958,6 +989,21 @@ def _import_fresh(path: str) -> ModuleType:
 
 ### 5.1 分区
 
+**v1.8 重排（D4 v2，2026-09-28）——现行表**。分项 cap 同时住在
+`sigma_session/resident_caps.py`（**表即常量**），G885 断言"分项之和==总额";
+改表必须连实测数字一起改。本节下方的 3500 时代旧表保留作历史。
+
+| 分区 | 实测（2026-09-28） | cap | 备注 |
+| --- | --- | --- | --- |
+| 系统提示词（含纪律段） | 493（全开+记忆） | 550 | 全关基准 225 |
+| 工具 schema（核心 6+ask_user） | 1857 | 1950 | 最紧的一栏 |
+| 工具 schema（可选：联网+task） | 957 | 1250 | |
+| AGENTS.md | 104 | 700 | 用户文件，不勒 |
+| 技能索引 | 57 | 300 | ≈12 条 |
+| 记忆索引（**新增**） | 实现期 ≈150 | 250 | ≤15 条 × 25，截断可见 |
+| **具名预留（repo map 等）** | — | **500** | **消费纪律：吃预留必须连实测数字进表** |
+| **合计** | | **5500** | **G885 断言==`resident_caps.RESIDENT_BUDGET_TOKENS`** |
+
 **先说一处 2026-09-21 的更正要紧**：本节此前的表把 `checkpoint / 摘要` 列在
 「常驻小计」**之上**，读起来像是常驻区的一部分。但 **D4 的原文定义**是
 「常驻区（系统提示词 + 工具 schema + **项目说明** + 技能索引）」——**没有摘要**。
@@ -1089,7 +1135,8 @@ def _import_fresh(path: str) -> ModuleType:
 
 一条 `bash` 命令可以吐出 10 万 token。**这不是优化问题，是必须有的设计。**
 
-三元策略：
+三元策略（**2026-09-27 注**：实际落地为**二元**——中档"落盘会话临时目录"从未实现，
+`sigma_tools/truncate.py` 头部有记录；以下原文保留，作为演进参照）：
 
 ```
 输出 ≤ 8 KB        → 完整进上下文
@@ -1120,8 +1167,10 @@ def _import_fresh(path: str) -> ModuleType:
 > - L2 落在 `sigma_agent/checkpoint.py`：独立 `GIT_DIR`、`info/exclude` = 内置清单 +
 >   工作区 `.gitignore`、>5 MB 不入快照、回滚先自查再整体回退（因此**新增文件会被删**）。
 > - 影子库位置：~~`~/.sigma/sessions/<session-id>.shadow.git`（与会话文件同层）~~
->   **2026-09-27（P4-批次7）改为 `<workspace>/.sigma/shadow.git` 工作区级共享库，
->   会话=分支、懒基线、空批次跳过——详见 6.2 与 `docs/plans/P4-批次7-影子checkpoint优化-详规.md`**。
+>   **2026-09-27（P4-批次7）改为工作区级共享库、会话=分支、懒基线、空批次跳过；
+>   同日（P4-批次8）落点再定为 `<workspace>/.sigma/session/shadow.git`（批次7 的
+>   `.sigma/shadow.git` 旧库由 `migrate_legacy_shadow_dir` 原子迁移）——
+>   详见 6.2 与 `docs/plans/P4-批次7-影子checkpoint优化-详规.md`**。
 > - 开关：`--no-checkpoint` 关；家目录工作区自动关（P4-批次7）；回滚是人的动作：`sigma --session <id> --rollback[-to <ref>]`。
 > - 门槛 G64–G70 + 注入实验 `scripts/gate_injection_batch13.py`；P4-批次7 增补 G857–G864。
 >
@@ -1133,7 +1182,7 @@ def _import_fresh(path: str) -> ModuleType:
 ### 6.2 影子 git 的实现约定
 
 ```
-GIT_DIR       = <workspace_root>/.sigma/shadow.git   # 工作区级共享库（P4-批次7）
+GIT_DIR       = <workspace_root>/.sigma/session/shadow.git  # 工作区级共享库（批次8 定位）
 GIT_WORK_TREE = <workspace_root>
 快照隔离      = refs/heads/<session_id>              # 一个会话一个分支
 ```
@@ -1141,10 +1190,11 @@ GIT_WORK_TREE = <workspace_root>
 关键点：
 
 - **不碰用户仓库自己的 `.git`。** 用独立 `GIT_DIR` 是唯一的正确做法，`git stash` 和往用户历史里插 commit 都会污染真实项目。
-- **一个工作区一个库，一个会话一个分支（P4-批次7）。** 旧设计每会话一个全新裸库，同一工作区被全量复制 N 遍（151 会话实测 803MB，三个家目录会话各 274/169/104MB）。共享后所有会话复用同一批内容寻址对象——同工作区第二次启动的 baseline 几乎零成本，成本模型从 O(工作区 × 会话数) 降到 O(工作区 × 1)。mark/restore 全走 plumbing（`add -A` → `write-tree` → `commit-tree -p <parent>` → `update-ref`；回滚用 `read-tree --reset -u`），**绝不碰 HEAD**——`reset --hard` 会移动 HEAD 所指分支，共享库里等于踩坏别的会话的快照链。
+- **一个工作区一个库，一个会话一个分支（P4-批次7/8）。** 旧设计每会话一个全新裸库，同一工作区被全量复制 N 遍（151 会话实测 803MB，三个家目录会话各 274/169/104MB）。共享后所有会话复用同一批内容寻址对象——同工作区第二次启动的 baseline 几乎零成本，成本模型从 O(工作区 × 会话数) 降到 O(工作区 × 1)。mark/restore 全走 plumbing（`add -A` → `write-tree` → `commit-tree -p <parent>` → `update-ref`；回滚用 `read-tree --reset -u`），**绝不碰 HEAD**——`reset --hard` 会移动 HEAD 所指分支，共享库里等于踩坏别的会话的快照链。
 - **懒基线（P4-批次7）。** 构造期不打 baseline：loop 的 `_mark_before_writes` 在写批次**执行前**打快照，首个写批次快照天然就是"任何写之前的干净状态"。启动路径由此零 git 调用（家目录实测单次全工作区扫描 65 秒，已归零）。
 - **空批次跳过（G66 修订）。** `write-tree` 与上次相同就不提交（内容没变化，提交只是噪声）；不变量从"快照数=基线+写批次数"改为"每个写批次执行前，分支 tree 与工作区一致"。
 - **家目录守门。** workspace == 家目录时 L2 自动禁用（横幅如实提示）——全量快照会复制 AppData，而"回滚家目录"本身危险。判定收在 `cli.checkpoint_disabled_reason` 一处。
+- **旧库迁移（P4-批次8）。** 批次7 曾放 `<workspace>/.sigma/shadow.git`，批次8 挪到 `.sigma/session/` 下与其它会话资源同层；旧库由 `migrate_legacy_shadow_dir` 原子迁移（`os.replace`），无旧库时 no-op。
 - 需要读取工作区的 `.gitignore` 作为 exclude 源，否则会把 `node_modules` 之类提交进去，checkpoint 会慢到不可用。超大文件扫描降频（每 20 次 mark 一次，首次必扫）。
 - 回滚必须处理**文件删除**：`checkout <commit> -- .` 不会删除新增文件；plumbing 等价物 `read-tree --reset -u` 承接同一职责。这是最容易漏的一条，要有单测。
 - 大文件要设上限（例如单文件 > 5 MB 不入 checkpoint），否则 checkpoint 会成为性能瓶颈。

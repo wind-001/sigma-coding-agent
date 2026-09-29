@@ -43,3 +43,6 @@ demo/
 
 # 本地桌面工具脚本，不属于项目
 desktop/
+
+# archify visual-check 生成物（可随时再生，不入库）
+docs/assets/*.visual-check.*

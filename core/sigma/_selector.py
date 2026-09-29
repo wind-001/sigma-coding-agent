@@ -87,9 +87,9 @@ def _select_sync(
     input_factory: Callable[[], Any],
 ) -> int | None:
     """阻塞版按键循环(prompt_toolkit 低层 API)。由 :func:`select_option` 放线程里跑。"""
-    from prompt_toolkit.input import create_input
     from prompt_toolkit.keys import Keys
 
+    # create_input 已在模块级 import;这里不需要(也不该)再 import 一份。
     inp = input_factory() if input_factory is not None else create_input()
     index = recommended_index if recommended_index is not None else 0
     if not (0 <= index < len(options)):

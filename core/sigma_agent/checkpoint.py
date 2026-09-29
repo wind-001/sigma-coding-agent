@@ -427,11 +427,15 @@ class ShadowCheckpoint:
             return None
 
     def refs(self) -> list[CheckpointInfo]:
-        """本会话分支已有的快照，**新 → 旧**（git log 的顺序）。"""
+        """本会话分支已有的快照，**新 → 旧**（git log 的顺序）。
+
+        分支不存在（还没有任何快照）时**不需要**先查松散 ref：
+        ``git log`` 对不存在的分支本来就返回非 0，下面照常落到 ``[]``——
+        先读一次 ref 文件是纯冗余（restore/gc 里的同款判据不删，
+        那两处需要区分"没有快照"与"命令失败"两种回执）。
+        """
         self._ensure_ready()
         if self._ready is not True:
-            return []
-        if self._head_ref() is None:
             return []
         log = self._git("log", f"refs/heads/{self._branch}", "--format=%H%x1f%s")
         if log.returncode != 0:
