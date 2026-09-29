@@ -1,0 +1,36 @@
+{
+  "id": "syn-016",
+  "kind": "synthetic",
+  "title": "日程区间的四处缺陷（相接未并拢 / 被包含截短 / 相接误报冲突 / 尾部空档丢失）",
+  "description": "工作区里的 schedule_lite 是一个日程区间小工具（合并 / 冲突检测 / 预约 / 空闲段），区间一律是左闭右开的 ``[start, end)`` 整数对。它现在有四处 bug：\n\n1. 合并：首尾相接的两段（如 ``[9,10)`` 与 ``[10,11)``）本该并成 ``[9,11)``，现在的重叠判定少了个等号，相接的两段留在了列表里；\n2. 合并：并入新区间时直接拿新区间的 end 盖掉旧 end——被包含的区间（如 ``[2,3)`` 落在 ``[1,10)`` 里）会把外层截短成 ``[1,3)``；\n3. 冲突检测：判定写成了闭区间（两个 ``<=``），首尾相接被误报为冲突——10:00 结束的会之后排一个 10:00 开始的会，``book`` 会拒绝这个合法预约；\n4. 空闲段：最后一个预约之后到 ``day_end`` 的尾部空档没有输出——``free_slots([(10,12)], 8, 18)`` 只回 ``[(8,10)]``，把 ``(12,18)`` 丢了。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：``free_slots`` 建立在 ``merge_intervals`` 之上，合并的修复会同时改变多个用例的结果，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证。\n- 只改工作区内的文件；保持模块现有的四个函数职责划分。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "10 failed, 10 passed in 0.16s",
+    "failed_tests": [
+      "tests/test_schedule_lite.py::test_merge_touching_joins",
+      "tests/test_schedule_lite.py::test_merge_chain_of_touching",
+      "tests/test_schedule_lite.py::test_merge_contained_keeps_outer",
+      "tests/test_schedule_lite.py::test_conflict_touching_after_is_free",
+      "tests/test_schedule_lite.py::test_conflict_touching_before_is_free",
+      "tests/test_schedule_lite.py::test_book_touching_slot_accepted",
+      "tests/test_schedule_lite.py::test_free_slots_basic",
+      "tests/test_schedule_lite.py::test_free_slots_no_bookings",
+      "tests/test_schedule_lite.py::test_free_slots_touching_bookings",
+      "tests/test_schedule_lite.py::test_free_slots_ignores_out_of_window"
+    ],
+    "recorded_at": "2026-09-29T22:54:54",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：四处修复后 20 passed。"
+  }
+}

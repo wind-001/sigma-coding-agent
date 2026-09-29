@@ -1,0 +1,38 @@
+{
+  "id": "syn-017",
+  "kind": "synthetic",
+  "title": "最小堆任务调度的四处缺陷（右孩子落选 / 同级不 FIFO / 依赖登记反向 / 有环漏报）",
+  "description": "工作区里的 jsched 是一个依赖感知的任务调度器：heap 是手写的最小堆（priority 数字越小越紧急，同优先级按登记顺序先执行），graph 记依赖、回答「谁就绪」「有没有环」，scheduler 在依赖允许的前提下逐个挑最紧急的任务。它现在有四处 bug：\n\n1. 堆：``_sift_down`` 只跟**左孩子**比较，右孩子从不参与——某些堆形下堆序被破坏，``pop`` 会把不是最小的弹出来（依次压入 3、9、5、7 后，第二个弹出的应是 5，实际是 7）；\n2. 堆：``_less`` 只比 priority 不比 seq——同优先级的任务不按登记顺序先到先出（四个同优先级任务依次压入后逐个弹出，第 2 个弹出的会是第 4 个压入的）；\n3. 依赖：``DepGraph.add_job`` 把边记反了——「job 依赖 dep」被登记成「dep 依赖 job」，于是 ``ready()`` 给出的是镜像的就绪集合：该等的没等，不该先跑的先跑了；\n4. 环检测：``has_cycle`` 的 DFS 只维护 visited、没有「在栈上」标记——回到正在访问中的路径（真环，含自环）检不出来，``Scheduler.drain`` 该抛 ``CycleError`` 时会误报「没有可执行的任务」。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：``drain()`` 的端到端顺序用例同时踩中堆与依赖的缺陷，单修一处过不了全部测试，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证。\n- 只改工作区内的文件；保持 heap / graph / scheduler 三个模块的职责划分。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "12 failed, 7 passed in 0.21s",
+    "failed_tests": [
+      "tests/test_jsched.py::test_right_child_is_never_ignored",
+      "tests/test_jsched.py::test_equal_priority_is_fifo",
+      "tests/test_jsched.py::test_ready_chain_waits_for_predecessor",
+      "tests/test_jsched.py::test_ready_multi_dep_needs_all_done",
+      "tests/test_jsched.py::test_has_cycle_detects_two_node_cycle",
+      "tests/test_jsched.py::test_has_cycle_detects_self_loop",
+      "tests/test_jsched.py::test_has_cycle_detects_three_node_cycle",
+      "tests/test_jsched.py::test_drain_respects_deps_over_priority",
+      "tests/test_jsched.py::test_drain_equal_priority_fifo",
+      "tests/test_jsched.py::test_drain_survives_hard_heap_shapes",
+      "tests/test_jsched.py::test_drain_multi_dep_job_waits_for_all",
+      "tests/test_jsched.py::test_drain_raises_cycle_error"
+    ],
+    "recorded_at": "2026-09-29T23:00:09",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：四处修复后 19 passed。"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "syn-018",
+  "kind": "synthetic",
+  "title": "Trie 前缀树的四处缺陷（词尾标记失真 / 整词判定缺失 / 补全后缀反接 / 补全不排序）",
+  "description": "工作区里的 trie_lite 是一个前缀树（Trie）：``insert`` 登记词条，``contains`` 判整词，``starts_with`` 判前缀，``complete`` 做自动补全，``matches`` 做「``.`` 匹配任意一个字符、且与 pattern 等长」的通配查询。它现在有四处 bug：\n\n1. ``insert`` 把路径上**每个**节点都标成了词尾——于是 ``apple`` 一进来，``ap``、``app`` 也都成了「词」，连 ``matches(\"appl\")`` 都会误报命中（``appl`` 并没有被登记过，只是 ``apple`` 的前缀）；\n2. ``contains`` 少了最后的 ``is_word`` 判定，只要前缀路径存在就报 True——即使把 1 修好，``contains(\"app\")`` 在只登记过 ``apple`` 时仍然误报；\n3. ``complete`` 的深度优先收集把字符拼反了（新字符接在了已积累前缀的**前面**），补全结果的后缀全是乱的；\n4. ``complete`` 返回前没有按字典序排序，结果顺序跟着插入顺序走。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：补全用例同时踩中 1、3、4——只把词尾标记改对，补全出来的还是乱序反接的；``matches`` 与 ``starts_with`` 的实现本身没有 bug，但 ``matches`` 的结果依赖词尾标记，会被 1 连带搞坏。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "7 failed, 9 passed in 0.17s",
+    "failed_tests": [
+      "tests/test_trie_lite.py::test_contains_rejects_proper_prefix",
+      "tests/test_trie_lite.py::test_contains_rejects_mid_path",
+      "tests/test_trie_lite.py::test_complete_basic_sorted",
+      "tests/test_trie_lite.py::test_complete_prefix_itself_is_word",
+      "tests/test_trie_lite.py::test_complete_empty_prefix_returns_all_sorted",
+      "tests/test_trie_lite.py::test_complete_single_char",
+      "tests/test_trie_lite.py::test_matches_literal_exact_length"
+    ],
+    "recorded_at": "2026-09-29T23:03:57",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：四处修复后 16 passed。"
+  }
+}
