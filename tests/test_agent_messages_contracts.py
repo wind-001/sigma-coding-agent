@@ -38,7 +38,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -388,25 +387,26 @@ def test_jsonl_each_line_is_independently_valid() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _lint_imports_exe() -> str:
-    """定位 `lint-imports`（与 `test_architecture_contracts.py` 一致的找法）。"""
-    suffix = ".exe" if os.name == "nt" else ""
-    beside = Path(sys.executable).parent / f"lint-imports{suffix}"
-    if beside.exists():
-        return str(beside)
-
-    found = shutil.which("lint-imports")
-    if found is None:
-        raise RuntimeError("找不到 lint-imports。请先执行：pip install -e '.[dev]'")
-    return found
+_LINT_IMPORTS_SNIPPET = (
+    "import sys\n"
+    "from importlinter.cli import lint_imports_command\n"
+    "raise SystemExit(lint_imports_command())\n"
+)
 
 
 def _run_lint_imports() -> subprocess.CompletedProcess[str]:
+    """跑 lint-imports——用**当前解释器**起子进程，不找 console script。
+
+    理由：``lint-imports.exe`` 这类 console 包装器在 pip 生成时把解释器的
+    绝对路径烧进了 exe 头。venv 一旦整体拷贝（P6 期间 sigma→sigma-2），
+    包装器仍指向旧目录的 python，分析的是**旧树**——怎么注入都不会红。
+    走 ``sys.executable`` 则是"哪个 python 跑测试，就检查哪个环境"。
+    """
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + existing if existing else "")
     return subprocess.run(
-        [_lint_imports_exe()],
+        [sys.executable, "-c", _LINT_IMPORTS_SNIPPET],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
@@ -433,7 +433,7 @@ def test_layers_contract_rejects_ai_importing_agent() -> None:
     **还原放在 `finally` 里**：注入中途抛错却留下破坏，
     比不做实验更糟（批次 1 固化的纪律）。
     """
-    target = REPO_ROOT / "core" / "sigma.providers" / "messages.py"
+    target = REPO_ROOT / "src" / "sigma" / "providers" / "messages.py"
     original = target.read_text(encoding="utf-8")
 
     injection = (

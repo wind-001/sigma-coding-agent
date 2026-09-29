@@ -36,7 +36,7 @@ from pathlib import Path
 
 EVALS = Path(__file__).resolve().parent
 REPO = EVALS.parent
-sys.path.insert(0, str(REPO / "core"))
+sys.path.insert(0, str(REPO / "src"))
 
 from sigma import sdk  # noqa: E402
 from sigma.cli.main import (

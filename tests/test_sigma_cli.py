@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from sigma.cli import main as cli_module  # 模块对象：monkeypatch 改它的属性
 from sigma.cli.main import (
     EXIT_HARNESS_ERROR,
-    main as cli_module,
+    main,
 )
 
 

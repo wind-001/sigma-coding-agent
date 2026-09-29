@@ -49,7 +49,7 @@ from pathlib import Path
 
 EVALS = Path(__file__).resolve().parent
 REPO = EVALS.parent
-sys.path.insert(0, str(REPO / "core"))
+sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(EVALS))
 
 from judges import Judge, JudgeVerdict, PytestJudge  # noqa: E402

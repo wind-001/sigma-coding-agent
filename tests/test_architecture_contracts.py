@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,32 +34,26 @@ REAL_CONTRACTS = [
 ]
 
 
-def _lint_imports_exe() -> str:
-    """定位 lint-imports 可执行文件。
-
-    直接调用 venv 里的 python 时，venv 的 Scripts 目录不一定在 PATH 上，
-    所以优先看 sys.executable 旁边有没有。
-    """
-    suffix = ".exe" if os.name == "nt" else ""
-    beside = Path(sys.executable).parent / f"lint-imports{suffix}"
-    if beside.exists():
-        return str(beside)
-
-    found = shutil.which("lint-imports")
-    if found is None:
-        raise RuntimeError(
-            "找不到 lint-imports。请先执行：pip install -e '.[dev]'"
-        )
-    return found
+_LINT_IMPORTS_SNIPPET = (
+    "import sys\n"
+    "from importlinter.cli import lint_imports_command\n"
+    "raise SystemExit(lint_imports_command())\n"
+)
 
 
 def _run_lint_imports(cwd: Path) -> subprocess.CompletedProcess[str]:
-    """在指定目录下运行 lint-imports。"""
+    """在指定目录下运行 lint-imports。
+
+    用**当前解释器**起子进程，不找 console script——
+    ``lint-imports.exe`` 这类包装器把生成时的解释器绝对路径烧进了 exe 头，
+    venv 整体拷贝后会指向旧目录的 python，分析的是旧树（P6 教训）。
+    走 ``sys.executable`` 则是"哪个 python 跑测试，就检查哪个环境"。
+    """
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(cwd) + (os.pathsep + existing if existing else "")
     return subprocess.run(
-        [_lint_imports_exe()],
+        [sys.executable, "-c", _LINT_IMPORTS_SNIPPET],
         cwd=cwd,
         env=env,
         capture_output=True,

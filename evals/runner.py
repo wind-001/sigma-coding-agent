@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "core"))
+sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tests"))
 
 from sigma.agent.messages import LlmMessageWrapper, convert_to_llm  # noqa: E402
