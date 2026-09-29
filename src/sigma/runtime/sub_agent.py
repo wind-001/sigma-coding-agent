@@ -179,11 +179,16 @@ class TaskTool(BaseTool):
         *,
         max_concurrent: int = 3,
         rounds: SubAgentRounds | None = None,
+        team_hint: bool = False,
     ) -> None:
         self._factory = factory
         self._max_concurrent = max_concurrent
         self._rounds = rounds if rounds is not None else SubAgentRounds()
-        # Semaphore 惰性创建：构造发生在事件循环外（InteractiveSession.__init__），
+        # P4 团队任务(详规 §2.3):True 时 dispatch 回执携带"板任务 id 写进
+        # description"的派发纪律。**默认 False**——回执文本与加它之前逐字节一致
+        # (team 关闭时常驻区零变化)。
+        self._team_hint = team_hint
+        # Semaphore 惰性创建:构造发生在事件循环外（InteractiveSession.__init__），
         # 惰性绑定当前 loop，测试之间也不串。
         self._semaphore: asyncio.Semaphore | None = None
         self._counter = 0
@@ -226,17 +231,24 @@ class TaskTool(BaseTool):
             self._run_sub(state, description, ctx, full_sub_id, max_rounds)
         )
         pending = sum(1 for st in self._tasks.values() if st.pending)
+        text = (
+            f"已派发子任务 #{sub_id}（后台执行中，完成后自动回报）。"
+            f"轮数预算 {max_rounds}（难度 {params.difficulty}）。"
+            f"当前 {pending} 个未完成（并发上限 {self._max_concurrent}，"
+            "超出的会排队）。你可以继续其他步骤，"
+            f"用 task(status) 查进度。"
+        )
+        if self._team_hint:
+            # 派发 description 纪律(详规 §2.3):与"子 agent 不透传主上下文,
+            # 需要什么由派发方给"同源——板上的任务 id 是子 agent 认领/回报的唯一线索。
+            text += (
+                "若此子任务对应团队板（team_board）上的任务，"
+                "把任务 id 写进 description：子 agent 看不到主上下文，"
+                "只依据 description 干活。"
+            )
         return ToolResult(
             content=[
-                TextBlock(
-                    text=(
-                        f"已派发子任务 #{sub_id}（后台执行中，完成后自动回报）。"
-                        f"轮数预算 {max_rounds}（难度 {params.difficulty}）。"
-                        f"当前 {pending} 个未完成（并发上限 {self._max_concurrent}，"
-                        "超出的会排队）。你可以继续其他步骤，"
-                        f"用 task(status) 查进度。"
-                    )
-                )
+                TextBlock(text=text)
             ],
             details={
                 "action": "dispatch",

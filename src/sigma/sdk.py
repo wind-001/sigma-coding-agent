@@ -98,6 +98,7 @@ from sigma.runtime.sub_agent import (
     SubAgentRounds,
     TaskTool,
 )
+from sigma.tools.builtin.team import TeamBoard
 from sigma.tools.builtin.todo import TodoTool
 from sigma.tools.builtin.web_fetch import WebFetchTool
 from sigma.tools.builtin.web_search import WebSearchTool
@@ -300,6 +301,7 @@ class InteractiveSession:
         todo_steer_interval: int = 10,
         enable_todo: bool = True,
         enable_sub_agent: bool = False,
+        enable_team_tasks: bool = False,
         sub_agent_max_concurrent: int = 3,
         sub_agent_rounds: SubAgentRounds | None = None,
         signal: CancelToken | None = None,
@@ -467,10 +469,23 @@ class InteractiveSession:
                 factory=self._make_sub_agent_factory(self._tool_lock, rounds),
                 max_concurrent=sub_agent_max_concurrent,
                 rounds=rounds,
+                team_hint=enable_team_tasks,
             )
             self._registry.register(task_tool)
             self._mailbox_drain = task_tool.drain_completed
             self._mailbox_wait = task_tool.wait_and_drain
+        # team_board 与信箱接线（P4 团队任务，详规 §2.3）：主会话注册（创建/分配
+        # 任务），子 agent 经 registry clone **共享同一个实例**——共享同一块板、
+        # 同一把 store 锁（claim 互斥的前提）；信箱按 ctx.session_id 分文件。
+        # "lead" 别名解析到本会话 id。**默认 False**：不传时注册表与提示词
+        # 与加它之前逐字节一致；CLI 侧默认随 --sub-agent，可 --no-team 单独关。
+        if enable_team_tasks:
+            if "team_board" in self._registry.names():
+                raise ValueError(
+                    "registry 里已注册 team_board 工具，与 enable_team_tasks=True 冲突。"
+                    "team_board 只能由本类注册（lead 身份必须与本会话 id 一致）。"
+                )
+            self._registry.register(TeamBoard(lead_session_id=session_id))
         # ``tree`` 由调用方传入（通常是 ``SessionTree.from_store(...)``）——
         # **会话接续的落点就在这里**：不传就是纯内存的新会话，
         # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。
@@ -853,6 +868,7 @@ async def run_task(
     todo_steer_interval: int = 10,
     enable_todo: bool = True,
     enable_sub_agent: bool = False,
+    enable_team_tasks: bool = False,
     sub_agent_max_concurrent: int = 3,
     sub_agent_rounds: SubAgentRounds | None = None,
     checkpoint_watermark_bytes: int | None = None,
@@ -904,6 +920,7 @@ async def run_task(
         todo_steer_interval=todo_steer_interval,
         enable_todo=enable_todo,
         enable_sub_agent=enable_sub_agent,
+        enable_team_tasks=enable_team_tasks,
         sub_agent_max_concurrent=sub_agent_max_concurrent,
         sub_agent_rounds=sub_agent_rounds,
         checkpoint_watermark_bytes=checkpoint_watermark_bytes,

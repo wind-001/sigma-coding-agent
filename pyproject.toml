@@ -113,6 +113,9 @@ layers = [
     "sigma.prompts",
     "sigma.config",
     "sigma.providers",
+    # sigma.team:P4 团队任务协作域(状态机/存储/信箱,详规 §2.0)——
+    # 纯 stdlib、零 sigma 内部依赖,放在最底层区,任何上层可向下引用它。
+    "sigma.team",
 ]
 
 [[tool.importlinter.contracts]]

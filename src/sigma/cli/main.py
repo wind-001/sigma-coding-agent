@@ -272,6 +272,15 @@ def build_parser() -> argparse.ArgumentParser:
             "子任务会消耗额外 token。"
         ),
     )
+    parser.add_argument(
+        "--no-team",
+        action="store_true",
+        help=(
+            "关闭团队任务工具 team_board（共享任务板 + 双向信箱）。"
+            "默认随 --sub-agent 开启（P4 团队任务，星辰 2026-09-30 立项）；"
+            "本旗标可单独关掉它，不影响 task 工具本身。"
+        ),
+    )
     # 会话接续（P2-5）。两者互斥：一个说"续最近那个"，一个说"用这个 id"，
     # 同时给没有意义——而 argparse 的互斥组会把这句话变成启动时的报错，
     # 比"后者静默覆盖前者"好。
@@ -796,6 +805,15 @@ def run_timeline(args: argparse.Namespace, sessions_root: Path) -> int:
     return EXIT_OK
 
 
+def _team_tasks_enabled(args: argparse.Namespace) -> bool:
+    """team_board 默认随 --sub-agent（详规 §5:当前设计）;--no-team 单独关。
+
+    两处组装（一次性模式与 SessionManager）共用本函数——同一个默认值
+    不该有两份实现，抄一份必然漂移。
+    """
+    return bool(args.sub_agent) and not args.no_team
+
+
 async def _run_once(
     args: argparse.Namespace,
     workspace: Path,
@@ -838,6 +856,7 @@ async def _run_once(
             shadow_git_dir=shadow_git_dir,
             skills_root=skills_root,
             enable_sub_agent=args.sub_agent,
+            enable_team_tasks=_team_tasks_enabled(args),
             approval=approval,
             ask=ask,
             checkpoint_watermark_bytes=checkpoint_watermark_bytes,
@@ -974,6 +993,7 @@ class SessionManager:
             shadow_git_dir=shadow_git_dir,
             skills_root=self._skills_root,
             enable_sub_agent=self._args.sub_agent,
+            enable_team_tasks=_team_tasks_enabled(self._args),
             enable_trace=self._enable_trace,
             enable_memory=self._enable_memory,
             enable_repo_map=self._enable_repo_map,
