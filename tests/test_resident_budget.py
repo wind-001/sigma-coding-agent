@@ -28,9 +28,11 @@ FIXED_TIME = "2026-09-28T12:00:00.000"
 def test_g885_caps_sum_equals_budget() -> None:
     assert caps_sum() == RESIDENT_BUDGET_TOKENS
     assert RESIDENT_BUDGET_TOKENS == DEFAULT_RESIDENT_BUDGET_TOKENS
-    # 预留必须**具名**存在——无名的余量会悄悄腐化(5.1.0)
-    assert "具名预留(repo map 等)" in CAPS
-    assert CAPS["具名预留(repo map 等)"] > 0
+    # 预留必须**具名**存在——无名的余量会悄悄腐化(5.1.0)。
+    # "具名预留(repo map 等)"已由 P1 收尾兑现为 "repo map"(详规:
+    # docs/plans/P1-repo-map-详规.md,消费纪律:实测数字进 MEASURED)。
+    assert "repo map" in CAPS
+    assert CAPS["repo map"] > 0
 
 
 # ---------------------------------------------------------------------------

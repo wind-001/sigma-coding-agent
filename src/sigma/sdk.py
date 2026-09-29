@@ -77,6 +77,7 @@ from sigma.sessions.compaction import CompactionOutcome, CompactionPolicy
 from sigma.sessions.context import SessionContext
 from sigma.hooks.persist import SessionPersistHook
 from sigma.memory.file_store import memory_dir_for, render_memory_index, scan_memory
+from sigma.sessions.repo_map import build_repo_map
 from sigma.observability.trace import TraceHook
 from sigma.sessions.repair import repair_dangling_tool_results
 from sigma.sessions.tree import SessionTree
@@ -309,6 +310,7 @@ class InteractiveSession:
         checkpoint_watermark_bytes: int | None = None,
         enable_trace: bool = True,
         enable_memory: bool = True,
+        enable_repo_map: bool = True,
     ) -> None:
         """``sub_agent_rounds``：子 agent 的轮数预算**三档**（low/medium/high）。
 
@@ -429,6 +431,11 @@ class InteractiveSession:
             if self._memory_scan is not None
             else ""
         )
+        # repo map(P1 收尾,吃 resident_caps 具名预留 500):工作区结构快照,
+        # 会话启动扫一次进常驻区——**会话内冻结**(D4),文件变化下个会话可见。
+        # 空工作区 → 空地图 → 常驻区与无此功能逐字节一致。
+        # --no-repo-map 时整段跳过,连目录遍历都不做(与 --no-memory 同款)。
+        self._repo_map = build_repo_map(workspace_root) if enable_repo_map else ""
         # 有技能就必须有 load_skill。**这里会往调用方传进来的注册表里补一个工具**——
         # 看似越权，但反过来（有技能却没这个工具）的后果是"模型看得到技能却调不动"，
         # 在运行期表现成"它就是不用技能"，排查方向完全错。
@@ -481,6 +488,7 @@ class InteractiveSession:
             project_instructions=self._instructions.text,
             skill_index=self._skill_index,
             memory_index=self._memory_index,
+            repo_map=self._repo_map,
             tree=tree,
         )
         # 钩子总线（P4-批次5，星辰拍板）：持久化是**订阅事件的钩子**，
@@ -584,6 +592,8 @@ class InteractiveSession:
                 # 子 agent 不透传记忆（P5-批次3）：子任务短生命周期，
                 # 索引属主会话；子任务需要上下文由派发方在 description 里给。
                 enable_memory=False,
+                # repo map 同款:子会话不付地图钱(主会话已带,切片自会引用)。
+                enable_repo_map=False,
                 # 取消传播：主会话被取消时子任务同步停（signal 从派发时的
                 # ToolContext 里来——那是主 loop 的取消令牌）。
                 signal=ctx.signal,
@@ -848,6 +858,7 @@ async def run_task(
     checkpoint_watermark_bytes: int | None = None,
     enable_trace: bool = True,
     enable_memory: bool = True,
+    enable_repo_map: bool = True,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -898,5 +909,6 @@ async def run_task(
         checkpoint_watermark_bytes=checkpoint_watermark_bytes,
         enable_trace=enable_trace,
         enable_memory=enable_memory,
+        enable_repo_map=enable_repo_map,
     )
     return await session.send(task)

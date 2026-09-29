@@ -119,6 +119,7 @@ class SessionContext:
         project_instructions: str = "",
         skill_index: str = "",
         memory_index: str = "",
+        repo_map: str = "",
         tree: SessionTree | None = None,
         resident_budget_tokens: int = DEFAULT_RESIDENT_BUDGET_TOKENS,
     ) -> None:
@@ -141,6 +142,10 @@ class SessionContext:
         # 模型本会话新写的记忆不在索引里（刷新=常驻区变化=缓存失效，D4），
         # 下个会话可见。进 resident 后自动被指纹与预算两道断言覆盖（G883）。
         self._memory_index = memory_index
+        # 已经**构建好**的工作区结构快照(sigma.sessions.repo_map.build_repo_map 的产物,P1 收尾)。
+        # 与 memory_index 同一套纪律:文本进、本类不扫盘;**会话内冻结**(D4)——
+        # 工作区文件中途变化不在地图里,下个会话可见。空串 = 零注入(常驻区逐字节不变)。
+        self._repo_map = repo_map
         self._resident_budget = resident_budget_tokens
         # 不传 store 的树就是纯内存的：一个实现覆盖两种用法。
         self._tree = tree if tree is not None else SessionTree()
@@ -175,6 +180,8 @@ class SessionContext:
             parts.append(self._skill_index)
         if self._memory_index:
             parts.append(self._memory_index)
+        if self._repo_map:
+            parts.append(self._repo_map)
         return "\n\n".join(parts)
 
     def _compute_fingerprint(self) -> str:

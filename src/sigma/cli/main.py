@@ -67,6 +67,7 @@ from sigma.cli.interactive import choose_option
 from sigma.cli.repl import _LineBroker, _start_stdin_reader
 from sigma.observability.timeline import build_timeline, render_timeline, timeline_to_json
 from sigma.memory.file_store import memory_dir_for, scan_memory
+from sigma.sessions.repo_map import build_repo_map
 from sigma.observability.trace import trace_path_for
 from sigma.cli.render import TerminalRenderer
 from sigma.hooks.base import (
@@ -196,6 +197,15 @@ def build_parser() -> argparse.ArgumentParser:
             "关闭跨会话记忆（P5-批次3）。默认开启——模型可把学到的东西写进"
             ".sigma/memory/（你随时可读可改可删），下个会话的常驻区会带上"
             "记忆索引；关闭后不扫描、不注入，行为与没有该机制完全一致"
+        ),
+    )
+    parser.add_argument(
+        "--no-repo-map",
+        action="store_true",
+        help=(
+            "关闭 repo map（工作区结构快照进常驻区）。默认开启——会话启动时"
+            "扫一次文件清单与 Python 顶层符号，帮模型第一轮 grep 就有方向；"
+            "关闭后不扫描、不注入，行为与没有该功能完全一致"
         ),
     )
     parser.add_argument(
@@ -787,6 +797,7 @@ async def _run_once(
     checkpoint_watermark_bytes: int | None = None,
     enable_trace: bool = True,
     enable_memory: bool = True,
+    enable_repo_map: bool = True,
 ) -> TurnResult:
     """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。
 
@@ -815,6 +826,7 @@ async def _run_once(
             checkpoint_watermark_bytes=checkpoint_watermark_bytes,
             enable_trace=enable_trace,
             enable_memory=enable_memory,
+            enable_repo_map=enable_repo_map,
         )
     finally:
         await provider.aclose()
@@ -867,6 +879,7 @@ class SessionManager:
         checkpoint_watermark_bytes: int | None = None,
         enable_trace: bool = True,
         enable_memory: bool = True,
+        enable_repo_map: bool = True,
         make_provider: Callable[[], BaseProvider] | None = None,
     ) -> None:
         self._args = args
@@ -889,6 +902,8 @@ class SessionManager:
         self._enable_trace = enable_trace
         #: 跨会话记忆(P5-批次3,默认开):--no-memory 整层关。
         self._enable_memory = enable_memory
+        #: repo map(P1 收尾,默认开):--no-repo-map 整层关(连目录遍历都不做)。
+        self._enable_repo_map = enable_repo_map
         self._binding = binding
         #: provider 的**造法**可注入：测试要离线跑（``FakeProvider``），
         #: 而默认路径要真造 ``OpenAICompatProvider``。注入的是"造法"不是
@@ -939,6 +954,7 @@ class SessionManager:
             enable_sub_agent=self._args.sub_agent,
             enable_trace=self._enable_trace,
             enable_memory=self._enable_memory,
+            enable_repo_map=self._enable_repo_map,
         )
 
     # -- 查询 ---------------------------------------------------------------
@@ -1082,6 +1098,7 @@ async def _run_interactive(
     checkpoint_watermark_bytes: int | None = None,
     enable_trace: bool = True,
     enable_memory: bool = True,
+    enable_repo_map: bool = True,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。
 
@@ -1106,6 +1123,7 @@ async def _run_interactive(
         checkpoint_watermark_bytes=checkpoint_watermark_bytes,
         enable_trace=enable_trace,
         enable_memory=enable_memory,
+        enable_repo_map=enable_repo_map,
     )
     if broker is not None:
         _start_stdin_reader(broker)
@@ -1334,6 +1352,14 @@ def main(argv: list[str] | None = None) -> int:
         if memory_scan.problems:
             memory_line += f"｜⚠ {len(memory_scan.problems)} 条格式异常"
         lines.append(memory_line)
+    # repo map 横幅行（P1 收尾）：与记忆横幅同一取舍——壳侧为展示再算一次
+    # （构建是纯本地扫描，成本可忽略）；条数 = 注入的文件行数。
+    if args.no_repo_map:
+        lines.append("  repo map  未开启（--no-repo-map）")
+    else:
+        repo_map_text = build_repo_map(workspace)
+        file_count = sum(1 for l in repo_map_text.splitlines() if l.startswith("- "))
+        lines.append(f"  repo map  {file_count} 个文件（--no-repo-map 关闭）")
     if binding.resumed:
         lines.append(
             f"  会话    已续接 {binding.session_id}"
@@ -1428,6 +1454,7 @@ def main(argv: list[str] | None = None) -> int:
                     checkpoint_watermark_bytes=checkpoint_watermark_bytes,
                     enable_trace=not args.no_obs,
                     enable_memory=not args.no_memory,
+        enable_repo_map=not args.no_repo_map,
                 )
             )
             if args.trace:
@@ -1454,6 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
                 checkpoint_watermark_bytes=checkpoint_watermark_bytes,
                 enable_trace=not args.no_obs,
                 enable_memory=not args.no_memory,
+        enable_repo_map=not args.no_repo_map,
             )
         )
     except KeyboardInterrupt:
