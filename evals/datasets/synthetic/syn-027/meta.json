@@ -1,0 +1,33 @@
+{
+  "id": "syn-027",
+  "kind": "synthetic",
+  "title": "Markdown 链接解析的四处缺陷（转义未识别 / 图片当链接 / 文本嵌套截断 / URL 括号截断）",
+  "description": "工作区里的 mdlink_lite 从一段文本中解析 Markdown 内联链接（find_links 返回 Link 列表），规则以模块 docstring 为准。它现在有四处 bug：\n\n1. 起始方括号不认转义：`\\[提示](x)` 里的 `\\[` 是字面字符，现在却被当成链接开头，凭空解析出一条链接；\n2. 图片语法没有排除：`![alt](src.png)` 是图片不是链接，现在被当成普通链接返回（夹在两个链接中间的图片也应整段跳过）；\n3. 链接文本扫描遇到第一个 `]` 就截断：既不支持成对嵌套（`[看 [细节] 说明](u)` 的文本应是 `看 [细节] 说明`），也不处理文本里的转义 `\\]`（`[a \\] b](u)` 的文本应是 `a ] b`）——两组用例都压在同一处扫描上，需要改成转义感知的配对扫描；\n4. URL 扫描遇到第一个 `)` 就截断：`[t](https://x.com/a_(b))` 的 URL 应是 `https://x.com/a_(b)`，现在被截成 `https://x.com/a_(b`；URL 里的转义 `\\)` 同理（`[t](https://x.com/a_\\(b\\))` 的 URL 应还原为 `https://x.com/a_(b)`）。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意：第 3 处同时压着嵌套与转义两组用例，修完一处要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import mdlink_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "7 failed, 7 passed in 0.13s",
+    "failed_tests": [
+      "tests/test_mdlink_lite.py::test_escaped_open_bracket_is_literal",
+      "tests/test_mdlink_lite.py::test_escaped_close_bracket_inside_text",
+      "tests/test_mdlink_lite.py::test_image_is_not_a_link",
+      "tests/test_mdlink_lite.py::test_image_between_two_links_is_skipped",
+      "tests/test_mdlink_lite.py::test_nested_brackets_in_text",
+      "tests/test_mdlink_lite.py::test_nested_parens_in_url",
+      "tests/test_mdlink_lite.py::test_escaped_parens_in_url"
+    ],
+    "recorded_at": "2026-09-29T23:55:22.921",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 14 passed。"
+  }
+}
