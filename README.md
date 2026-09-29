@@ -52,11 +52,12 @@ sigma 0.0.1（一次性模式）
 ## 三条差异化：它不是"又一层 LLM wrapper"
 
 **1. 约束是机器强制的，不靠自觉。**
-分层依赖不许反向 → `lint-imports` 三道契约。其中 `sigma_tools` 与 `sigma_session` 是**兄弟层**，
-线性 `layers` 契约的语义只有"下层不许引用上层"、**默认放行一切向下 import**，
-所以另配一条 `independence` 契约把兄弟关系钉死（实测过：只写 `layers` 时，
-`sigma_tools → sigma_session` 是静默通过的）。
-类型 → `mypy --strict`；行为 → 510 个单测。**CI 就这三条命令，跑不过不合。**
+分层依赖不许反向 → `lint-imports` 契约：单顶层包 `sigma` 下 15 个功能域子包
+（cli / runtime / providers / events / hooks / tools / skills / sessions / memory /
+security / observability / prompts / config）按层排序，低层引用高层即 CI 失败。
+（P6 前的五包布局曾需要额外的 `independence` 契约钉兄弟层——那条"只写 layers
+会静默放行违规依赖"的教训促成了现在这张更细的层表。）
+类型 → `mypy --strict`；行为 → 724 个单测。**CI 就这三条命令，跑不过不合。**
 
 **2. 门槛必须是"可被证伪"的。**
 73 条门槛，每条都配一次 **破坏 → 断言变红 → 还原 → 断言变绿** 的注入实验
@@ -163,22 +164,40 @@ python evals/runner.py    # 回放六个场景，报告落 evals/reports/
 依赖方向严格受限，**由 CI 强制**：
 
 ```
-sigma         → sigma_tools, sigma_session, sigma_agent, sigma_ai   # 产品壳
-sigma_tools   → sigma_agent, sigma_ai                                # 工具层
-sigma_session → sigma_agent, sigma_ai                                # 会话层
-sigma_agent   → sigma_ai                                             # 循环与注册表
-sigma_ai      → （无内部依赖）                                        # 协议层
+sigma.cli            → 各功能域（视图侧装配）                       # 终端壳
+sigma.sdk            → 组装一切（唯一装配点）                        # 装配层
+sigma.observability  → hooks, sessions, agent, providers             # 观测层
+sigma.runtime        → tools, security, hooks, sessions, events ...  # 核心循环
+sigma.tools          → skills, security, agent, providers            # 工具层
+sigma.security       → hooks, agent, events                          # 安全层
+sigma.hooks          → sessions, events, agent                       # 钩子层
+sigma.sessions       → agent, providers, config                      # 会话层
+sigma.memory         → providers                                     # 记忆层
+sigma.events         → agent                                         # 事件定义
+sigma.agent          → providers                                     # agent 消息模型
+sigma.prompts        → providers                                     # 提示词资产
+sigma.config         → 无                                            # 配置层
+sigma.providers      → 无（最底层）                                   # 协议层
 ```
 
-`sigma_tools` 与 `sigma_session` 是**兄弟层，互不依赖**（由 `independence` 契约钉住）。
+（P6 前旧布局中 tools 与 session 是兄弟层，靠独立的 `independence` 契约钉住；
+现行 15 层表已无歧义，该契约废除。）
 
 | 层 | 职责 | 关键文件 |
 | --- | --- | --- |
-| `sigma` | 产品壳：CLI / REPL / 一次性模式 / SDK 入口 | `cli.py` `sdk.py` `repl.py` `render.py` `dotenv.py` |
-| `sigma_tools` | 内置工具与输出截断 | `read / write / edit / bash / grep` · `truncate` · `_paths`（L1 写路径约束）· `web_search / web_fetch`（可选） |
-| `sigma_session` | 会话树 · 上下文组装 · 压缩 | `tree.py` `store.py` `context.py` `compact.py` `resources.py` `sessions.py` |
-| `sigma_agent` | 唯一 agent loop · 工具注册表 · 观测事件 · 影子 checkpoint | `loop.py` `registry.py` `base.py` `agent_messages.py` `checkpoint.py` |
-| `sigma_ai` | Provider 抽象与流式协议 | `base.py` `messages.py` `events.py` `openai/` `fake.py` |
+| `sigma.cli` | 终端壳：CLI / REPL / 渲染 / 按键交互 | `cli/main.py` `cli/repl.py` `cli/render.py` `cli/interactive.py` |
+| `sigma.sdk` | ✅唯一装配层：InteractiveSession / run_task / create_session | `sdk.py` |
+| `sigma.runtime` | ✅唯一 agent loop（事件主循环）· 子 agent | `runtime/event_loop.py` `runtime/sub_agent.py` |
+| `sigma.tools` | 工具基类 · 注册表 · 内置工具 · 输出截断 | `tools/base.py` `tools/registry.py` `tools/builtin/*` `tools/truncate.py` |
+| `sigma.security` | ✅三层软边界：路径沙箱(L1) · 影子 checkpoint(L2) · 审批门(L3) | `security/path_sandbox.py` `security/shadow_checkpoint.py` `security/approval.py` |
+| `sigma.sessions` | 会话树 · 上下文组装 · 短期压缩 | `sessions/tree.py` `sessions/store.py` `sessions/context.py` `sessions/compaction.py` |
+| `sigma.memory` | ✅跨会话记忆（长期） | `memory/file_store.py` |
+| `sigma.providers` | Provider 抽象与流式协议（OpenAI 兼容） | `providers/base.py` `providers/messages.py` `providers/events.py` `providers/openai/` `providers/fake.py` |
+| `sigma.events` + `sigma.hooks` | 生命周期事件定义（机制）· 订阅者与总线 | `events/lifecycle.py` `hooks/base.py` `hooks/persist.py` |
+| `sigma.skills` | 技能发现与渐进披露 | `skills/scanner.py` |
+| `sigma.observability` | ✅trace 逐事件落盘 · timeline 视图 | `observability/trace.py` `observability/timeline.py` |
+| `sigma.prompts` | 系统提示词资产（同源纪律） | `prompts/system_prompt.py` |
+| `sigma.config` | .env/密钥 · 常驻区预算表 | `config/settings.py` `config/resident_caps.py` |
 
 ### 一轮任务的数据流
 
@@ -263,17 +282,28 @@ reset = self._git("reset", "--hard", "--quiet", ref)
 ## 目录
 
 ```
-core/           五个包（package-dir 指向 core/，所以它们是顶层包）
-  sigma_ai/     协议层：Provider 抽象、消息模型、流式事件
-  sigma_agent/  agent loop、工具注册表、观测事件、影子 checkpoint
-  sigma_session/会话树、上下文组装、压缩、会话目录操作
-  sigma_tools/  内置工具、输出截断、路径约束
-  sigma/        产品壳：CLI / REPL / SDK 入口
-tests/          716 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
+src/sigma/      唯一顶层包（src 布局，P6 起按功能域分子包）
+  cli/          终端壳：CLI / REPL / 渲染 / 按键交互
+  runtime/      核心循环：event_loop（AgentLoop）、sub_agent
+  agent/        agent 层消息模型（AgentMessage / convert_to_llm / ToolContext）
+  providers/    协议层：Provider 抽象、消息模型、流式事件、OpenAI 兼容实现
+  events/       生命周期事件定义（纯 dataclass；hooks 是订阅者）
+  hooks/        钩子订阅者与总线（BaseHook / HookManager / persist）
+  tools/        工具基类、注册表、builtin/ 内置工具、quota/ 联网额度
+  skills/       技能发现与索引（渐进披露）
+  sessions/     会话树、上下文组装、短期压缩
+  memory/       跨会话记忆（长期）
+  security/     路径沙箱(L1)、影子 checkpoint(L2)、审批门(L3)
+  observability/ trace 逐事件落盘、timeline 视图
+  prompts/      系统提示词资产（全部文案，同源纪律）
+  config/       .env/密钥、常驻区预算表
+  sdk.py        唯一装配层
+tests/          724 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
 evals/          评测运行器 + 报告（adversarial 20+10 条已落地；synthetic 12/30；reproduce 0/20）
+examples/       真 API 演示（smoke / agent_demo / web_research）
 extensions/     运行时加载的扩展样例（P4）
 docs/           架构方案、调研笔记、计划、决策记录
-scripts/        门槛注入实验、真实 API 冒烟、demo 工作区生成
+scripts/        门槛注入实验（历史证据，内嵌路径为 P6 前旧路径）、demo 工作区生成
 ```
 
 ## 文档
