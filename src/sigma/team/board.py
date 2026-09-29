@@ -1,14 +1,22 @@
 """团队任务板状态机:迁移表即代码,纯逻辑、零 I/O、零 sigma 内部依赖(纯 stdlib)。
 
-P4-团队任务详规 §2.1(星辰拍板 2026-09-30):状态 pending / running / success / fail;
+P4-团队任务详规 §2.1(v3,星辰拍板 2026-09-30):七态
+pending / running / blocked / success / fail / dead / cancelled;
 迁移表(当前状态 × 事件 → 次态)就是下面那张字面量 dict——**表即规范**,
 G-TEAM-1 逐行参数化钉住:改表不补测试(或反之)当场红。
 
 为什么独立成包且只用 stdlib
-    协作域(状态机 / 存储 / 信箱)是规则密集而框架知识为零的代码:它不需要
-    知道 ToolContext、pydantic 或任何 provider——给它一个 Board 和一个事件,
-    它给答案。依赖越少,这张表越接近"可以直接读的规范"。
-    (代价:时间戳助手必须在包内自足,见 :func:`now_stamp`。)
+    协作域(状态机 / 存储 / 信箱 / 扫描器)是规则密集而框架知识为零的代码:
+    它不需要知道 ToolContext、pydantic 或任何 provider——给它一个 Board 和
+    一个事件,它给答案。(代价:时间戳/时钟助手必须在包内自足,见
+    :func:`now_stamp`。)
+
+角色即守卫(v3,星辰设计评审)
+    守卫列的本质是**角色声明**:worker 发 claim/finish/fail/heartbeat,
+    lead 发 create/reclaim/abandon/cancel,系统扫描器发 lease_expired /
+    dep_succeeded。物理分权在 :mod:`sigma.team.worker_board` /
+    :mod:`sigma.team.lead_board` / :mod:`sigma.team.scanner`——本模块的
+    运行时守卫是第二道防线(调用方传错身份照样拦)。
 
 非法迁移一律 ``ValueError``(携带 当前状态/事件/调用者)——**宁可崩不要错**:
     静默吞掉非法迁移,"板上到底是什么状态"就只能靠约定保证,而约定会漏。
@@ -22,28 +30,57 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Final, Sequence, cast
 
-#: 合法状态,恰四值(G-TEAM-7)。顺序 = 生命周期序(渲染与文档同序)。
-STATES: Final[tuple[str, ...]] = ("pending", "running", "success", "fail")
+#: 合法状态,恰七值(v3)。顺序 = 生命周期序(渲染与文档同序)。
+STATES: Final[tuple[str, ...]] = (
+    "pending",
+    "running",
+    "blocked",
+    "success",
+    "fail",
+    "dead",
+    "cancelled",
+)
 
 #: create 事件的"当前状态":板上还没有这个 id。用中文原文,报错可直读详规的表。
 ABSENT: Final[str] = "(不存在)"
 
 #: 事件名。与工具 board 子操作**同名**——薄壳按名字转发,不设第二套词汇。
+#: heartbeat / worker_lost / lease_expired / dep_succeeded 是**引擎与扫描器的
+#: 内部事件**,不进任何工具面(角色分权,详规 §2)。
 CREATE: Final[str] = "create"
 CLAIM: Final[str] = "claim"
 FINISH: Final[str] = "finish"
 FAIL: Final[str] = "fail"
 RECLAIM: Final[str] = "reclaim"
+ABANDON: Final[str] = "abandon"
+CANCEL: Final[str] = "cancel"
+HEARTBEAT: Final[str] = "heartbeat"
+WORKER_LOST: Final[str] = "worker_lost"
+LEASE_EXPIRED: Final[str] = "lease_expired"
+DEP_SUCCEEDED: Final[str] = "dep_succeeded"
+
+#: 系统调用者前缀:扫描器与引擎以系统身份触发内部事件(角色分权:它们不是 agent)。
+SYSTEM_SCANNER: Final[str] = "system:scanner"
+SYSTEM_ENGINE: Final[str] = "system:engine"
 
 #: 迁移表(§2.1):(当前状态, 事件) → 次态。**这张 dict 就是规范本身**。
-#: success 是吸收态,无出边;守卫与动作在 :func:`apply` 里按事件分支。
+#: create 的次态由 deps 守卫分流(全 success → pending;未就绪 → blocked),
+#: 表里登记主路径 pending。success/dead/cancelled 是吸收态,无出边。
 TRANSITIONS: Final[dict[tuple[str, str], str]] = {
     (ABSENT, CREATE): "pending",
     ("pending", CLAIM): "running",
     ("running", FINISH): "success",
     ("running", FAIL): "fail",
+    ("running", HEARTBEAT): "running",
+    ("running", WORKER_LOST): "pending",
+    ("running", LEASE_EXPIRED): "pending",
+    ("running", CANCEL): "cancelled",
     ("running", RECLAIM): "pending",
     ("fail", RECLAIM): "pending",
+    ("fail", ABANDON): "dead",
+    ("blocked", DEP_SUCCEEDED): "pending",
+    ("blocked", CANCEL): "cancelled",
+    ("pending", CANCEL): "cancelled",
 }
 
 
@@ -59,10 +96,12 @@ def now_stamp() -> str:
 
 @dataclass
 class TeamTask:
-    """一个任务。落盘形状见详规 §2.2:{id, title, state, assignee, deps, result, note}。
+    """一个任务。落盘形状见详规 §2.2(v3 增补 attempts/lease_deadline/creator)。
 
     ``result`` 双职:finish 写结论、fail 写失败原因(表里的"写 reason"落在这里)——
     一个任务同一时刻只有一个"结果"语义,拆两个字段反而要约定"哪个为空算什么"。
+    ``lease_deadline`` 是**注入时钟的秒数**(不是 epoch、不是 ISO 串)——
+    lease 比较发生在同一次注入时钟的刻度里,可读性由 render/审计另管。
     """
 
     id: str
@@ -72,6 +111,9 @@ class TeamTask:
     deps: list[str] = field(default_factory=list)
     result: str = ""
     note: str = ""
+    creator: str = ""
+    attempts: int = 0
+    lease_deadline: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +124,9 @@ class TeamTask:
             "deps": list(self.deps),
             "result": self.result,
             "note": self.note,
+            "creator": self.creator,
+            "attempts": self.attempts,
+            "lease_deadline": self.lease_deadline,
         }
 
     @classmethod
@@ -108,6 +153,9 @@ class TeamTask:
             deps=[str(item) for item in deps],
             result=str(raw.get("result", "")),
             note=str(raw.get("note", "")),
+            creator=str(raw.get("creator", "")),
+            attempts=int(raw.get("attempts", 0)),
+            lease_deadline=float(raw.get("lease_deadline", 0.0)),
         )
 
 
@@ -119,6 +167,9 @@ class Board:
     updated_at: str = ""
     next_id: int = 1
     tasks: list[TeamTask] = field(default_factory=list)
+    #: 重试上限(v3 迁移表第 10/11 行):reclaim 守卫 attempts < max_attempts,
+    #: 达上限由扫描器自动 abandon 进 dead。落盘随板走——它是板的一部分配置。
+    max_attempts: int = 3
 
     def find(self, task_id: str) -> TeamTask | None:
         return next((task for task in self.tasks if task.id == task_id), None)
@@ -127,6 +178,7 @@ class Board:
         return {
             "updated_at": self.updated_at,
             "next_id": self.next_id,
+            "max_attempts": self.max_attempts,
             "tasks": [task.to_dict() for task in self.tasks],
         }
 
@@ -140,6 +192,7 @@ class Board:
         return cls(
             updated_at=str(raw.get("updated_at", "")),
             next_id=int(raw.get("next_id", len(tasks_raw) + 1)),
+            max_attempts=int(raw.get("max_attempts", 3)),
             tasks=[TeamTask.from_dict(item) for item in tasks_raw],
         )
 
@@ -151,7 +204,7 @@ class Board:
         summary = " / ".join(f"{state} {counts[state]}" for state in STATES)
         lines = [f"任务板:{len(self.tasks)} 个任务({summary})"]
         for task in self.tasks:
-            line = f"  [{task.state:<7}] {task.id} {task.title}"
+            line = f"  [{task.state}] {task.id} {task.title}"
             if task.assignee:
                 line += f" @{task.assignee}"
             if task.deps:
@@ -175,11 +228,15 @@ def apply(
     result: str = "",
     note: str = "",
     lead: str = "",
+    now: float = 0.0,
+    lease_ttl: float = 0.0,
 ) -> TeamTask:
     """按迁移表执行一个事件,返回(可能新建的)任务并**原地更新** board。
 
     表里没有 (当前状态, 事件) → ``ValueError``;守卫不过 → 同样 ``ValueError``。
     消息携带 当前状态/事件/调用者 + 合法迁移摘要,模型看到就能自查纠错。
+    ``now`` / ``lease_ttl`` 只被 claim/heartbeat 消费(lease 秒数刻度);
+    create 的次态由 deps 守卫分流(全 success → pending,未就绪 → blocked)。
     """
     task = board.find(task_id)
     current = ABSENT if task is None else task.state
@@ -193,7 +250,17 @@ def apply(
     _check_guards(board, task, event, caller=caller, lead=lead, deps=deps)
     next_state = TRANSITIONS[key]
     if event == CREATE:
-        created = TeamTask(id=f"t{board.next_id}", title=title, deps=list(deps))
+        # v3:create 的 deps 守卫只要求**存在**;未就绪 → blocked 挂起,
+        # dep_succeeded 扫描放行(详规 v3 迁移表第 2 行)。
+        ready = _deps_all_success(board, deps)
+        state = "pending" if ready else "blocked"
+        created = TeamTask(
+            id=f"t{board.next_id}",
+            title=title,
+            deps=list(deps),
+            state=state,
+            creator=caller,
+        )
         board.next_id += 1
         board.tasks.append(created)
         return created
@@ -201,8 +268,23 @@ def apply(
     task.state = next_state
     if event == CLAIM:
         task.assignee = caller
-    elif event in (FINISH, FAIL):
+        task.lease_deadline = now + lease_ttl
+    elif event == HEARTBEAT:
+        task.lease_deadline = now + lease_ttl
+    elif event == FINISH:
         task.result = result
+        task.lease_deadline = 0.0
+    elif event == FAIL:
+        task.result = result
+        task.attempts += 1
+        task.lease_deadline = 0.0
+    elif event in (WORKER_LOST, LEASE_EXPIRED):
+        # 两通道同一去向:事件驱动(派发器感知)与时间驱动(扫描器)。
+        # attempts 都递增——重试上限对两条通道一视同仁。
+        task.assignee = ""
+        task.attempts += 1
+        task.lease_deadline = 0.0
+        task.note = note or task.note
     elif event == RECLAIM:
         # 清 assignee/result,留 note(强制接管的审计痕迹)。running 的 result
         # 本应为空,清掉是幂等的;fail 的 result(失败原因)必须清——重派后
@@ -210,6 +292,8 @@ def apply(
         task.assignee = ""
         task.result = ""
         task.note = note
+    elif event == CANCEL:
+        task.note = note or task.note
     return task
 
 
@@ -222,9 +306,14 @@ def _check_guards(
     lead: str,
     deps: Sequence[str],
 ) -> None:
-    """迁移表各行的守卫(§2.1「守卫」列)。失败抛 ValueError,与非法迁移同形。"""
+    """迁移表各行的守卫(§2.1「守卫」列)。失败抛 ValueError,与非法迁移同形。
+
+    角色总纲(详规 §2):worker 发 claim/finish/fail/heartbeat;lead 发
+    create/reclaim/abandon/cancel;lease_expired/dep_succeeded/worker_lost
+    是系统事件,调用者必须是 ``system:*``(角色分权的第二道防线)。
+    """
     if event == CREATE:
-        _require_deps_success(board, deps)
+        _require_deps_exist(board, deps)
         return
     assert task is not None
     if event == CLAIM:
@@ -236,12 +325,12 @@ def _check_guards(
                 f"调用者 {caller} 不能再 claim。"
             )
         _require_deps_success(board, task.deps)
-    elif event in (FINISH, FAIL):
+    elif event in (FINISH, FAIL, HEARTBEAT):
         if caller != task.assignee:
             raise ValueError(
                 f"任务 {task.id} 由 {task.assignee or '(无)'} 认领,"
                 f"调用者 {caller or '未知'} 不能 {event}"
-                "(板纪律:非 assignee 不得改认领中的任务,含主 agent)。"
+                "(板纪律:非 assignee 不得操作认领中的任务,含主 agent)。"
             )
     elif event == RECLAIM:
         if not lead or caller != lead:
@@ -249,11 +338,51 @@ def _check_guards(
                 f"reclaim 仅 lead 可调(lead={lead or '未设置'},"
                 f"调用者 {caller or '未知'})。"
             )
+        assert task is not None
+        if task.attempts >= board.max_attempts:
+            raise ValueError(
+                f"任务 {task.id} attempts={task.attempts} 已达上限"
+                f"({board.max_attempts}),reclaim 被拒——用 abandon 终结,"
+                "或先调高板上限。重试上限对 lead 一视同仁,否则形同虚设。"
+            )
+    elif event == ABANDON:
+        if caller != lead and not caller.startswith("system:"):
+            raise ValueError(
+                f"abandon 仅 lead 或扫描器可调(调用者 {caller or '未知'})。"
+            )
+    elif event in (WORKER_LOST, LEASE_EXPIRED, DEP_SUCCEEDED):
+        if not caller.startswith("system:"):
+            raise ValueError(
+                f"{event} 是系统事件,仅扫描器/引擎可触发(调用者 {caller or '未知'})。"
+            )
+    elif event == CANCEL:
+        # pending/blocked:创建者或 lead;running:仅 lead(正在执行的工作
+        # 只有管理者能砍,worker 自己放弃走 fail)。
+        if task.state == "running":
+            if not lead or caller != lead:
+                raise ValueError(
+                    f"取消 running 任务仅 lead 可调(lead={lead or '未设置'},"
+                    f"调用者 {caller or '未知'})。"
+                )
+        else:
+            if caller != lead and caller != task.creator and not caller.startswith("system:"):
+                raise ValueError(
+                    f"取消 {task.state} 任务需要创建者或 lead"
+                    f"(创建者 {task.creator or '(无)'},调用者 {caller or '未知'})。"
+                )
+
+
+def _require_deps_exist(board: Board, deps: Sequence[str]) -> None:
+    """create 守卫:依赖必须存在(id 可查)——不存在的依赖让任务永远无法
+    被放行,而且没有任何一步报错。依赖未就绪**不再拒绝**,转 blocked(v3)。"""
+    for dep_id in deps:
+        if board.find(dep_id) is None:
+            raise ValueError(f"依赖 {dep_id} 不存在(板上没有这个任务 id)。")
 
 
 def _require_deps_success(board: Board, deps: Sequence[str]) -> None:
-    """守卫:依赖全部 success。不存在的依赖 id 直接拒绝——
-    否则这条任务永远无法被 claim,而且没有任何一步报错。"""
+    """claim 的防御性守卫:normal 路径下 blocked→pending 已保证依赖就绪;
+    保留它是为了直接摆出 pending 板时的回退防御(与详规同判据)。"""
     for dep_id in deps:
         dep = board.find(dep_id)
         if dep is None:
@@ -263,6 +392,13 @@ def _require_deps_success(board: Board, deps: Sequence[str]) -> None:
                 f"依赖 {dep_id} 尚未完成(当前 {dep.state}),"
                 "须全部 success 才能继续。"
             )
+
+
+def _deps_all_success(board: Board, deps: Sequence[str]) -> bool:
+    return all(
+        (dep := board.find(dep_id)) is not None and dep.state == "success"
+        for dep_id in deps
+    )
 
 
 def _legal_summary() -> str:

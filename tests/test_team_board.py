@@ -44,6 +44,9 @@ from sigma.team.board import (
     TeamTask,
     apply,
 )
+from sigma.team.lead_board import LeadBoard
+from sigma.team.store import BoardStore
+from sigma.team.worker_board import WorkerBoard
 from sigma.tools.builtin.team import BOARD_RELATIVE, TeamBoard, TeamBoardParams
 
 FIXED_TIME = "2026-09-29T12:00:00.000"
@@ -59,8 +62,8 @@ def _clock() -> str:
     return FIXED_TIME
 
 
-def _tool(lead: str = LEAD) -> TeamBoard:
-    return TeamBoard(lead_session_id=lead, clock=_clock)
+def _tool(lead: str = LEAD, role: str = "lead") -> TeamBoard:
+    return TeamBoard(lead_session_id=lead, role=role, clock=_clock)
 
 
 def _ctx(tmp_path: Path, session_id: str = "sess-1") -> ToolContext:
@@ -101,7 +104,7 @@ def _text(result: ToolResult) -> str:
 
 
 def _board_in(pre: str, task_id: str = "t1") -> Board:
-    """造一个处于指定前置状态的板。pre ∈ absent / pending / running / success / fail。"""
+    """造一个处于指定前置状态的板。pre ∈ absent / 四活态 / 三终态。"""
     board = Board()
     if pre == ABSENT:
         return board
@@ -111,6 +114,7 @@ def _board_in(pre: str, task_id: str = "t1") -> Board:
         task.assignee = "w1"
     if pre == "fail":
         task.result = "旧原因"
+        task.attempts = 1
     board.tasks.append(task)
     board.next_id = 2
     return board
@@ -143,23 +147,52 @@ def _check_reclaim_fail(task: TeamTask) -> None:
     assert task.note == "接管"
 
 
+def _check_heartbeat(task: TeamTask) -> None:
+    assert task.state == "running", "heartbeat 状态不变"
+    assert task.lease_deadline > 0, "heartbeat 续租"
+
+
+def _check_worker_lost(task: TeamTask) -> None:
+    assert task.assignee == "" and task.attempts == 1, "worker_lost 清 assignee、attempts+1"
+
+
+def _check_cancel(task: TeamTask) -> None:
+    assert task.state == "cancelled", "cancel 进终态"
+
+
+def _check_abandon(task: TeamTask) -> None:
+    assert task.state == "dead", "abandon 进 dead"
+
+
 @pytest.mark.parametrize(
     ("pre", "event", "kwargs", "expected", "verify"),
     [
         (ABSENT, "create", {"title": "新任务"}, "pending", _check_create),
-        ("pending", "claim", {"task_id": "t1", "caller": "w1"}, "running", _check_claim),
+        ("pending", "claim", {"task_id": "t1", "caller": "w1", "now": 10.0, "lease_ttl": 300.0}, "running", _check_claim),
         ("running", "finish", {"task_id": "t1", "caller": "w1", "result": "结论"}, "success", _check_finish),
         ("running", "fail", {"task_id": "t1", "caller": "w1", "result": "原因"}, "fail", _check_fail),
+        ("running", "heartbeat", {"task_id": "t1", "caller": "w1", "now": 10.0, "lease_ttl": 300.0}, "running", _check_heartbeat),
+        ("running", "worker_lost", {"task_id": "t1", "caller": "system:engine"}, "pending", _check_worker_lost),
+        ("running", "cancel", {"task_id": "t1", "caller": LEAD, "lead": LEAD}, "cancelled", _check_cancel),
         ("running", "reclaim", {"task_id": "t1", "caller": LEAD, "lead": LEAD, "note": "接管"}, "pending", _check_reclaim_running),
         ("fail", "reclaim", {"task_id": "t1", "caller": LEAD, "lead": LEAD, "note": "接管"}, "pending", _check_reclaim_fail),
+        ("fail", "abandon", {"task_id": "t1", "caller": LEAD, "lead": LEAD}, "dead", _check_abandon),
+        ("blocked", "dep_succeeded", {"task_id": "t1", "caller": "system:scanner"}, "pending", lambda task: None),
+        ("pending", "cancel", {"task_id": "t1", "caller": LEAD, "lead": LEAD}, "cancelled", _check_cancel),
     ],
     ids=[
         "absent+create",
         "pending+claim",
         "running+finish",
         "running+fail",
+        "running+heartbeat",
+        "running+worker_lost",
+        "running+cancel",
         "running+reclaim",
         "fail+reclaim",
+        "fail+abandon",
+        "blocked+dep_succeeded",
+        "pending+cancel",
     ],
 )
 def test_g_team1_transition_table_row(
@@ -176,11 +209,14 @@ def test_g_team1_transition_table_row(
     verify(task)
 
 
-_EVENTS = ("create", "claim", "finish", "fail", "reclaim")
+_EVENTS = (
+    "create", "claim", "finish", "fail", "reclaim",
+    "abandon", "cancel", "heartbeat", "worker_lost", "lease_expired", "dep_succeeded",
+)
 _LEGAL_KEYS = set(TRANSITIONS)
 _ILLEGAL_ROWS = [
     (pre, event)
-    for pre in ("pending", "running", "success", "fail")
+    for pre in ("pending", "running", "blocked", "success", "fail", "dead", "cancelled")
     for event in _EVENTS
     if (pre, event) not in _LEGAL_KEYS
 ]
@@ -230,12 +266,13 @@ def test_g_team1_claim_allowed_when_deps_success() -> None:
     assert claimed.state == "running" and claimed.assignee == "w9"
 
 
-def test_g_team1_create_guard_requires_deps_success() -> None:
-    """create 的守卫:deps 未全 success(含不存在的 id)直接拒绝——
-    板上出现的任务都是"可开工"的;不存在 id 的依赖永远无法被 claim。"""
+def test_g_team1_create_routes_unmet_deps_to_blocked() -> None:
+    """create 的守卫(v3):依赖存在但未就绪 → blocked 挂起,等扫描器放行;
+    不存在的 id 直接拒绝——那种任务永远无法被放行,且没有任何一步报错。"""
     board = _board_in("pending")
-    with pytest.raises(ValueError, match="t1"):
-        apply(board, "create", title="后续", deps=["t1"])
+    blocked = apply(board, "create", title="后续", deps=["t1"], caller=LEAD)
+    assert blocked.state == "blocked", "未就绪依赖 → blocked"
+    assert blocked.creator == LEAD, "creator 落板(cancel 守卫要用)"
     with pytest.raises(ValueError, match="t99"):
         apply(Board(), "create", title="悬空", deps=["t99"])
 
@@ -261,10 +298,12 @@ def test_g_team1_finish_fail_guard_caller_is_assignee() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_g_team7_state_names_exactly_four() -> None:
-    """状态名恰为 pending/running/success/fail 四值,不多不少。"""
-    assert set(STATES) == {"pending", "running", "success", "fail"}
-    assert len(STATES) == 4
+def test_g_team7_state_names_exactly_seven() -> None:
+    """状态名恰为七值(四活/等待 + 三终),不多不少。"""
+    assert set(STATES) == {
+        "pending", "running", "blocked", "success", "fail", "dead", "cancelled"
+    }
+    assert len(STATES) == 7
     # from_dict 对未知状态宁可崩不要错
     with pytest.raises(ValueError, match="状态"):
         TeamTask.from_dict({"id": "t1", "title": "x", "state": "claimed"})
@@ -278,22 +317,20 @@ def test_g_team7_state_names_exactly_four() -> None:
 async def test_concurrent_claims_exactly_one_wins(tmp_path: Path) -> None:
     """G-TEAM-2 的靶子:两个并发 claim 同一任务,恰一个成功。
 
-    主会话与子 agent 经 registry clone **共享同一个 TeamBoard 实例**,
-    因此共享同一把 store 实例锁——锁不共享,互斥就是名义上的。
+    Pull 模型(v3)下 claim 是引擎内部事件,经 **WorkerBoard 门面**走;
+    两个门面**共享同一个 BoardStore 实例**——锁不共享,互斥就是名义上的。
     """
-    tool = _tool()
-    await _create(tool, _ctx(tmp_path))
-    results = await asyncio.gather(
-        tool.run(TeamBoardParams(action="board", op="claim", id="t1"),
-                 _ctx(tmp_path, "agent-a")),
-        tool.run(TeamBoardParams(action="board", op="claim", id="t1"),
-                 _ctx(tmp_path, "agent-b")),
-    )
-    winners = [r for r in results if not r.is_error]
+    store = BoardStore(clock=_clock)
+    lead = LeadBoard(store, LEAD, tmp_path)
+    await lead.create("调查 X")
+    a = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    b = WorkerBoard(store, "agent-b", tmp_path, clock=lambda: 10.0)
+    claimed = await asyncio.gather(a.try_claim(), b.try_claim())
+    winners = [task for task in claimed if task is not None]
     assert len(winners) == 1, f"恰一个成功,实际 {len(winners)}"
-    data = _load_board(tmp_path)
-    assert data["tasks"][0]["assignee"] in ("agent-a", "agent-b")
-    assert data["tasks"][0]["state"] == "running"
+    assert winners[0].assignee in ("agent-a", "agent-b")
+    assert winners[0].state == "running"
+    assert winners[0].lease_deadline > 10.0, "claim 写 lease(Pull 模型安全网)"
 
 
 # ---------------------------------------------------------------------------
@@ -397,34 +434,39 @@ async def test_create_requires_title(tmp_path: Path) -> None:
 
 
 async def test_finish_on_pending_task_rejected(tmp_path: Path) -> None:
-    """create 后直接 finish 是非法迁移(迁移表没有 pending+finish 行)。"""
-    tool = _tool()
-    await _create(tool, _ctx(tmp_path))
+    """create 后直接 finish 是非法迁移(迁移表没有 pending+finish 行)。
+    finish 在 worker 面:构造 worker 工具走真实调用路径。"""
+    tool = _tool(role="worker")
+    await _create(_tool(), _ctx(tmp_path))
     result = await _board_op(tool, _ctx(tmp_path), op="finish", id="t1", result="结论")
     assert result.is_error is True
-    assert "claim" in _text(result), "报错要告诉模型正确的路径:先 claim"
+    assert "pending" in _text(result), "报错要携带当前状态:pending 无 finish 出边"
 
 
 async def test_finish_requires_result(tmp_path: Path) -> None:
-    tool = _tool()
-    ctx = _ctx(tmp_path)
-    await _create(tool, ctx)
-    await _board_op(tool, ctx, op="claim", id="t1")
-    result = await _board_op(tool, ctx, op="finish", id="t1", result="  ")
+    store = BoardStore(clock=_clock)
+    lead = LeadBoard(store, LEAD, tmp_path)
+    await lead.create("调查 X")
+    worker = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    await worker.try_claim()
+    tool = _tool(role="worker")
+    result = await _board_op(tool, _ctx(tmp_path), op="finish", id="t1", result="  ")
     assert result.is_error is True
 
 
 async def test_finish_and_fail_record_outcome(tmp_path: Path) -> None:
-    tool = _tool()
-    ctx = _ctx(tmp_path)
-    await _create(tool, ctx)
-    await _board_op(tool, ctx, op="claim", id="t1")
-    result = await _board_op(tool, ctx, op="finish", id="t1", result="结论 A")
+    store = BoardStore(clock=_clock)
+    lead = LeadBoard(store, LEAD, tmp_path)
+    worker = WorkerBoard(store, "sess-1", tmp_path, clock=lambda: 10.0)
+    tool = _tool(role="worker")
+    await lead.create("调查 X")
+    await worker.try_claim()
+    result = await _board_op(tool, _ctx(tmp_path), op="finish", id="t1", result="结论 A")
     assert result.is_error is False
     assert "[success]" in _text(result) and "结论 A" in _text(result)
-    await _create(tool, ctx, "第二条")
-    await _board_op(tool, ctx, op="claim", id="t2")
-    result = await _board_op(tool, ctx, op="fail", id="t2", result="走不通:缺依赖")
+    await lead.create("第二条")
+    await worker.try_claim()
+    result = await _board_op(tool, _ctx(tmp_path), op="fail", id="t2", result="走不通:缺依赖")
     assert result.is_error is False
     assert "[fail" in _text(result), "fail 是 4 字符状态名,渲染带填充也应可辨"
     data = _load_board(tmp_path)
@@ -434,25 +476,28 @@ async def test_finish_and_fail_record_outcome(tmp_path: Path) -> None:
 
 async def test_finish_on_finished_task_rejected(tmp_path: Path) -> None:
     """success 是吸收态,无出边:重复收尾报错。"""
-    tool = _tool()
-    ctx = _ctx(tmp_path)
-    await _create(tool, ctx)
-    await _board_op(tool, ctx, op="claim", id="t1")
-    await _board_op(tool, ctx, op="finish", id="t1", result="结论 A")
-    for op in ("finish", "fail", "claim"):
-        result = await _board_op(tool, ctx, op=op, id="t1", result="x")
+    store = BoardStore(clock=_clock)
+    lead = LeadBoard(store, LEAD, tmp_path)
+    worker = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    tool = _tool(role="worker")
+    await lead.create("调查 X")
+    await worker.try_claim()
+    await worker.finish("t1", "结论 A")
+    for op in ("finish", "fail"):
+        result = await _board_op(tool, _ctx(tmp_path), op=op, id="t1", result="x")
         assert result.is_error is True
 
 
 async def test_reclaim_returns_task_to_pending(tmp_path: Path) -> None:
     """lead 强制接管:running/fail → pending,清 assignee(/result),留 note。"""
-    tool = _tool()
-    worker = _ctx(tmp_path, "agent-a")
-    lead = _ctx(tmp_path, LEAD)
-    await _create(tool, lead)
-    await _board_op(tool, worker, op="claim", id="t1")
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    worker = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    tool = _tool(role="lead")
+    await lead_board.create("调查 X")
+    await worker.try_claim()
     result = await _board_op(
-        tool, lead, op="reclaim", id="t1", note="子任务超时,重派"
+        tool, _ctx(tmp_path, LEAD), op="reclaim", id="t1", note="子任务超时,重派"
     )
     assert result.is_error is False
     assert "[pending]" in _text(result)
@@ -460,20 +505,19 @@ async def test_reclaim_returns_task_to_pending(tmp_path: Path) -> None:
     assert data["tasks"][0]["state"] == "pending"
     assert data["tasks"][0]["assignee"] == ""
     assert data["tasks"][0]["note"] == "子任务超时,重派"
-    # 重派后可被再次认领
-    again = await _board_op(tool, worker, op="claim", id="t1")
-    assert again.is_error is False
+    # 重派后可被再次认领(引擎拉取)
+    again = await worker.try_claim()
+    assert again is not None and again.state == "running"
 
 
 async def test_reclaim_on_failed_task_clears_result(tmp_path: Path) -> None:
-    tool = _tool()
-    worker = _ctx(tmp_path, "agent-a")
-    lead = _ctx(tmp_path, LEAD)
-    await _create(tool, lead)
-    await _board_op(tool, worker, op="claim", id="t1")
-    await _board_op(tool, worker, op="fail", id="t1", result="做不成")
-    result = await _board_op(tool, lead, op="reclaim", id="t1", note="换个思路重试")
-    assert result.is_error is False
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    worker = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    await lead_board.create("调查 X")
+    await worker.try_claim()
+    await worker.fail("t1", "做不成")
+    await lead_board.reclaim("t1", "换个思路重试")
     data = _load_board(tmp_path)
     assert data["tasks"][0]["state"] == "pending"
     assert data["tasks"][0]["result"] == ""
@@ -481,35 +525,58 @@ async def test_reclaim_on_failed_task_clears_result(tmp_path: Path) -> None:
 
 
 async def test_reclaim_requires_note(tmp_path: Path) -> None:
-    tool = _tool()
-    worker = _ctx(tmp_path, "agent-a")
-    lead = _ctx(tmp_path, LEAD)
-    await _create(tool, lead)
-    await _board_op(tool, worker, op="claim", id="t1")
-    result = await _board_op(tool, lead, op="reclaim", id="t1", note="  ")
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    worker = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    await lead_board.create("调查 X")
+    await worker.try_claim()
+    tool = _tool(role="lead")
+    result = await _board_op(tool, _ctx(tmp_path, LEAD), op="reclaim", id="t1", note="  ")
     assert result.is_error is True, "无审计痕迹的强制接管不允许"
 
 
 async def test_non_assignee_finish_fail_rejected(tmp_path: Path) -> None:
-    """G-TEAM-5 的靶子:非 assignee 的 finish/fail 被拒——**含主 agent**。"""
-    tool = _tool()
-    worker = _ctx(tmp_path, "agent-a")
-    lead = _ctx(tmp_path, LEAD)
-    await _create(tool, lead)
-    await _board_op(tool, worker, op="claim", id="t1")
+    """G-TEAM-5 的靶子:非 assignee 的 finish/fail 被拒——双保险取证。
+    v3 角色分权:lead 面没有 finish/fail(角色过滤先拒);另一个 worker 面
+    调用会被 assignee 守卫拒(守卫是第二道防线,详规 §2)。"""
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    worker = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    await lead_board.create("调查 X")
+    await worker.try_claim()
+    lead_tool = _tool(role="lead")
     for op in ("finish", "fail"):
-        result = await _board_op(tool, lead, op=op, id="t1", result="我来收尾")
-        assert result.is_error is True, f"lead {op} 他人 running 任务必须被拒"
-    ok = await _board_op(tool, worker, op="finish", id="t1", result="正常收尾")
+        result = await _board_op(
+            lead_tool, _ctx(tmp_path, LEAD), op=op, id="t1", result="我来收尾"
+        )
+        assert result.is_error is True, f"lead {op} 在角色面就不存在"
+        assert "无" in _text(result), "拒绝理由要说清是角色分权"
+    other_worker = _tool(role="worker")
+    for op in ("finish", "fail"):
+        result = await _board_op(
+            other_worker, _ctx(tmp_path, "agent-b"), op=op, id="t1", result="抢功"
+        )
+        assert result.is_error is True, f"非 assignee 的 {op} 必须被守卫拒"
+        assert "agent-a" in _text(result), "拒绝理由点名真实 assignee"
+    ok = await _board_op(
+        _tool(role="worker"), _ctx(tmp_path, "agent-a"), op="finish", id="t1", result="正常收尾"
+    )
     assert ok.is_error is False
 
 
 async def test_non_assignee_cannot_claim_running_task(tmp_path: Path) -> None:
-    tool = _tool()
-    await _create(tool, _ctx(tmp_path, LEAD))
-    await _board_op(tool, _ctx(tmp_path, "agent-a"), op="claim", id="t1")
-    result = await _board_op(tool, _ctx(tmp_path, "agent-b"), op="claim", id="t1")
-    assert result.is_error is True
+    """已认领的任务对第二个 worker 不可见(try_claim 跳过),直接指定 claim 报错。"""
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    a = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
+    b = WorkerBoard(store, "agent-b", tmp_path, clock=lambda: 10.0)
+    await lead_board.create("调查 X")
+    claimed = await a.try_claim()
+    assert claimed is not None
+    with pytest.raises(ValueError, match="running"):
+        await b.try_claim_direct("t1")  # running 无 claim 出边:非法迁移先拦
+    # try_claim(非 direct)对 agent-b 返回 None:t1 已被认领,不是 pending
+    assert await b.try_claim() is None
 
 
 def _seed_board(tmp_path: Path, tasks: list[TeamTask], *, next_id: int | None = None) -> Path:
@@ -525,30 +592,33 @@ def _seed_board(tmp_path: Path, tasks: list[TeamTask], *, next_id: int | None = 
 
 
 async def test_claim_blocked_until_deps_success(tmp_path: Path) -> None:
-    """G-TEAM-5 的靶子:deps 未全 success 时 claim 被拒;全 success 后放行。"""
-    tool = _tool()
-    ctx = _ctx(tmp_path, "agent-a")
-    _seed_board(
-        tmp_path,
-        [
-            TeamTask(id="t1", title="前置任务", state="pending"),
-            TeamTask(id="t2", title="后续任务", deps=["t1"]),
-        ],
-    )
-    blocked = await _board_op(tool, ctx, op="claim", id="t2")
-    assert blocked.is_error is True
-    assert "t1" in _text(blocked), "拒绝理由要点名未完成的依赖"
-    # 依赖 success 后放行
-    await _board_op(tool, ctx, op="claim", id="t1")
-    await _board_op(tool, ctx, op="finish", id="t1", result="前置完成")
-    allowed = await _board_op(tool, ctx, op="claim", id="t2")
-    assert allowed.is_error is False
+    """G-TEAM-5 的靶子(v3):deps 未就绪 → create 落 blocked;dep_succeeded
+    放行后才能认领。依赖 id 不存在仍然拒绝。"""
+    from sigma.team.scanner import dep_tick
+
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    worker = WorkerBoard(store, "sess-1", tmp_path, clock=lambda: 10.0)
+    await lead_board.create("前置任务")  # t1 pending
+    await lead_board.create("后续任务", deps=["t1"])  # t1 非 success → t2 blocked
+    board = store.load(tmp_path)
+    assert board is not None and board.find("t2").state == "blocked"
+    # 引擎认领 t1 并完成 → dep_tick 放行 t2
+    claimed = await worker.try_claim_direct("t1")
+    assert claimed is not None and claimed.state == "running"
+    await worker.finish("t1", "前置完成")
+    async with store.transaction(tmp_path) as board_obj:
+        dep_tick(board_obj)
+    board = store.load(tmp_path)
+    assert board is not None and board.find("t2").state == "pending"
+    allowed = await worker.try_claim()
+    assert allowed is not None and allowed.id == "t2"
 
 
 async def test_claim_blocked_by_failed_dep(tmp_path: Path) -> None:
-    """fail 的依赖不算 success:下游任务不能开工(纯状态机侧另有参数化覆盖)。"""
-    tool = _tool()
-    ctx = _ctx(tmp_path, "agent-a")
+    """fail 的依赖不算 success:下游不能认领(纯状态机侧另有参数化覆盖)。"""
+    store = BoardStore(clock=_clock)
+    worker = WorkerBoard(store, "agent-a", tmp_path, clock=lambda: 10.0)
     _seed_board(
         tmp_path,
         [
@@ -556,8 +626,8 @@ async def test_claim_blocked_by_failed_dep(tmp_path: Path) -> None:
             TeamTask(id="t2", title="后续任务", deps=["t1"]),
         ],
     )
-    result = await _board_op(tool, ctx, op="claim", id="t2")
-    assert result.is_error is True
+    with pytest.raises(ValueError, match="t1"):
+        await worker.try_claim_direct("t2")
 
 
 async def test_create_with_unknown_dep_rejected(tmp_path: Path) -> None:
@@ -565,14 +635,10 @@ async def test_create_with_unknown_dep_rejected(tmp_path: Path) -> None:
     assert result.is_error is True
 
 
-async def test_claim_unknown_task_rejected(tmp_path: Path) -> None:
-    result = await _board_op(_tool(), _ctx(tmp_path), op="claim", id="t99")
-    assert result.is_error is True
-
-
-async def test_claim_requires_id(tmp_path: Path) -> None:
-    result = await _board_op(_tool(), _ctx(tmp_path), op="claim")
-    assert result.is_error is True
+async def test_try_claim_empty_board_returns_none(tmp_path: Path) -> None:
+    """空板 try_claim 返回 None(引擎据此休眠),不抛错。"""
+    worker = WorkerBoard(BoardStore(clock=_clock), "agent-a", tmp_path, clock=lambda: 10.0)
+    assert await worker.try_claim() is None
 
 
 async def test_list_empty_board_is_info_not_error(tmp_path: Path) -> None:
@@ -610,20 +676,19 @@ async def test_board_write_uses_tmp_and_replace(
 
 async def test_atomic_write_survives_concurrent_ops(tmp_path: Path) -> None:
     """G-TEAM-7 的行为面:进程内并发写板,文件始终是完整合法的 JSON,
-    id 不重不漏,无交错损坏。"""
-    tool = _tool()
-    ctxs = [_ctx(tmp_path, f"agent-{i}") for i in range(6)]
-    created = await asyncio.gather(
-        *[_create(tool, ctx, f"任务 {i}") for i, ctx in enumerate(ctxs)]
-    )
-    assert all(not r.is_error for r in created)
+    id 不重不漏,无交错损坏。并发 claim 走共享 store 的 WorkerBoard 门面。"""
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    for i in range(6):
+        await lead_board.create(f"任务 {i}")
+    workers = [
+        WorkerBoard(store, f"agent-{i}", tmp_path, clock=lambda: 10.0)
+        for i in range(6)
+    ]
     claimed = await asyncio.gather(
-        *[
-            _board_op(tool, ctx, op="claim", id=f"t{i + 1}")
-            for i, ctx in enumerate(ctxs)
-        ]
+        *[worker.try_claim_direct(f"t{i + 1}") for i, worker in enumerate(workers)]
     )
-    assert all(not r.is_error for r in claimed)
+    assert all(task is not None for task in claimed)
     data = _load_board(tmp_path)
     ids = [t["id"] for t in data["tasks"]]
     assert ids == [f"t{i + 1}" for i in range(6)], "并发 create 的 id 必须唯一且有序"
@@ -639,12 +704,13 @@ async def test_atomic_write_survives_concurrent_ops(tmp_path: Path) -> None:
 
 async def test_failed_guard_leaves_board_untouched(tmp_path: Path) -> None:
     """守卫拒绝 = 板上分毫未动:事务在异常时不落盘。"""
-    tool = _tool()
-    ctx = _ctx(tmp_path)
-    await _create(tool, ctx, "只有一条")
+    store = BoardStore(clock=_clock)
+    lead_board = LeadBoard(store, LEAD, tmp_path)
+    await lead_board.create("只有一条")
     before = _load_board(tmp_path)
-    result = await _board_op(tool, ctx, op="claim", id="t99")
-    assert result.is_error is True
+    worker = WorkerBoard(store, "sess-1", tmp_path, clock=lambda: 10.0)
+    with pytest.raises(ValueError, match="t99"):
+        await worker.try_claim_direct("t99")
     assert _load_board(tmp_path) == before
 
 
@@ -871,7 +937,7 @@ def test_g_team6_measured_backfilled_and_within_cap() -> None:
     key = "工具 schema(可选:联网 2+task+team_board)"
     assert key in MEASURED, "实测数字必须进 resident_caps.MEASURED"
     assert MEASURED[key] == total, "MEASURED 必须与实测一致(表即常量,漂移当场红)"
-    cap_key = "工具 schema(可选:联网+task+team_board)"
+    cap_key = "工具 schema(可选:联网+task+team+multi_agent)"
     assert cap_key in CAPS
     assert total <= CAPS[cap_key], (
         f"可选栏实测 {total} 超过 cap {CAPS[cap_key]}——按消费纪律停下上报,"
@@ -880,8 +946,8 @@ def test_g_team6_measured_backfilled_and_within_cap() -> None:
 
 
 def test_g885_caps_sum_still_equals_budget() -> None:
-    """分项和 == 5500:team_board 落既有分项,总额分毫不动。"""
-    assert caps_sum() == RESIDENT_BUDGET_TOKENS == 5500
+    """分项和 == 总额(D4 v3:5750,可选栏 1500——待星辰追认)。"""
+    assert caps_sum() == RESIDENT_BUDGET_TOKENS == 5750
 
 
 # ---------------------------------------------------------------------------

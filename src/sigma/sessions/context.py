@@ -60,8 +60,13 @@ if TYPE_CHECKING:
     from sigma.agent.messages import AgentMessage
     from sigma.providers.base import BaseProvider, CancelToken, SamplingParams
 
-DEFAULT_RESIDENT_BUDGET_TOKENS = 5500
-"""常驻区 token 上限（D4 v2 / 架构 5.1 节，2026-09-28 修订）。
+DEFAULT_RESIDENT_BUDGET_TOKENS = 5750
+"""常驻区 token 上限(D4 v3 / 架构 5.1 节,2026-09-30 团队任务入场修订)。
+
+**修订记录(D4 v3,2026-09-30)**:可选栏实测 1252 超 1250 达 2,multi_agent
+引擎入场在即——按消费纪律先报数字:可选栏 1250→1500,总额 5500→5750,
+**待星辰追认**(回退点:resident_caps 两处 + 本处)。
+D4 v2 记录:3500 是 2026-09-20 零实测时拍的初值(5.1.0 重排时实测只有 2374)。
 
 **修订记录（D4 v2，星辰拍板"常驻区太小，释放扩大给后续功能休闲空间"）**：
 3500 是 2026-09-20 零实测时拍的初值（5.1.0 重排时实测只有 2374）。

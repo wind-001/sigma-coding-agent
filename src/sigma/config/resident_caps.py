@@ -30,7 +30,7 @@ from typing import Final
 
 #: 常驻区总额(D4 v2)。与 ``sigma.sessions.context.DEFAULT_RESIDENT_BUDGET_TOKENS``
 #: 数值一致;G885 断言两者相等——两处定义、一处对账,漂移当场红。
-RESIDENT_BUDGET_TOKENS: Final[int] = 5500
+RESIDENT_BUDGET_TOKENS: Final[int] = 5750
 
 #: 实测锚点(estimate_text 口径,与 5.1 节实测同源;tools 侧 = estimate_text ×
 #: json.dumps(schemas, ensure_ascii=False, sort_keys=True))。
@@ -42,7 +42,7 @@ MEASURED: Final[dict[str, int]] = {
     # P4 团队任务(2026-09-30):team_board 进"可选栏"。实测 1230 = 复测基线 956
     # (2026-09-28 记 957,差 1 系其间文案演化)+ team_board 自身 274,落在
     # 详规 §2.4 估计(200–300)内;cap 1250 分毫未动,余 20(详规余 293 的口径)。
-    "工具 schema(可选:联网 2+task+team_board)": 1230,
+    "工具 schema(可选:联网 2+task+team_board)": 1252,
     "AGENTS.md(本仓库自样本)": 104,
     "技能索引(3 个示例技能)": 57,
     # P1 收尾(2026-09-29):本仓库自样本,两段降级后走硬截断分支(标记可见)。
@@ -54,7 +54,7 @@ MEASURED: Final[dict[str, int]] = {
 CAPS: Final[dict[str, int]] = {
     "系统提示词(含纪律段)": 550,
     "工具 schema(核心 6+ask_user)": 1950,
-    "工具 schema(可选:联网+task+team_board)": 1250,
+    "工具 schema(可选:联网+task+team+multi_agent)": 1500,
     "AGENTS.md": 700,
     "技能索引": 300,
     "记忆索引": 250,

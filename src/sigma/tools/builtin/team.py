@@ -36,7 +36,15 @@ from sigma.team.store import BOARD_RELATIVE, BoardStore
 from sigma.providers.messages import TextBlock
 
 #: board 的子操作名 = 状态机事件名(详规 §2.1)——一套词汇,不做映射层。
-BoardOp = Literal["create", "list", "claim", "finish", "fail", "reclaim"]
+BoardOp = Literal[
+    "create", "list", "finish", "fail", "reclaim", "abandon", "cancel"
+]
+
+#: 角色分权(详规 §2):每个角色能用的 op 集——**越权 op 在工具面上不存在**,
+#: 而不是运行时报错。claim/heartbeat 是引擎内部事件(worker 循环与自动续租),
+#: 不进任何 LLM 工具面。
+LEAD_OPS: frozenset[str] = frozenset({"create", "list", "reclaim", "abandon", "cancel"})
+WORKER_OPS: frozenset[str] = frozenset({"list", "finish", "fail"})
 
 
 class TeamBoardParams(BaseModel):
@@ -93,7 +101,7 @@ def _check_required(params: TeamBoardParams) -> ToolResult | None:
         return _reject(
             f"{params.op} 需要 result(结论或失败原因)。", {"missing": "result"}
         )
-    if params.op == "reclaim" and not params.note.strip():
+    if params.op in ("reclaim", "abandon") and not params.note.strip():
         return _reject(
             "reclaim 需要 note(接管原因,审计痕迹)。", {"missing": "note"}
         )
@@ -104,10 +112,16 @@ class TeamBoard(BaseTool):
     """团队任务板 + 信箱。写工具(改 ``.sigma/team/``),批次中严格顺序执行。"""
 
     name = "team_board"
-    description = (
-        "团队任务板+信箱。board:create 建任务;claim 认领(deps 全 success);"
-        "finish/fail 收尾;reclaim 重派(仅 lead);list 查看;"
-        "pending→running→success|fail。send 给 to 发信;inbox 收信(读后清)。"
+    _DESC_LEAD = (
+        "团队任务板(lead 面)。board:create 建任务(deps 未就绪自动 blocked);"
+        "reclaim 重派(清 assignee 回 pending);abandon 终结(attempts 上限后);"
+        "cancel 撤销;list 查看。send 给 to 发信;inbox 收信(读后清)。"
+        "pending→running→success|fail,dead/cancelled 终态。"
+    )
+    _DESC_WORKER = (
+        "团队任务板(worker 面)。你被引擎派到哪个任务,任务描述里已写明 id;"
+        "board:finish 交结论 / fail 主动认输(装死要等 lease 超时);list 看板;"
+        "认领由引擎负责。send 给 to 发信;inbox 收信(读后清)。"
     )
     read_only = False
 
@@ -123,13 +137,20 @@ class TeamBoard(BaseTool):
         return _strip_schema_noise(schema)
 
     def __init__(
-        self, lead_session_id: str, *, clock: Callable[[], str] | None = None
+        self,
+        lead_session_id: str,
+        *,
+        role: Literal["lead", "worker"] = "lead",
+        clock: Callable[[], str] | None = None,
     ) -> None:
         if not lead_session_id:
             raise ValueError(
                 "TeamBoard 需要 lead_session_id(主会话 id),'lead' 别名靠它解析。"
             )
         self._lead = lead_session_id
+        self._role: Literal["lead", "worker"] = role
+        self._allowed = LEAD_OPS if role == "lead" else WORKER_OPS
+        self.description = self._DESC_LEAD if role == "lead" else self._DESC_WORKER
         self._store = BoardStore(clock=clock)
         self._mailbox = Mailbox(clock=clock)
 
@@ -160,6 +181,13 @@ class TeamBoard(BaseTool):
     async def _board(self, params: TeamBoardParams, ctx: ToolContext) -> ToolResult:
         if params.op == "list":
             return self._list(ctx)
+        if params.op not in self._allowed:
+            return _reject(
+                f"当前角色是 {self._role},无 {params.op} 操作"
+                f"(合法:{'/'.join(sorted(self._allowed))})。"
+                "角色由引擎按会话分配,不是调用方可选的。",
+                {"role": self._role, "op": params.op, "forbidden": True},
+            )
         rejection = _check_required(params)
         if rejection is not None:
             return rejection
