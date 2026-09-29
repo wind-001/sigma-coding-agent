@@ -49,11 +49,11 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import httpx
 from dataclasses import dataclass
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    import httpx
     from collections.abc import Callable
 
 #: 快照多久算过期。300s 意味着"最多多花 300 秒的信息"，不是安全阈值。
@@ -275,6 +275,7 @@ class CreditLedger(ABC):
         失败不阻断：记 last_error、把 synced_at 推到当前（避免每次都打），
         然后沿用本地计数继续判定。
         """
+        import httpx  # noqa: PLC0415 — 懒加载:注入 transport 的测试路径不付导入钱
         try:
             async with httpx.AsyncClient(
                 transport=self._transport,

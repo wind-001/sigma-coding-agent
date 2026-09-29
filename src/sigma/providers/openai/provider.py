@@ -38,7 +38,8 @@ import json
 import time
 from typing import TYPE_CHECKING, Any
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
 from sigma.providers.base import BaseProvider
 from sigma.providers.errors import ErrorCode, ProviderErrorPayload
@@ -157,7 +158,11 @@ class OpenAICompatProvider(BaseProvider):
         self._api_key = api_key
         self._provider_name = provider_name
         self._owns_client = client is None
-        self._client = client if client is not None else httpx.AsyncClient()
+        if client is None:
+            import httpx  # noqa: PLC0415 — 懒加载:注入 client 的测试/回放路径不付导入钱
+
+            client = httpx.AsyncClient()
+        self._client = client
         self._idle_timeout_s = stream_idle_timeout_s
         self._total_timeout_s = stream_total_timeout_s
         self._task_total_timeout_s = task_total_timeout_s
@@ -221,6 +226,8 @@ class OpenAICompatProvider(BaseProvider):
             httpx 的读超时只需要"存在且有界"，取总时长闸的值保证它
             永远不会抢在空闲闸之前触发。
         """
+        import httpx  # noqa: PLC0415 — 懒加载(见 __init__)
+
         if timeout_s is not None:
             # 调用方给了整体上限：connect 取它与建连上限的较小值，
             # 保证任何阶段都不超过调用方的预算。
@@ -252,6 +259,8 @@ class OpenAICompatProvider(BaseProvider):
         而 ``aiter_lines`` 在行级别已经处理了拼接。
         这里额外防御的是"一行里 data 是半截 JSON"的违规实现。
         """
+        import httpx  # noqa: PLC0415 — 懒加载:注入 MockTransport 的测试/回放路径不付导入钱
+
         body = self._build_body(
             messages, tools, model=model, sampling=sampling, options=options
         )

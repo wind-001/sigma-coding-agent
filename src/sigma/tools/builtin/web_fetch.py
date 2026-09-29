@@ -33,7 +33,6 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-import httpx
 from pydantic import BaseModel, Field
 
 from sigma.tools.base import BaseTool
@@ -59,6 +58,7 @@ from sigma.tools.builtin.source_policy import (
 from sigma.tools.truncate import truncate_output
 
 if TYPE_CHECKING:
+    import httpx
     from collections.abc import Callable
 
 #: **政策指定值**：单次最多抓 2 条 URL。写成常量，不散落在代码里。
@@ -297,6 +297,10 @@ class WebFetchTool(BaseTool):
             # 又保证精读到的不是一周前的旧页面（时效性是这个批次的主题）。
             "maxAge": MAX_CACHE_AGE_MS,
         }
+        # httpx 懒加载:启动大头之一(实测 ~106ms),而注入 MockTransport 的
+        # 测试/回放路径根本不走到这里——离线全套测试免付这笔导入钱。
+        import httpx  # noqa: PLC0415
+
         try:
             async with httpx.AsyncClient(
                 transport=self._transport,

@@ -34,7 +34,6 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-import httpx
 from pydantic import BaseModel, Field
 
 from sigma.tools.base import BaseTool
@@ -52,6 +51,7 @@ from sigma.tools.quota.tavily import (
 from sigma.tools.truncate import truncate_output
 
 if TYPE_CHECKING:
+    import httpx
     from collections.abc import Callable
 
 
@@ -221,6 +221,9 @@ class WebSearchTool(BaseTool):
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        # httpx 懒加载(同 web_fetch):离线测试/回放路径不付导入钱
+        import httpx  # noqa: PLC0415
+
         try:
             async with httpx.AsyncClient(
                 transport=self._transport,

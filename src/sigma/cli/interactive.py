@@ -28,7 +28,6 @@ import shutil
 import sys
 import time
 from collections.abc import Awaitable, Callable
-from prompt_toolkit.input import create_input
 from typing import Any
 
 #: 选择器选项上 movement 键的语义。Tab 以 ControlI 形态出现(同一字节)。
@@ -79,6 +78,13 @@ def _draw_options(
     sys.stdout.flush()
 
 
+def _default_input_factory() -> object:
+    """prompt_toolkit 输入工厂的懒加载兜底(启动路径不付 prompt_toolkit 的导入钱)。"""
+    from prompt_toolkit.input import create_input  # noqa: PLC0415
+
+    return create_input()
+
+
 def _select_sync(
     title_lines: list[str],
     options: list[str],
@@ -89,7 +95,10 @@ def _select_sync(
     """阻塞版按键循环(prompt_toolkit 低层 API)。由 :func:`select_option` 放线程里跑。"""
     from prompt_toolkit.keys import Keys
 
-    # create_input 已在模块级 import;这里不需要(也不该)再 import 一份。
+    # prompt_toolkit 是启动耗时大头(实测 ~117ms,importtime),且只有
+    # 按键循环真正跑起来才需要——函数内导入,一次性模式与全部离线测试免付。
+    from prompt_toolkit.input import create_input  # noqa: PLC0415
+
     inp = input_factory() if input_factory is not None else create_input()
     index = recommended_index if recommended_index is not None else 0
     if not (0 <= index < len(options)):
@@ -184,7 +193,7 @@ async def select_option(
         title_lines,
         options,
         recommended_index=recommended_index,
-        input_factory=input_factory if input_factory is not None else create_input,
+        input_factory=input_factory or _default_input_factory,
     )
 
 
