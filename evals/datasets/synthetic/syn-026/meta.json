@@ -1,0 +1,40 @@
+{
+  "id": "syn-026",
+  "kind": "synthetic",
+  "title": "编辑距离的四处缺陷（边界初始化 / 相等不免费 / 回溯并列序 / 序列未反转）",
+  "description": "工作区里的 editdist_lite 做列文斯登编辑距离（distance）与最优操作序列回溯（operations）：插入/删除/替换每步代价 1；回溯规则在 docstring 里写死以保证结果唯一——两个字符相等先 keep，否则取 dp 值最小的前驱、并列按 replace → delete → insert 取先者；keep/delete 记 a 的字符，insert/replace 记 b 的字符（替换后的新字符）；结果按执行顺序返回。它现在有四处 bug：\n\n1. DP 边界初始化：第一行、第一列全是 0——任何涉及增删的配对距离都算错，``distance('abc', '')`` 得 0 而不是 3；\n2. 转移没有「字符相等 → 免费 keep」的分支，相同字符对也被收 1 步——连 ``distance('abc', 'abc')`` 都等于 3；\n3. 回溯并列优先级表写成 insert → delete → replace，与 docstring 承诺的 replace → delete → insert 相反——并列路径上回溯出另一条同样最优、但不符合约定的序列（``abc`` → ``acd`` 应走两次 replace）；\n4. 序列未反转：回溯从终点往起点走，返回前忘了把步骤反转——operations 的输出整个倒序（operations 建立在 DP 之上，1、2 不修，回溯用例怎么改都过不了；修好 DP 后 3、4 仍然挂着，要一起修）。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：operations 的用例同时踩 1/2 与 3/4，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import editdist_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "14 failed, 2 passed in 0.18s",
+    "failed_tests": [
+      "tests/test_editdist_lite.py::test_distance_empty_target",
+      "tests/test_editdist_lite.py::test_distance_empty_source",
+      "tests/test_editdist_lite.py::test_distance_equal_strings",
+      "tests/test_editdist_lite.py::test_distance_insertion",
+      "tests/test_editdist_lite.py::test_distance_deletion",
+      "tests/test_editdist_lite.py::test_distance_kitten_sitting",
+      "tests/test_editdist_lite.py::test_distance_flaw_lawn",
+      "tests/test_editdist_lite.py::test_operations_substitution",
+      "tests/test_editdist_lite.py::test_operations_insert",
+      "tests/test_editdist_lite.py::test_operations_delete",
+      "tests/test_editdist_lite.py::test_operations_insert_from_empty_source",
+      "tests/test_editdist_lite.py::test_operations_delete_to_empty_target",
+      "tests/test_editdist_lite.py::test_operations_tie_prefers_replace",
+      "tests/test_editdist_lite.py::test_operations_multiple_inserts_in_order"
+    ],
+    "recorded_at": "2026-09-29T23:46:25.766",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 16 passed。"
+  }
+}

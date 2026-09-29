@@ -1,0 +1,39 @@
+{
+  "id": "syn-022",
+  "kind": "synthetic",
+  "title": "整数表达式求值的四处缺陷（括号残留 / 优先级同档 / 左结合破坏 / 操作数颠倒）",
+  "description": "工作区里的 expr_lite 是一个简易整数表达式求值器（tokenize 切记号 / to_rpn 调度场转后缀 / evaluate_rpn 求值），四则运算 + 括号，``*`` ``/`` 优先级高于 ``+`` ``-``，同级左结合，除法向零截断，规则以模块 docstring 为准。它现在有四处 bug：\n\n1. 括号：``)`` 分支把栈弹到 ``(`` 就停了，忘了把 ``(`` 本身从栈里丢掉——左括号混进后缀序列，求值时抛「非法记号」，所有带括号的用例先炸在这一处；\n2. 优先级表：``*`` ``/`` 与 ``+`` ``-`` 被写成了同一级——``2*3+4`` 会被算成 ``2*(3+4)`` = 14；\n3. 结合性：弹栈条件写成「严格高于」而不是「不低于」——同级左结合被破坏，``8-3-2`` 会被组装成 ``8-(3-2)`` 的形状（2 与 3 互相掩护：``2+3*4`` 在两者都坏时反而碰巧组装出正确后缀，先修好一个另一个才暴露）；\n4. 求值：先弹出的其实是右操作数，却被当成左操作数参与运算——减法与除法的操作数顺序反了，``9-2`` 得 -7、``9/2`` 得 0；``(2-9)/2`` 这条要 1 和 4 都修好才会绿。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：带括号的用例同时踩 1 与 4，``100-30-20`` 同时踩 3 与 4，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import expr_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "13 failed, 6 passed in 0.19s",
+    "failed_tests": [
+      "tests/test_expr_lite.py::test_to_rpn_precedence",
+      "tests/test_expr_lite.py::test_to_rpn_left_assoc",
+      "tests/test_expr_lite.py::test_to_rpn_parens",
+      "tests/test_expr_lite.py::test_to_rpn_mixed",
+      "tests/test_expr_lite.py::test_evaluate_subtraction_order",
+      "tests/test_expr_lite.py::test_evaluate_division_truncates",
+      "tests/test_expr_lite.py::test_evaluate_division_toward_zero",
+      "tests/test_expr_lite.py::test_evaluate_precedence",
+      "tests/test_expr_lite.py::test_evaluate_left_assoc",
+      "tests/test_expr_lite.py::test_evaluate_parens",
+      "tests/test_expr_lite.py::test_evaluate_nested_parens",
+      "tests/test_expr_lite.py::test_evaluate_complex",
+      "tests/test_expr_lite.py::test_evaluate_div_by_zero_raises"
+    ],
+    "recorded_at": "2026-09-29T23:46:22.497",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 19 passed。"
+  }
+}

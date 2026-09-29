@@ -1,0 +1,40 @@
+{
+  "id": "syn-025",
+  "kind": "synthetic",
+  "title": "罗马数字互转的四处缺陷（减写缺失 / 逐位累加 / 校验缺失 / 上界漏查）",
+  "description": "工作区里的 roman_lite 做罗马数字与整数的互转（to_roman / from_roman，1..3999，标准减写法）：to_roman 必须产出规范减写（只用 ``M CM D CD C XC L XL X IX V IV I`` 组合），from_roman 要解析减写并做结构校验——表外字符、V/L/D 重复、I/X/C/M 连写超过三个、IL/VX 这类非法减对、空串都要抛 ValueError，规则以模块 docstring 为准。它现在有四处 bug：\n\n1. 编码表缺减写积木：表里只剩纯加写（1000/500/100/50/10/5/1）——``to_roman(4)`` 出 ``IIII``，``to_roman(1994)`` 出 ``MDCCCCLXXXXIIII``；\n2. 解析没有减写：from_roman 逐字符累加——``IV`` 读成 6，``MCMXCIV`` 读成 2216；\n3. 结构校验缺失：_validate 定义了但 from_roman 忘了调用——``IIII`` ``VV`` ``IL`` ``VX`` ``CMM`` 和空串全被放行，表外字符更是直接 KeyError 而不是 ValueError（非法形式的用例要 2、3 一起修才绿）；\n4. 上界漏查：to_roman 只查了下界——``to_roman(4000)`` 不抛错，闷头吐出 ``MMMM``。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：非法形式的用例同时踩 2 与 3，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import roman_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "14 failed, 4 passed in 0.17s",
+    "failed_tests": [
+      "tests/test_roman_lite.py::test_to_roman_subtractive_units",
+      "tests/test_roman_lite.py::test_to_roman_subtractive_tens",
+      "tests/test_roman_lite.py::test_to_roman_1994",
+      "tests/test_roman_lite.py::test_to_roman_max",
+      "tests/test_roman_lite.py::test_to_roman_above_max_raises",
+      "tests/test_roman_lite.py::test_from_roman_subtractive_units",
+      "tests/test_roman_lite.py::test_from_roman_subtractive_mixed",
+      "tests/test_roman_lite.py::test_from_roman_max",
+      "tests/test_roman_lite.py::test_from_roman_rejects_unknown_char",
+      "tests/test_roman_lite.py::test_from_roman_rejects_over_repeat",
+      "tests/test_roman_lite.py::test_from_roman_rejects_repeated_five",
+      "tests/test_roman_lite.py::test_from_roman_rejects_illegal_pair",
+      "tests/test_roman_lite.py::test_from_roman_rejects_misplaced_subtrahend",
+      "tests/test_roman_lite.py::test_from_roman_rejects_empty"
+    ],
+    "recorded_at": "2026-09-29T23:46:24.924",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 18 passed。"
+  }
+}

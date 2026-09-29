@@ -1,0 +1,33 @@
+{
+  "id": "syn-024",
+  "kind": "synthetic",
+  "title": "命令行参数解析的四处缺陷（组合开关未拆 / -- 终止符失效 / = 值截断 / 缺值静默）",
+  "description": "工作区里的 argv_lite 是一个迷你命令行参数解析器，按模块 docstring 约定的界面解析 argv：开关 ``-v``/``--verbose``、``-n``/``--dry-run``（短开关可组合，组合串里只允许开关字符）；值选项 ``-o``/``--output``、``-j``/``--jobs``（值是紧随的下一个参数，即使它以 ``-`` 开头；``--output=x`` 的 ``=`` 写法只支持长选项，``=`` 之后原样作为值）；``--`` 之后一律是位置参数；单独的 ``-`` 也是位置参数；结果里的选项名一律用长名。它现在有四处 bug：\n\n1. 组合开关：整个组合串被当成**一个**开关名去查表——``-vn`` 直接抛 UnknownOptionError，根本没按字符拆开；\n2. ``--`` 终止符：它的特判写在了长选项分支的**后面**，永远走不到——``--`` 被当成名为空串的长选项抛 UnknownOptionError，「之后一律是位置参数」更是无从谈起（带 ``--`` 的用例先炸在抛错这一步）；\n3. ``=`` 值截断：长选项的附着值用 ``split('=')`` 取第二段——值本身再含 ``=`` 时被截断，``--output=a=b.bin`` 只拿到 ``a``；\n4. 缺值静默：值选项在末尾没有下一个参数时，把 ``None`` 塞进结果而不是抛 MissingValueError——短、长两个分支都错。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：带 ``--`` 的用例修好 2 之前都会先撞上抛错，而 ``-o`` 会把 ``--`` 当值吞掉（值是紧随参数），改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import argv_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "7 failed, 14 passed in 0.16s",
+    "failed_tests": [
+      "tests/test_argv_lite.py::test_combined_short_flags",
+      "tests/test_argv_lite.py::test_combined_short_flags_dedupe",
+      "tests/test_argv_lite.py::test_long_value_with_equals_in_value",
+      "tests/test_argv_lite.py::test_missing_value_short_raises",
+      "tests/test_argv_lite.py::test_missing_value_long_raises",
+      "tests/test_argv_lite.py::test_double_dash_stops_options",
+      "tests/test_argv_lite.py::test_double_dash_hides_value_option"
+    ],
+    "recorded_at": "2026-09-29T23:46:24.116",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 21 passed。"
+  }
+}

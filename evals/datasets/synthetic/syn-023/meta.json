@@ -1,0 +1,35 @@
+{
+  "id": "syn-023",
+  "kind": "synthetic",
+  "title": "路径规范化的四处缺陷（斜杠折叠 / 越界 .. 丢失 / join 缺规范化 / 段前缀误判）",
+  "description": "工作区里的 pathlite 是一个 POSIX 风格路径的字符串规范化工具（normalize / join / relative_to / is_under），纯字符串处理、不碰文件系统，规则以模块 docstring 为准。它现在有四处 bug：\n\n1. 斜杠折叠：切分后只丢 ``.`` 段，空段没有过滤——``a//b`` 折不动、结尾的 ``/`` 去不掉，连 ``//`` 都回不去 ``/``；\n2. 越界 ``..``：出栈只看栈非空，不看出栈的是不是 ``..``、也不分绝对相对——相对路径开头的 ``..`` 被直接丢掉（``../a`` 变成 ``a``）；绝对路径到根后丢弃的行为反而蒙对了；\n3. join：拼完没有走 normalize——``join('a//b')`` 原样返回、``join('a', '..', 'b')`` 返回 ``a/../b``（这条被 1 挡着：就算先给 join 补上 normalize 调用，也要等 1 修好它才绿）；\n4. 段前缀误判：relative_to / is_under 用字符串 ``startswith`` 判前缀——``/a/bc`` 被误判成在 ``/a/b`` 之下，``is_under('/a', '/ab')`` 返回 True（必须按**段**比较）。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：join 的用例同时踩 3 与 1，relative_to 与 is_under 建立在 normalize 之上，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import pathlite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "9 failed, 14 passed in 0.17s",
+    "failed_tests": [
+      "tests/test_pathlite.py::test_normalize_collapses_slashes",
+      "tests/test_pathlite.py::test_normalize_trailing_slash",
+      "tests/test_pathlite.py::test_normalize_parent_overflow_kept",
+      "tests/test_pathlite.py::test_normalize_parent_overflow_chain",
+      "tests/test_pathlite.py::test_normalize_root",
+      "tests/test_pathlite.py::test_join_normalizes",
+      "tests/test_pathlite.py::test_join_parent",
+      "tests/test_pathlite.py::test_relative_to_rejects_sibling_prefix",
+      "tests/test_pathlite.py::test_is_under_false"
+    ],
+    "recorded_at": "2026-09-29T23:46:23.349",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 23 passed。"
+  }
+}
