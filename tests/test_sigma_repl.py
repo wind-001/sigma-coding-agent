@@ -21,15 +21,19 @@ from typing import Any
 
 import pytest
 
-from sigma.cli import SessionBinding, SessionManager, build_parser
-from sigma.repl import run_repl
+from sigma.cli.main import (
+    SessionBinding,
+    SessionManager,
+    build_parser,
+)
+from sigma.cli.repl import run_repl
 from sigma.sdk import InteractiveSession
-from sigma_agent.agent_messages import ToolResultAgentMessage
-from sigma_agent.registry import ToolRegistry
-from sigma_ai.fake import FakeProvider
-from sigma_session.sessions import SESSION_SUFFIX
-from sigma_session.store import JsonlStore
-from sigma_session.tree import SessionTree
+from sigma.agent.messages import ToolResultAgentMessage
+from sigma.tools.registry import ToolRegistry
+from sigma.providers.fake import FakeProvider
+from sigma.sessions.sessions import SESSION_SUFFIX
+from sigma.sessions.store import JsonlStore
+from sigma.sessions.tree import SessionTree
 
 
 def _read_call(path: str = "a.txt") -> list[dict[str, Any]]:
@@ -433,7 +437,7 @@ async def test_help_lists_all_commands(
     这条防的是"帮助里的清单与 ``COMMANDS`` 表漂移"——那份清单一旦过期，
     用户按它敲命令会得到"未知命令"，然后他就不再相信任何文档了。
     """
-    from sigma.repl import COMMANDS
+    from sigma.cli.repl import COMMANDS
 
     manager = _manager(tmp_path)
     _feed(monkeypatch, ["/help", "exit"])
@@ -508,7 +512,7 @@ async def test_handler_exception_does_not_kill_repl(
 
     与 send 的"错误要打印，但不要终结会话"是同一条纪律——分派层此前不设防。
     """
-    from sigma.repl import COMMANDS
+    from sigma.cli.repl import COMMANDS
 
     async def exploding(
         manager: SessionManager, index_map: dict[int, str], argument: str

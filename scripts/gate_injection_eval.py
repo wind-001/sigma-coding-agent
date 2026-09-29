@@ -70,10 +70,10 @@ import sys
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
 SDK = "core/sigma/sdk.py"
-PROVIDER = "core/sigma_ai/openai/provider.py"
+PROVIDER = "core/sigma.providers/openai/provider.py"
 PROFILE = "core/sigma/eval_profile.py"
 TODO = "core/sigma_tools/todo.py"
-LOOP = "core/sigma_agent/loop.py"
+LOOP = "core/sigma.agent/loop.py"
 TASK = "core/sigma_tools/task.py"
 
 OFF_TEST = "tests/test_eval_profile.py::test_interactive_session_explicit_compaction_off"
@@ -83,8 +83,8 @@ STEER_TEST = "tests/test_todo_steering.py::test_reminder_injected_after_interval
 SUB_E2E_TEST = "tests/test_sub_agent.py::test_dispatch_runs_sub_session_and_reports_back"
 TRUNCATE_TEST = "tests/test_task_tool.py::test_result_truncated_with_visible_marker"
 TAILWAIT_TEST = "tests/test_task_tool.py::test_loop_waits_for_pending_subtasks_before_finishing"
-TOTAL_TO_TEST = "tests/test_sigma_ai_openai_compat.py::test_total_timeout_guards_slow_drip"
-IDLE_TO_TEST = "tests/test_sigma_ai_openai_compat.py::test_idle_timeout_cuts_a_stalled_stream"
+TOTAL_TO_TEST = "tests/test_sigma.providers_openai_compat.py::test_total_timeout_guards_slow_drip"
+IDLE_TO_TEST = "tests/test_sigma.providers_openai_compat.py::test_idle_timeout_cuts_a_stalled_stream"
 BUDGET_TEST = "tests/test_task_tool.py::test_difficulty_selects_round_budget"
 REVISE_TEST = "tests/test_todo_tool.py::test_revise_replaces_only_pending"
 

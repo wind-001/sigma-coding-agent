@@ -31,8 +31,8 @@ import sys
 
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
-CONTEXT = "core/sigma_session/context.py"
-RESOURCES = "core/sigma_session/resources.py"
+CONTEXT = "core/sigma.sessions/context.py"
+RESOURCES = "core/sigma.sessions/resources.py"
 
 CONTEXT_TESTS = "tests/test_session_context.py"
 RESOURCES_TESTS = "tests/test_session_resources.py"

@@ -24,12 +24,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sigma_agent.hooks import HookManager
-from sigma_agent.loop import AgentLoop
-from sigma_agent.registry import ToolRegistry
-from sigma_ai.base import CancelToken
-from sigma_ai.fake import FakeProvider
-from sigma._approval import Allowlist, CliApprovalGate
+from sigma.hooks.base import (
+    HookManager,
+)
+from sigma.runtime.event_loop import AgentLoop
+from sigma.tools.registry import ToolRegistry
+from sigma.providers.base import CancelToken
+from sigma.providers.fake import FakeProvider
+from sigma.security.approval import Allowlist, CliApprovalGate
 
 EVALS = Path(__file__).resolve().parent
 DATASETS = EVALS / "datasets" / "adversarial"
@@ -81,11 +83,11 @@ class GateReport:
 
 
 def _build_registry() -> ToolRegistry:
-    from sigma_tools.bash import BashTool
-    from sigma_tools.edit import EditTool
-    from sigma_tools.grep import GrepTool
-    from sigma_tools.read import ReadTool
-    from sigma_tools.write import WriteTool
+    from sigma.tools.builtin.bash import BashTool
+    from sigma.tools.builtin.edit import EditTool
+    from sigma.tools.builtin.grep import GrepTool
+    from sigma.tools.builtin.read import ReadTool
+    from sigma.tools.builtin.write import WriteTool
 
     registry = ToolRegistry()
     for tool in (ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool()):

@@ -9,12 +9,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sigma_ai.tokens import estimate_text
-from sigma_session.context import (
+from sigma.providers.tokens import estimate_text
+from sigma.sessions.context import (
     DEFAULT_RESIDENT_BUDGET_TOKENS,
     SessionContext,
 )
-from sigma_session.resident_caps import CAPS, RESIDENT_BUDGET_TOKENS, caps_sum
+from sigma.config.resident_caps import CAPS, RESIDENT_BUDGET_TOKENS, caps_sum
 from sigma.sdk import build_system_prompt, default_registry
 
 FIXED_TIME = "2026-09-28T12:00:00.000"
@@ -45,7 +45,7 @@ def test_g886_full_feature_config_within_budget(tmp_path: Path) -> None:
     "最肥"的注册表,用桩工厂把 TaskTool 注册进来(与 sdk 同一路径)。
     技能索引与记忆索引用合成样本(与真实渲染同 cap 口径,注释标明)。
     """
-    from sigma_tools.task import TaskTool
+    from sigma.runtime.sub_agent import TaskTool
 
     async def _factory(description: str, ctx: object, sub_id: str, max_rounds: int) -> object:
         return None
@@ -55,7 +55,7 @@ def test_g886_full_feature_config_within_budget(tmp_path: Path) -> None:
     )
     registry.register(TaskTool(factory=_factory, max_concurrent=3))  # type: ignore[arg-type]
 
-    # 技能索引样本:3 条,形态与 sigma_agent.skills.render_index 一致(≈57 token 量级)
+    # 技能索引样本:3 条,形态与 sigma.skills.scanner.render_index 一致(≈57 token 量级)
     skill_index = (
         "可用技能（用 load_skill 加载正文）：\n"
         "- context-compact → extensions/skills/context-compact/SKILL.md\n"

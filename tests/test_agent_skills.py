@@ -1,4 +1,4 @@
-"""技能系统（``sigma_agent.skills`` + ``sigma_tools.skill``）的门禁测试。
+"""技能系统（``sigma.skills.scanner`` + ``sigma.tools.builtin.skill``）的门禁测试。
 
 对应 ``docs/plans/P4-批次1-Skill系统-详规.md`` §8 的门槛 **G75–G78**。
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sigma_agent.skills import (
+from sigma.skills.scanner import (
     DEFAULT_MAX_BODY_TOKENS,
     SkillMeta,
     discover_skills,
@@ -26,9 +26,9 @@ from sigma_agent.skills import (
     render_index,
     strip_frontmatter,
 )
-from sigma_ai.tokens import estimate_text
-from sigma_session.context import SessionContext
-from sigma_tools.skill import LoadSkillTool
+from sigma.providers.tokens import estimate_text
+from sigma.sessions.context import SessionContext
+from sigma.tools.builtin.skill import LoadSkillTool
 
 CLOCK = lambda: "2026-01-01T00:00:00.000"  # noqa: E731 - 固定时钟
 
@@ -329,8 +329,8 @@ def _tool(tmp_path: Path) -> LoadSkillTool:
 
 
 async def test_tool_returns_body_for_known_name(tmp_path: Path) -> None:
-    from sigma_agent.types import ToolContext
-    from sigma_ai.base import NeverCancelled
+    from sigma.agent.types import ToolContext
+    from sigma.providers.base import NeverCancelled
 
     _make_skill(tmp_path, "alpha", body_only="正文独有")
     tool = _tool(tmp_path)
@@ -353,8 +353,8 @@ async def test_tool_unknown_name_lists_available(tmp_path: Path) -> None:
     模型手里只有常驻区那份目录，可能记错名字（大小写、单复数）。
     只回一句"没有这个技能"，它只能瞎猜着重试——**而每次重试都是一次完整的模型调用**。
     """
-    from sigma_agent.types import ToolContext
-    from sigma_ai.base import NeverCancelled
+    from sigma.agent.types import ToolContext
+    from sigma.providers.base import NeverCancelled
 
     _make_skill(tmp_path, "alpha")
     _make_skill(tmp_path, "beta")
@@ -373,8 +373,8 @@ async def test_tool_unknown_name_lists_available(tmp_path: Path) -> None:
 
 async def test_tool_with_no_skills_says_so(tmp_path: Path) -> None:
     """一个技能都没有时，错误文案要说"当前没有任何技能"，不是列一个空列表。"""
-    from sigma_agent.types import ToolContext
-    from sigma_ai.base import NeverCancelled
+    from sigma.agent.types import ToolContext
+    from sigma.providers.base import NeverCancelled
 
     tool = _tool(tmp_path)
     ctx = ToolContext(
@@ -482,7 +482,7 @@ def test_skill_index_counts_toward_the_budget() -> None:
     with_index = _context(skill_index="可用技能：\n" + "- x：" + "很长的描述" * 100)
 
     assert with_index.resident_tokens > plain.resident_tokens
-    from sigma_session.context import ResidentBudgetExceeded
+    from sigma.sessions.context import ResidentBudgetExceeded
 
     with pytest.raises(ResidentBudgetExceeded):
         # 索引足够大时，预算闸必须响（G59）
@@ -585,8 +585,8 @@ async def test_tool_blames_the_budget_not_the_file(tmp_path: Path) -> None:
     第一版把三种合成一句「正文读不出来（权限 / 编码 / 文件被删）」，
     于是第三种会让人**去查文件系统**——而文件好好的。症状不指向根因。
     """
-    from sigma_agent.types import ToolContext
-    from sigma_ai.base import NeverCancelled
+    from sigma.agent.types import ToolContext
+    from sigma.providers.base import NeverCancelled
 
     _make_skill(tmp_path, "big", body_only="很长的正文句子。\n" * 400)
     tool = LoadSkillTool(skills=discover_skills(tmp_path).skills, max_tokens=1)
@@ -610,8 +610,8 @@ async def test_tool_says_body_is_empty_when_there_is_nothing_to_read(
     与上一条成对。只有一条的话，把报错分支写死成任一种都能绿——
     而那会让模型按错误的原因去重试。
     """
-    from sigma_agent.types import ToolContext
-    from sigma_ai.base import NeverCancelled
+    from sigma.agent.types import ToolContext
+    from sigma.providers.base import NeverCancelled
 
     path = _make_skill(tmp_path, "hollow")
     # 只留 frontmatter：正文为空（``load_body`` 会 strip 掉空白）

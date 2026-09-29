@@ -34,9 +34,9 @@ import inspect
 from typing import Any
 
 import pytest
-from sigma_ai.base import BaseProvider, CancelToken, SamplingParams, StreamOptions
-from sigma_ai.fake import FakeProvider
-from sigma_ai.openai import OpenAICompatProvider
+from sigma.providers.base import BaseProvider, CancelToken, SamplingParams, StreamOptions
+from sigma.providers.fake import FakeProvider
+from sigma.providers.openai import OpenAICompatProvider
 
 # 本批次签名里**必须存在**的关键字参数。
 #

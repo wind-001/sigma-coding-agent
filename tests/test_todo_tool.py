@@ -15,9 +15,9 @@ import json
 from pathlib import Path
 from typing import cast
 
-from sigma_agent.types import ToolContext, ToolResult
-from sigma_ai.base import NeverCancelled
-from sigma_tools.todo import TODO_RELATIVE, TodoParams, TodoTool
+from sigma.agent.types import ToolContext, ToolResult
+from sigma.providers.base import NeverCancelled
+from sigma.tools.builtin.todo import TODO_RELATIVE, TodoParams, TodoTool
 
 
 def _ctx(tmp_path: Path) -> ToolContext:

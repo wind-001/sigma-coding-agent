@@ -20,25 +20,25 @@ import pytest
 from pydantic import BaseModel, Field
 
 from sigma.sdk import InteractiveSession
-from sigma_agent.agent_messages import (
+from sigma.agent.messages import (
     LlmMessageWrapper,
     ToolResultAgentMessage,
     convert_to_llm,
 )
-from sigma_agent.base import BaseTool
-from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult
-from sigma_ai.base import BaseProvider, SamplingParams
-from sigma_ai.errors import ErrorCode, ProviderErrorPayload
-from sigma_ai.events import ErrorEvent, StopEvent, TextDelta, ToolCallDelta, UsageEvent
-from sigma_ai.messages import (
+from sigma.tools.base import BaseTool
+from sigma.tools.registry import ToolRegistry
+from sigma.agent.types import ToolContext, ToolResult
+from sigma.providers.base import BaseProvider, SamplingParams
+from sigma.providers.errors import ErrorCode, ProviderErrorPayload
+from sigma.providers.events import ErrorEvent, StopEvent, TextDelta, ToolCallDelta, UsageEvent
+from sigma.providers.messages import (
     AssistantMessage,
     TextBlock,
     ToolCallBlock,
     Usage,
     UserMessage,
 )
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 
 FIXED_TIME = ts(1_700_000_000)
 

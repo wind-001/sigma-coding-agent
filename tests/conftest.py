@@ -2,7 +2,7 @@
 
 **为什么需要这个文件**
 
-    本仓库的包分两处：产品代码在 ``core/``（由 `.venv` 的 `.pth`
+    本仓库的包分两处：产品代码在 ``src/``（由 `.venv` 的 `.pth`
     以 editable 方式加进 ``sys.path``），而**测试夹具**在 ``tests/``、
     **评测代码**在 ``evals/``。后两者不在 ``testpaths`` 之外被 pytest 自动插入。
 
@@ -33,7 +33,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-for _relative in ("tests", "evals", "core"):
+for _relative in ("tests", "evals", "src"):
     _path = str(REPO_ROOT / _relative)
     if _path not in sys.path:
         sys.path.insert(0, _path)

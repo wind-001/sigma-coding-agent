@@ -6,7 +6,7 @@ G48（树路径正确）、G49（环检测）、G53（追加幂等）。
 **这个文件里有一类断言特别重要：两条相反取舍的对照**
 
     ``store.load()`` 遇到坏行是 **跳过 + warning**，
-    而 ``sigma_agent.messages_from_jsonl`` 遇到坏行是 **抛错 + 行号**。
+    而 ``sigma.agent.messages_from_jsonl`` 遇到坏行是 **抛错 + 行号**。
     它们看起来"风格不一致"，实际是**两种数据上的两种正确处置**
     （用户数据要能救多少救多少 / 测试夹具坏了要立刻知道）。
 
@@ -21,13 +21,13 @@ import json
 from pathlib import Path
 
 import pytest
-from sigma_agent.agent_messages import (
+from sigma.agent.messages import (
     LlmMessageWrapper,
     MessageDecodeError,
     messages_from_jsonl,
 )
-from sigma_ai.messages import UserMessage
-from sigma_session.store import (
+from sigma.providers.messages import UserMessage
+from sigma.sessions.store import (
     BadLineSkipped,
     JsonlStore,
     LoadResult,
@@ -36,7 +36,7 @@ from sigma_session.store import (
     new_node_id,
     record_of,
 )
-from sigma_session.tree import (
+from sigma.sessions.tree import (
     SessionTree,
     TreeCorrupted,
     UnknownNode,
@@ -48,7 +48,7 @@ from sigma_session.tree import (
 # ---------------------------------------------------------------------------
 
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 _COUNTER = [0]
 
 

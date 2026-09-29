@@ -18,12 +18,12 @@
 
     ``.venv`` 里 `pip install -e .` 生成的 `.pth` 文件把
     **真实仓库的绝对路径**写死了。所以在临时目录里跑 pytest，
-    导入到的仍然是真实仓库的 `sigma_ai`——沙箱里的改动
+    导入到的仍然是真实仓库的 `sigma.providers`——沙箱里的改动
     **完全不参与测试**，于是 7 条注入实验全部报"注入后仍然全绿"。
 
     这个假绿的形状值得记住：**它看起来像"门槛失灵"，
     实际是"疫苗打在别人身上"。** 定位它的唯一办法是先手查
-    `sigma_ai.__file__` 指向哪里。
+    `sigma.providers.__file__` 指向哪里。
 
     正确做法是在真实仓库上改、跑、还原。
     **还原必须放在 ``finally`` 里**——注入中途抛错却留下破坏，
@@ -144,12 +144,12 @@ def _inject_g1(repo: Repo) -> None:
     所以这里把两个标记都去掉，让半实现子类**真的**能够被实例化。
     """
     repo.patch(
-        "core/sigma_ai/base.py",
+        "core/sigma.providers/base.py",
         "    @abstractmethod\n    def estimate_tokens(self, messages: list[LlmMessage]) -> int:",
         "    def estimate_tokens(self, messages: list[LlmMessage]) -> int:",
     )
     repo.patch(
-        "core/sigma_ai/base.py",
+        "core/sigma.providers/base.py",
         "    @abstractmethod\n    def stream(",
         "    def stream(",
     )
@@ -158,12 +158,12 @@ def _inject_g1(repo: Repo) -> None:
 def _inject_g2(repo: Repo) -> None:
     """把 ``text_signature`` 排除出序列化——签名往返丢失。"""
     repo.patch(
-        "core/sigma_ai/messages.py",
+        "core/sigma.providers/messages.py",
         "from pydantic import BaseModel",
         "from pydantic import BaseModel, Field",
     )
     repo.patch(
-        "core/sigma_ai/messages.py",
+        "core/sigma.providers/messages.py",
         "    # provider 返回的不透明串，必须原样回传。见模块 docstring。\n    text_signature: str | None = None",
         "    # 注入：字段被排除出序列化\n    text_signature: str | None = Field(default=None, exclude=True)",
     )
@@ -172,12 +172,12 @@ def _inject_g2(repo: Repo) -> None:
 def _inject_g3(repo: Repo) -> None:
     """把 ``ToolCallDelta.index`` 排除出序列化——事件往返丢字段。"""
     repo.patch(
-        "core/sigma_ai/events.py",
+        "core/sigma.providers/events.py",
         "from pydantic import BaseModel",
         "from pydantic import BaseModel, Field",
     )
     repo.patch(
-        "core/sigma_ai/events.py",
+        "core/sigma.providers/events.py",
         '    type: Literal["tool_call_delta"] = "tool_call_delta"\n    index: int',
         '    type: Literal["tool_call_delta"] = "tool_call_delta"\n    index: int = Field(exclude=True)',
     )
@@ -191,7 +191,7 @@ def _inject_g4(repo: Repo) -> None:
     **同一输入两次跑出不同结果**。
     """
     repo.patch(
-        "core/sigma_ai/fake.py",
+        "core/sigma.providers/fake.py",
         "    def __init__(self, rounds: list[list[dict[str, Any]]]) -> None:\n        self._rounds = rounds\n        self._cursor = 0",
         "    _INSTANCE_SEQ = 0\n\n"
         "    def __init__(self, rounds: list[list[dict[str, Any]]]) -> None:\n"
@@ -215,7 +215,7 @@ def _inject_g6(repo: Repo) -> None:
     这次直接把整个判断短路掉——**这才是"识别逻辑失效"的准确注入**。
     """
     repo.patch(
-        "core/sigma_ai/errors.py",
+        "core/sigma.providers/errors.py",
         "        if any(marker in lowered for marker in overflow_markers):\n            return ErrorCode.CONTEXT_OVERFLOW\n        return ErrorCode.INVALID_REQUEST",
         "        # 注入：overflow 判定被短路，永远不会识别出上下文超限\n"
         "        return ErrorCode.INVALID_REQUEST",
@@ -225,7 +225,7 @@ def _inject_g6(repo: Repo) -> None:
 def _inject_g9(repo: Repo) -> None:
     """给 ``SystemMessage`` 加 ``summary``——正是 G9 要挡的那个改动。"""
     repo.patch(
-        "core/sigma_ai/messages.py",
+        "core/sigma.providers/messages.py",
         "    tools_removed: list[str] | None = None  # 仅工具名，对应 Pi 的 ToolReference\n    timestamp: str",
         "    tools_removed: list[str] | None = None  # 仅工具名，对应 Pi 的 ToolReference\n"
         "    # 注入：把压缩摘要塞进 system——G9 要挡的正是这个\n"
@@ -245,11 +245,11 @@ def _inject_g10(repo: Repo) -> None:
 
     **这正是 G10 要防的问题本身**，只是发生在比预期更深的地方。
     修法不是换一个测试，是**补一条真正的断言**：
-    ``tests/test_sigma_ai_provider_signature.py`` 用自省直接比对
+    ``tests/test_sigma.providers_provider_signature.py`` 用自省直接比对
     抽象层与实现层的签名。目标测试也随之改到那里。
     """
     repo.patch(
-        "core/sigma_ai/base.py",
+        "core/sigma.providers/base.py",
         "        sampling: SamplingParams | None = None,\n"
         "        options: StreamOptions | None = None,\n"
         "        timeout_s: float | None = None,\n"
@@ -266,43 +266,43 @@ EXPERIMENTS = [
     (
         "G1",
         "去掉 estimate_tokens 的 @abstractmethod → 半实现子类可实例化",
-        "tests/test_sigma_ai_types.py::test_incomplete_subclass_still_fails",
+        "tests/test_sigma.providers_types.py::test_incomplete_subclass_still_fails",
         _inject_g1,
     ),
     (
         "G2",
         "把 text_signature 排除出序列化 → 签名往返丢失",
-        "tests/test_sigma_ai_types.py::test_signature_fields_survive_json_roundtrip",
+        "tests/test_sigma.providers_types.py::test_signature_fields_survive_json_roundtrip",
         _inject_g2,
     ),
     (
         "G3",
         "把 ToolCallDelta.index 排除出序列化 → 事件往返丢字段",
-        "tests/test_sigma_ai_events.py::test_stream_event_roundtrip_by_class",
+        "tests/test_sigma.providers_events.py::test_stream_event_roundtrip_by_class",
         _inject_g3,
     ),
     (
         "G4",
         "让 FakeProvider 每次构造多吐一个事件 → 两次回放不一致",
-        "tests/test_sigma_ai_fake.py::test_same_transcript_replays_identically",
+        "tests/test_sigma.providers_fake.py::test_same_transcript_replays_identically",
         _inject_g4,
     ),
     (
         "G6",
         "清空 overflow 文案表 → 超限被误判成普通非法请求",
-        "tests/test_sigma_ai_types.py::test_context_overflow_is_detected_from_message",
+        "tests/test_sigma.providers_types.py::test_context_overflow_is_detected_from_message",
         _inject_g6,
     ),
     (
         "G9",
         "给 SystemMessage 加 summary 字段 → 摘要能塞进常驻区",
-        "tests/test_sigma_ai_types.py::test_system_message_field_set_is_frozen",
+        "tests/test_sigma.providers_types.py::test_system_message_field_set_is_frozen",
         _inject_g9,
     ),
     (
         "G10",
         "删掉 stream 的 sampling/options → 抽象层退化，实现者需要而抽象层没有",
-        "tests/test_sigma_ai_provider_signature.py::test_abstract_signature_accepts_both_implementers",
+        "tests/test_sigma.providers_provider_signature.py::test_abstract_signature_accepts_both_implementers",
         _inject_g10,
     ),
 ]

@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from sigma_agent.checkpoint import BUILTIN_EXCLUDES, ShadowCheckpoint
+from sigma.security.shadow_checkpoint import BUILTIN_EXCLUDES, ShadowCheckpoint
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="本机没有 git，checkpoint 用例未验证"
 )
@@ -423,13 +423,13 @@ async def test_loop_write_then_rollback_restores_workspace(tmp_path: Path) -> No
     它不是模型跑出来的一步。把它塞进运行器会同时改两件事（测量仪 + 场景格式），
     收益只是"多一行报告"。以集成测试覆盖同一条路径，边界更干净。
     """
-    from sigma_agent.agent_messages import LlmMessageWrapper
-    from sigma_agent.loop import AgentLoop
-    from sigma_agent.registry import ToolRegistry
-    from sigma_ai.base import NeverCancelled
-    from sigma_ai.fake import FakeProvider
-    from sigma_ai.messages import UserMessage
-    from sigma_tools.write import WriteTool
+    from sigma.agent.messages import LlmMessageWrapper
+    from sigma.runtime.event_loop import AgentLoop
+    from sigma.tools.registry import ToolRegistry
+    from sigma.providers.base import NeverCancelled
+    from sigma.providers.fake import FakeProvider
+    from sigma.providers.messages import UserMessage
+    from sigma.tools.builtin.write import WriteTool
 
     ws = _ws(tmp_path)
     readme = ws / "README.md"

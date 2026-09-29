@@ -37,7 +37,7 @@ import sys
 
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
-LOOP = "core/sigma_agent/loop.py"
+LOOP = "core/sigma.agent/loop.py"
 SCENARIOS = "tests/fixtures/transcripts/_scenarios.py"
 WORKSPACE_FIXTURE = "tests/fixtures/workspace.py"
 

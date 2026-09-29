@@ -20,12 +20,12 @@ from gate_replay import run_gate_replay  # noqa: E402
 from rollback_stats import run_rollback_stats, tree_diff  # noqa: E402
 import self_check as self_check_mod  # noqa: E402
 
-from sigma_agent.agent_messages import LlmMessageWrapper  # noqa: E402
-from sigma_ai.messages import AssistantMessage, TextBlock, Usage, UserMessage  # noqa: E402
-from sigma_session.store import JsonlStore  # noqa: E402
-from sigma_session.tree import SessionTree  # noqa: E402
+from sigma.agent.messages import LlmMessageWrapper  # noqa: E402
+from sigma.providers.messages import AssistantMessage, TextBlock, Usage, UserMessage  # noqa: E402
+from sigma.sessions.store import JsonlStore  # noqa: E402
+from sigma.sessions.tree import SessionTree  # noqa: E402
 
-from sigma_ai.stamps import from_epoch as ts  # noqa: E402
+from sigma.providers.stamps import from_epoch as ts  # noqa: E402
 
 FIXED_TIME = ts(1_700_000_000)
 

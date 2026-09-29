@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from sigma_agent.types import ToolContext
-from sigma_ai.base import NeverCancelled
-from sigma_tools._paths import (
+from sigma.agent.types import ToolContext
+from sigma.providers.base import NeverCancelled
+from sigma.security.path_sandbox import (
     PathEscapesWorkspace,
     resolve_path,
     resolve_write_path,

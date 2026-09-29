@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from sigma_tools._source_policy import (
+from sigma.tools.builtin.source_policy import (
     MAX_RESULT_AGE_DAYS,
     age_days,
     describe_age,

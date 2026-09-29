@@ -14,9 +14,14 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.keys import Keys
 
-from sigma._approval import Allowlist, CliApprovalGate, allowlist_key
-from sigma._selector import _move_selection, choose_option, select_option
-from sigma_agent.hooks import ApprovalDecision, ApprovalHook
+from sigma.security.approval import Allowlist, CliApprovalGate, allowlist_key
+from sigma.cli.interactive import _move_selection, choose_option, select_option
+from sigma.events.lifecycle import (
+    ApprovalDecision,
+)
+from sigma.hooks.base import (
+    ApprovalHook,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +209,7 @@ def test_draw_options_paints_every_option_on_its_own_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """回归:行间漏了换行 → 每个选项覆盖前一个,只剩最后一条可见。"""
-    from sigma._selector import _draw_options
+    from sigma.cli.interactive import _draw_options
 
     _draw_options(
         ["方案A", "方案B", "方案C", "方案D"],
@@ -229,7 +234,7 @@ def test_draw_options_truncates_to_terminal_width(
     import os
     import shutil
 
-    from sigma._selector import _draw_options
+    from sigma.cli.interactive import _draw_options
 
     monkeypatch.setattr(shutil, "get_terminal_size", lambda: os.terminal_size((60, 24)))
     long_option = "很长很长的方案" * 30

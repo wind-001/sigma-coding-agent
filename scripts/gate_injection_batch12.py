@@ -38,8 +38,8 @@ import sys
 
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
-TREE = "core/sigma_session/tree.py"
-STORE = "core/sigma_session/store.py"
+TREE = "core/sigma.sessions/tree.py"
+STORE = "core/sigma.sessions/store.py"
 CLI = "core/sigma/cli.py"
 
 CLI_TESTS = "tests/test_sigma_cli_session.py"

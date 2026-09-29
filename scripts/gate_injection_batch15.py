@@ -25,7 +25,7 @@
     ./.venv/Scripts/python.exe scripts/gate_injection_batch15.py
 
 **E18 的例外**
-    它是"往 `sigma_ai` 注入 `import sigma_agent`，看 `lint-imports` 是否变红"，
+    它是"往 `sigma.providers` 注入 `import sigma.agent`，看 `lint-imports` 是否变红"，
     目标不是 pytest。本脚本对它的处理是跑 `lint-imports` 而不是 pytest
     （见 `run_lint_imports`）。
 """
@@ -45,7 +45,7 @@ PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 # 而解析错时的症状（FileNotFoundError）很容易被误判成"文件真被删了"。
 print(f"[env] 仓库根 = {REPO}")
 print(f"[env] python  = {PYTHON}")
-assert (REPO / "core" / "sigma_ai" / "messages.py").exists(), "仓库根解析错了"
+assert (REPO / "core" / "sigma.providers" / "messages.py").exists(), "仓库根解析错了"
 
 
 class Repo:
@@ -157,7 +157,7 @@ def experiment(gate: str, what: str, target: str, inject, *, tool: str = "pytest
 # 各门槛的注入
 # ---------------------------------------------------------------------------
 
-MSG = "core/sigma_agent/agent_messages.py"
+MSG = "core/sigma.agent/agent_messages.py"
 CONVERT_TESTS = "tests/test_agent_messages_convert.py"
 CONTRACT_TESTS = "tests/test_agent_messages_contracts.py"
 REGISTRY_TESTS = "tests/test_agent_messages_registry.py"
@@ -177,8 +177,8 @@ def _inject_e11(repo: Repo) -> None:
     """
     repo.patch(
         MSG,
-        "from sigma_ai.messages import (\n    ContentBlock,",
-        "from sigma_ai.messages import (\n    AssistantMessage,\n    ContentBlock,",
+        "from sigma.providers.messages import (\n    ContentBlock,",
+        "from sigma.providers.messages import (\n    AssistantMessage,\n    ContentBlock,",
     )
     repo.patch(
         MSG,
@@ -228,8 +228,8 @@ def _inject_e13(repo: Repo) -> None:
     )
     repo.patch(
         MSG,
-        "from sigma_ai.messages import (\n    ContentBlock,",
-        "from sigma_ai.messages import (\n    ContentBlock,\n    SystemMessage,",
+        "from sigma.providers.messages import (\n    ContentBlock,",
+        "from sigma.providers.messages import (\n    ContentBlock,\n    SystemMessage,",
     )
     # 这里原本还有第三个 patch：给导入块尾部加 `# noqa: E501`。
     #
@@ -319,7 +319,7 @@ def _inject_e17(repo: Repo) -> None:
 
 
 def _inject_e18(repo: Repo) -> None:
-    """E18 / G18：往 `sigma_ai` 注入 `import sigma_agent`。
+    """E18 / G18：往 `sigma.providers` 注入 `import sigma.agent`。
 
     注入点在 `messages.py`——它是真正的"协议对齐层"里最不可能
     引入 agent 概念的文件，正因如此，它上面的违规最像"顺手 import"。
@@ -328,11 +328,11 @@ def _inject_e18(repo: Repo) -> None:
     若结果看起来"没变化"，先怀疑缓存而不是契约。
     """
     repo.patch(
-        "core/sigma_ai/messages.py",
+        "core/sigma.providers/messages.py",
         "from pydantic import BaseModel",
         "from pydantic import BaseModel\n\n"
         "# 注入：下层引用上层\n"
-        "from sigma_agent.agent_messages import AgentMessage  # noqa: F401",
+        "from sigma.agent.messages import AgentMessage  # noqa: F401",
     )
 
 
@@ -426,7 +426,7 @@ EXPERIMENTS = [
     ),
     (
         "E18",
-        "G18  往 sigma_ai 注入 import sigma_agent → lint-imports 必须变红",
+        "G18  往 sigma.providers 注入 import sigma.agent → lint-imports 必须变红",
         "",  # 不用 pytest target
         _inject_e18,
         "lint-imports",

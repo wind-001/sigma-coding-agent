@@ -19,10 +19,10 @@ from typing import Any
 import httpx
 import pytest
 
-from sigma_agent.types import ToolContext
-from sigma_ai.base import NeverCancelled
-from sigma_tools._tavily_quota import FREE_MONTHLY_CREDITS, TavilyQuota
-from sigma_tools.web_search import MAX_SNIPPET_CHARS, WebSearchTool
+from sigma.agent.types import ToolContext
+from sigma.providers.base import NeverCancelled
+from sigma.tools.quota.tavily import FREE_MONTHLY_CREDITS, TavilyQuota
+from sigma.tools.builtin.web_search import MAX_SNIPPET_CHARS, WebSearchTool
 
 NOW = 1000.0
 TODAY = "2026-09-21"

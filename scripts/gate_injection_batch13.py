@@ -24,8 +24,8 @@ import sys
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
 PATHS = "core/sigma_tools/_paths.py"
-LOOP = "core/sigma_agent/loop.py"
-CHECKPOINT = "core/sigma_agent/checkpoint.py"
+LOOP = "core/sigma.agent/loop.py"
+CHECKPOINT = "core/sigma.agent/checkpoint.py"
 SDK = "core/sigma/sdk.py"
 
 L1_TESTS = "tests/test_tools_paths_l1.py"

@@ -4,7 +4,7 @@
 
     批次 1 分别测过两种形态：
 
-    - 纯 `ABC`（`BaseProvider` / `CancelToken`）——`test_sigma_ai_types.py`
+    - 纯 `ABC`（`BaseProvider` / `CancelToken`）——`test_sigma.providers_types.py`
     - 纯 `BaseModel`（四个 LLM 消息）——同上
 
     **但没有测过两者多继承**。`AgentMessage` 是 `BaseModel, ABC`，
@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 import pytest
-from sigma_agent.agent_messages import (
+from sigma.agent.messages import (
     AgentMessage,
     DuplicateMessageType,
     LlmMessageWrapper,
@@ -37,14 +37,14 @@ from sigma_agent.agent_messages import (
     register_message_type,
     registered_roles,
 )
-from sigma_ai.messages import LlmMessage
+from sigma.providers.messages import LlmMessage
 
 # ---------------------------------------------------------------------------
 # G15：BaseModel + ABC 多继承下的抽象保护
 # ---------------------------------------------------------------------------
 
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 def test_agent_message_cannot_be_instantiated() -> None:
     """G15 本体：抽象基类直接实例化抛 `TypeError`。
 
@@ -185,7 +185,7 @@ def test_unknown_role_raises_on_lookup() -> None:
     返回 `None` 会让调用方只能"检查 None"——而漏检查就变成静默丢弃，
     这正是本模块要避免的模式。
     """
-    from sigma_agent.agent_messages import UnknownMessageType
+    from sigma.agent.messages import UnknownMessageType
 
     with pytest.raises(UnknownMessageType, match="test_nonexistent"):
         get_message_type("test_nonexistent")

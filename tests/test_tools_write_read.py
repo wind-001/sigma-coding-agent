@@ -11,10 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sigma_agent.types import ToolContext
-from sigma_ai.base import NeverCancelled
-from sigma_tools.read import ReadTool
-from sigma_tools.write import WriteTool
+from sigma.agent.types import ToolContext
+from sigma.providers.base import NeverCancelled
+from sigma.tools.builtin.read import ReadTool
+from sigma.tools.builtin.write import WriteTool
 
 
 def _ctx(root: Path) -> ToolContext:

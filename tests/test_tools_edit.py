@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from sigma_ai.base import NeverCancelled
-from sigma_agent.types import ToolContext
-from sigma_tools.edit import EditTool
+from sigma.providers.base import NeverCancelled
+from sigma.agent.types import ToolContext
+from sigma.tools.builtin.edit import EditTool
 
 
 def _ctx(root: Path) -> ToolContext:

@@ -39,9 +39,12 @@ REPO = EVALS.parent
 sys.path.insert(0, str(REPO / "core"))
 
 from sigma import sdk  # noqa: E402
-from sigma.cli import DEFAULT_PRESET, resolve_api_key  # noqa: E402
-from sigma_ai.openai import OpenAICompatProvider  # noqa: E402
-from sigma_ai.registry import builtin_providers  # noqa: E402
+from sigma.cli.main import (
+    DEFAULT_PRESET,
+    resolve_api_key  # noqa: E402,
+)
+from sigma.providers.openai import OpenAICompatProvider  # noqa: E402
+from sigma.providers.registry import builtin_providers  # noqa: E402
 
 ORCH_SESSION_ID = "todo-ab-orch"
 

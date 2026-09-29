@@ -21,7 +21,7 @@ PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 
 print(f"[env] 仓库根 = {REPO}")
 print(f"[env] python  = {PYTHON}")
-assert (REPO / "core" / "sigma_session" / "memory.py").exists(), "仓库根解析错了"
+assert (REPO / "core" / "sigma.sessions" / "memory.py").exists(), "仓库根解析错了"
 
 
 class Repo:
@@ -80,9 +80,9 @@ def experiment(gate: str, what: str, target: str, inject) -> None:
         repo.restore()
 
 
-MEMORY = "core/sigma_session/memory.py"
-CONTEXT = "core/sigma_session/context.py"
-CHECKPOINT = "core/sigma_agent/checkpoint.py"
+MEMORY = "core/sigma.sessions/memory.py"
+CONTEXT = "core/sigma.sessions/context.py"
+CHECKPOINT = "core/sigma.agent/checkpoint.py"
 SDK = "core/sigma/sdk.py"
 MEM_TESTS = "tests/test_memory.py"
 BUDGET_TESTS = "tests/test_resident_budget.py"
@@ -164,7 +164,7 @@ EXPERIMENTS = [
 
 def _e885(repo: Repo) -> None:
     repo.patch(
-        "core/sigma_session/resident_caps.py",
+        "core/sigma.sessions/resident_caps.py",
         '    "具名预留(repo map 等)": 500,',
         '    "具名预留(repo map 等)": 900,  # 注入:分项和==5540≠总额',
     )

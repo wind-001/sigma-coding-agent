@@ -34,10 +34,10 @@ from typing import Any
 
 import httpx
 import pytest
-from sigma_ai.base import CancelToken, SamplingParams, StreamOptions
-from sigma_ai.errors import ErrorCode
-from sigma_ai.events import ErrorEvent, StopEvent, TextDelta, ToolCallDelta, UsageEvent
-from sigma_ai.messages import (
+from sigma.providers.base import CancelToken, SamplingParams, StreamOptions
+from sigma.providers.errors import ErrorCode
+from sigma.providers.events import ErrorEvent, StopEvent, TextDelta, ToolCallDelta, UsageEvent
+from sigma.providers.messages import (
     AssistantMessage,
     ImageBlock,
     SystemMessage,
@@ -48,22 +48,22 @@ from sigma_ai.messages import (
     Usage,
     UserMessage,
 )
-from sigma_ai.openai import OpenAICompatProvider
-from sigma_ai.openai.convert import message_to_openai
-from sigma_ai.openai.protocol import (
+from sigma.providers.openai import OpenAICompatProvider
+from sigma.providers.openai.convert import message_to_openai
+from sigma.providers.openai.protocol import (
     UnmappedFinishReason,
     _error_from_response,
     _map_finish_reason,
     _parse_usage,
 )
-from sigma_ai.openai.sse import parse_sse_line
+from sigma.providers.openai.sse import parse_sse_line
 
 # ---------------------------------------------------------------------------
 # 测试替身
 # ---------------------------------------------------------------------------
 
 
-from sigma_ai.stamps import from_epoch as ts
+from sigma.providers.stamps import from_epoch as ts
 class _NeverCancelled(CancelToken):
     def is_cancelled(self) -> bool:
         return False

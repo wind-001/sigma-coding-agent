@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from sigma_tools.truncate import HEAD_LINES, MAX_BYTES, truncate_output
+from sigma.tools.truncate import HEAD_LINES, MAX_BYTES, truncate_output
 
 
 def test_short_output_passes_through_untouched() -> None:

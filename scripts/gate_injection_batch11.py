@@ -41,8 +41,8 @@ import sys
 
 from gate_injection_batch24 import RESULTS, Repo, experiment
 
-COMPACT = "core/sigma_session/compact.py"
-CONTEXT = "core/sigma_session/context.py"
+COMPACT = "core/sigma.sessions/compact.py"
+CONTEXT = "core/sigma.sessions/context.py"
 
 COMPACT_TESTS = "tests/test_session_compact.py"
 

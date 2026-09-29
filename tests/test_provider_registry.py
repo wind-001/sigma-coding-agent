@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from sigma_ai.registry import (
+from sigma.providers.registry import (
     ProviderRegistry,
     ProviderSpec,
     UnknownProvider,

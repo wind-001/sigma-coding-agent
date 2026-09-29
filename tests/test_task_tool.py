@@ -19,16 +19,16 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel, Field
 
-from sigma_agent.agent_messages import LlmMessageWrapper
-from sigma_agent.base import BaseTool
-from sigma_agent.loop import AgentLoop
-from sigma_agent.registry import ToolRegistry
-from sigma_agent.types import ToolContext, ToolResult, TurnResult
-from sigma_ai.base import NeverCancelled
-from sigma_ai.fake import FakeProvider
-from sigma_ai.messages import TextBlock, Usage
+from sigma.agent.messages import LlmMessageWrapper
+from sigma.tools.base import BaseTool
+from sigma.runtime.event_loop import AgentLoop
+from sigma.tools.registry import ToolRegistry
+from sigma.agent.types import ToolContext, ToolResult, TurnResult
+from sigma.providers.base import NeverCancelled
+from sigma.providers.fake import FakeProvider
+from sigma.providers.messages import TextBlock, Usage
 
-from sigma_tools.task import MAX_RESULT_CHARS, TaskParams, TaskTool
+from sigma.runtime.sub_agent import MAX_RESULT_CHARS, TaskParams, TaskTool
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +344,7 @@ def _echo_round(call_id: str) -> list[dict[str, Any]]:
 
 async def test_drain_injected_at_turn_start(tmp_path: Path) -> None:
     """信箱有未回报结果时，下一轮开始前必须注入（模型本轮就能看到）。"""
-    from sigma_ai.messages import UserMessage
+    from sigma.providers.messages import UserMessage
 
     pending = [
         LlmMessageWrapper(
