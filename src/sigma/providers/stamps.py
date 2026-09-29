@@ -36,7 +36,7 @@ STAMP_PATTERN = "%Y-%m-%dT%H:%M:%S"
 COMPACT_PATTERN = "%Y%m%d-%H%M%S"
 
 
-def split(epoch: float) -> tuple[datetime, str]:
+def split_millis(epoch: float) -> tuple[datetime, str]:
     """→ ``(2026-09-22 17:14:20 的 datetime, "123")``。
 
     **毫秒只在这一处算。** 两种格式（可读的与紧凑的）都从这里派生——
@@ -52,7 +52,7 @@ def from_epoch(epoch: float) -> str:
 
     ``epoch`` 允许是小数：调用方拿到的可能是 ``time.time()``。
     """
-    moment, millis = split(epoch)
+    moment, millis = split_millis(epoch)
     return f"{moment.strftime(STAMP_PATTERN)}.{millis}"
 
 
@@ -62,7 +62,7 @@ def compact(epoch: float) -> str:
     与 :func:`from_epoch` 是**同一个时刻的两种写法**，不是两个概念：
     可读的那个给人看会话文件内容，紧凑的这个进文件名。
     """
-    moment, millis = split(epoch)
+    moment, millis = split_millis(epoch)
     return f"{moment.strftime(COMPACT_PATTERN)}.{millis}"
 
 

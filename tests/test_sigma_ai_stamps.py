@@ -83,7 +83,7 @@ def test_unparseable_stamp_raises() -> None:
 def test_split_and_the_two_formats_agree_on_millis() -> None:
     """可读串与紧凑串**必须是同一时刻**，毫秒尤其不能两样。
 
-    这正是把毫秒计算收进 :func:`stamps.split` 的理由——
+    这正是把毫秒计算收进 :func:`stamps.split_millis` 的理由——
     换算散成两份，"截断还是四舍五入"的差异会在某一处悄悄出现。
     """
     epoch = 1_750_000_000.456

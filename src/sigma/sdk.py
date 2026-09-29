@@ -38,7 +38,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from sigma.config import settings as dotenv
+from sigma.config import settings
 from sigma.prompts.system_prompt import (
     ASK_USER_TOOL_LINE,
     LOAD_SKILL_TOOL_LINE,
@@ -113,11 +113,11 @@ if TYPE_CHECKING:
 #: 联网搜索的额度账本落点。**在用户级配置目录**（仓库外）：
 #: 配额是"这个 key 用了多少"，与具体工作区无关——放进工作区会让换个目录就重置计数，
 #: 那正是"本地计数"最危险的一种失效方式。
-DEFAULT_WEB_SEARCH_STATE = dotenv.USER_CONFIG_DIR / "tavily_usage.json"
+DEFAULT_WEB_SEARCH_STATE = settings.USER_CONFIG_DIR / "tavily_usage.json"
 
 #: 网页精读的额度账本落点。同上，且**必须与搜索分开**：
 #: 两家是不同的服务、不同的额度池，合成一个文件就会 A 家花掉 B 家的额度。
-DEFAULT_WEB_FETCH_STATE = dotenv.USER_CONFIG_DIR / "firecrawl_usage.json"
+DEFAULT_WEB_FETCH_STATE = settings.USER_CONFIG_DIR / "firecrawl_usage.json"
 
 
 def web_search_tool(*, api_key: str, state_path: Path | None = None) -> WebSearchTool:

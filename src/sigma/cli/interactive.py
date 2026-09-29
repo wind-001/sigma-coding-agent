@@ -12,7 +12,7 @@
     数字 1–9        直选
     Esc / Ctrl+C   取消(返回 None;审批侧把取消当"拒绝",ask_user 侧回退推荐项)
 
-非 TTY(评测 / 管道 / CI)→ :func:`interactive_stdin` 为 False,
+非 TTY(评测 / 管道 / CI)→ :func:`is_tty_terminal` 为 False,
 调用方走 ``choose_option`` 的编号输入降级——既有测试与 CI 行为不变。
 
 **实测口径**(prompt_toolkit 3.0.53,Windows pipe):Tab 解析为
@@ -36,7 +36,7 @@ _NEXT_KEYS = {"tab", "controli", "down", "right"}
 _PREV_KEYS = {"up", "left", "s-tab"}
 
 
-def interactive_stdin() -> bool:
+def is_tty_terminal() -> bool:
     """stdin/stdout 是否都是真终端。不是 → 一律走编号输入降级。"""
     try:
         return bool(sys.stdin.isatty()) and bool(sys.stdout.isatty())
@@ -176,7 +176,7 @@ async def select_option(
     if not options:
         return None
     if interactive is None:
-        interactive = interactive_stdin()
+        interactive = is_tty_terminal()
     if not interactive:
         return None
     return await asyncio.to_thread(
@@ -203,7 +203,7 @@ async def choose_option(
     解析规则:序号 1–N → 下标;选项原文 → 下标;其他/空 → None。
     """
     if interactive is None:
-        interactive = interactive_stdin()
+        interactive = is_tty_terminal()
     if interactive:
         return await select_option(
             title_lines,

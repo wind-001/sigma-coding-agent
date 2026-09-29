@@ -122,5 +122,5 @@ def _error_from_response(status_code: int, body_text: str) -> ProviderErrorPaylo
     )
 
 
-# 未使用但导出，方便调用方构造异常：
-_ = ProviderError
+# 未使用但导出，方便调用方构造异常（__all__ 同时满足 mypy 显式再导出）：
+__all__ = ["ProviderError"]
