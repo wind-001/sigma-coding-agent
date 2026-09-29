@@ -1,0 +1,34 @@
+{
+  "id": "syn-014",
+  "kind": "synthetic",
+  "title": "固定宽度表格渲染的四处缺陷（列宽 / 居中补白 / 截断 / 分隔线长度）",
+  "description": "工作区里的 table_lite 是一个固定宽度文本表格渲染器：列宽按内容自适应、单元格按对齐方式补空格、超宽内容截断加省略号，产出可直接贴进终端或 README 的纯文本表格。\n\n它现在有四处 bug：\n\n1. 列宽漏了表头：列宽只统计了数据行——表头比该列所有单元格都宽时，表头会撑出列宽，分隔线也跟着短一截；\n2. 居中补白放错边：补奇数个空格时，多出来的那一格被放到了左边——约定是放右边（左边取总补白整除 2）；\n3. 截断没给省略号留位置：超长时按 `cell[:cap] + \"...\"` 拼，结果比上限还宽 3 列——约定是保留前 cap-3 个字符再接 `...`，总长恰好等于上限（cap 至少为 4，否则抛 ValueError）；\n4. 分隔线长度多算了一组 `\" | \"`：公式写成了 `sum(widths) + 3 * 列数`——应当是 `sum(widths) + 3 * (列数 - 1)`。\n\n注意 bug 之间有交互：列宽与截断的修复都会同时影响分隔线和整表用例，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import table_lite` 会失败）。\n- 只改工作区内的文件；保持 truncate / format_cell / render_table 的现有结构。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "8 failed, 5 passed in 0.20s",
+    "failed_tests": [
+      "tests/test_table_lite.py::test_format_center_odd_padding_goes_right",
+      "tests/test_table_lite.py::test_truncate_keeps_total_within_cap",
+      "tests/test_table_lite.py::test_render_basic",
+      "tests/test_table_lite.py::test_render_header_wider_than_cells",
+      "tests/test_table_lite.py::test_render_center",
+      "tests/test_table_lite.py::test_render_truncation",
+      "tests/test_table_lite.py::test_render_empty_rows",
+      "tests/test_table_lite.py::test_render_default_aligns_left"
+    ],
+    "recorded_at": "2026-09-29T22:52:07.000",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：四处修复后 13 passed。"
+  }
+}

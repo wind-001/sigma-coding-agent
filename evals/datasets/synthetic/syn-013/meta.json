@@ -1,0 +1,33 @@
+{
+  "id": "syn-013",
+  "kind": "synthetic",
+  "title": "括号配对检查的四处缺陷（转义序列 / 交叉嵌套 / 未闭合漏报 / 多余右括号）",
+  "description": "工作区里的 bracket_check 是一个源码括号配对检查器：先用 code_only 把字符串字面量与 # 注释替换成等长空格，再在剩下的裸代码上检查 (), [], {} 是否正确配对（find_mismatch）。代码检查器、配置校验器都在用它。\n\n它现在有四处 bug：\n\n1. 转义序列：字符串里的转义序列没有被跳过——\"a\\\"b\" 会在中间那个 \\\" 处被提前截断，后半段代码被误当成裸代码、或被误吞进字符串；\n2. 交叉嵌套不报错：[(]) 这种交叉配对被当成合法——弹栈时没有核对开括号与闭括号的类型是否匹配；\n3. 漏报未闭合：扫描结束时栈里还剩开括号也返回 None——\"(a + b\" 应当报「未闭合」，且描述里要带上开括号所在行号；\n4. 忽略多余的右括号：栈为空时遇到右括号被直接跳过——\")(\" 应当报「多余」。\n\n注意 bug 之间有交互：转义序列的修复会改变 code_only 的输出，进而影响所有 find_mismatch 用例，改完要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import bracket_check` 会失败）。\n- 只改工作区内的文件；保持「先 code_only 后 find_mismatch」的现有结构。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "7 failed, 5 passed in 0.18s",
+    "failed_tests": [
+      "tests/test_bracket_check.py::test_code_only_escaped_quote_does_not_close_string",
+      "tests/test_bracket_check.py::test_code_only_escaped_quote_pair_fully_masked",
+      "tests/test_bracket_check.py::test_extra_closer_reported",
+      "tests/test_bracket_check.py::test_unclosed_reported",
+      "tests/test_bracket_check.py::test_cross_nesting_reported",
+      "tests/test_bracket_check.py::test_escaped_quote_interaction",
+      "tests/test_bracket_check.py::test_unclosed_reports_opener_line"
+    ],
+    "recorded_at": "2026-09-29T22:52:00.000",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：四处修复后 12 passed。"
+  }
+}

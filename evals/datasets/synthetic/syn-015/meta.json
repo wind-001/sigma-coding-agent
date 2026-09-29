@@ -1,0 +1,33 @@
+{
+  "id": "syn-015",
+  "kind": "synthetic",
+  "title": "日志行解析的四处缺陷（消息截断 / 级别归一 / 时间戳校验 / 续行归属）",
+  "description": "工作区里的 logparse 是一个迷你日志解析器：解析 `<时间戳> <级别> <消息>` 三段式日志行（时间戳形如 2026-09-23T19:05:00），把整段日志聚成记录并按级别统计条数。\n\n它现在有四处 bug：\n\n1. 消息被截断：切分用 `line.split(\" \")` 后只取第 3 段——消息里有空格时只剩第一个词（约定：按「时间戳 级别 消息」切，消息原样保留其余全部内容）；\n2. 级别没有归一成大写：info 和 INFO 被当成两种级别，count_by_level 各算各的；\n3. 不校验时间戳：任何不少于 3 个词的行都被当成记录——\"hello world foo\" 也会解析出 ts='hello' 的记录（约定：只有以 `\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}` 形状开头的行才是记录，其余行返回 None）；\n4. 续行被丢弃：不以时间戳开头的行本应作为上一条记录的续行并入 message（用 `\n` 连接），现在被直接跳过——只有首条记录之前的杂散行才是忽略。\n\n注意 bug 之间有交互：时间戳校验与续行归属要一起修——parse_log 的续行判定依赖 parse_line 对非记录行返回 None；count_by_level 同时踩在级别归一与杂散行两个坑上。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import logparse` 会失败）。\n- 只改工作区内的文件；保持 LogRecord / parse_line / parse_log / count_by_level 的现有结构。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效（覆盖的是数据集本体，agent 改的那份原封不动）。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "7 failed, 5 passed in 0.16s",
+    "failed_tests": [
+      "tests/test_logparse.py::test_parse_line_basic",
+      "tests/test_logparse.py::test_parse_line_normalizes_level",
+      "tests/test_logparse.py::test_parse_line_rejects_lines_without_timestamp",
+      "tests/test_logparse.py::test_parse_log_joins_continuation",
+      "tests/test_logparse.py::test_parse_log_skips_leading_junk",
+      "tests/test_logparse.py::test_count_by_level_mixed_case",
+      "tests/test_logparse.py::test_count_by_level_ignores_noise"
+    ],
+    "recorded_at": "2026-09-29T22:52:08.000",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：四处修复后 12 passed。"
+  }
+}
