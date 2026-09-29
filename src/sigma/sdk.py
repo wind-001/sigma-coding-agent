@@ -98,6 +98,9 @@ from sigma.runtime.sub_agent import (
     SubAgentRounds,
     TaskTool,
 )
+from sigma.team.mailbox import Mailbox
+from sigma.team.store import BoardStore
+from sigma.tools.builtin.multi_agent import MultiAgentTool
 from sigma.tools.builtin.team import TeamBoard
 from sigma.tools.builtin.todo import TodoTool
 from sigma.tools.builtin.web_fetch import WebFetchTool
@@ -485,7 +488,28 @@ class InteractiveSession:
                     "registry 里已注册 team_board 工具，与 enable_team_tasks=True 冲突。"
                     "team_board 只能由本类注册（lead 身份必须与本会话 id 一致）。"
                 )
-            self._registry.register(TeamBoard(lead_session_id=session_id))
+            self._team_store = BoardStore()
+            self._team_mailbox = Mailbox()
+            self._registry.register(
+                TeamBoard(
+                    lead_session_id=session_id,
+                    role="lead",
+                    store=self._team_store,
+                    mailbox=self._team_mailbox,
+                )
+            )
+            self._registry.register(
+                MultiAgentTool(
+                    lead_session_id=session_id,
+                    workspace_root=self._workspace_root,
+                    factory=self._make_sub_agent_factory(
+                    self._tool_lock or asyncio.Lock(), rounds
+                ),
+                    store=self._team_store,
+                    mailbox=self._team_mailbox,
+                    max_rounds=rounds.medium,
+                )
+            )
         # ``tree`` 由调用方传入（通常是 ``SessionTree.from_store(...)``）——
         # **会话接续的落点就在这里**：不传就是纯内存的新会话，
         # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。

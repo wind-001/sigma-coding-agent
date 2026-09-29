@@ -142,6 +142,8 @@ class TeamBoard(BaseTool):
         *,
         role: Literal["lead", "worker"] = "lead",
         clock: Callable[[], str] | None = None,
+        store: BoardStore | None = None,
+        mailbox: Mailbox | None = None,
     ) -> None:
         if not lead_session_id:
             raise ValueError(
@@ -151,8 +153,10 @@ class TeamBoard(BaseTool):
         self._role: Literal["lead", "worker"] = role
         self._allowed = LEAD_OPS if role == "lead" else WORKER_OPS
         self.description = self._DESC_LEAD if role == "lead" else self._DESC_WORKER
-        self._store = BoardStore(clock=clock)
-        self._mailbox = Mailbox(clock=clock)
+        # store/mailbox 可注入:multi_agent 引擎与 lead 面必须**共享同一实例**
+        # (同板同锁,claim 互斥才成立);缺省自造(独立使用/测试)。
+        self._store = store if store is not None else BoardStore(clock=clock)
+        self._mailbox = mailbox if mailbox is not None else Mailbox(clock=clock)
 
     # ------------------------------------------------------------------
 

@@ -174,4 +174,5 @@ def test_caps_key_and_sum() -> None:
     assert "repo map" in CAPS
     assert CAPS["repo map"] == 500
     assert "具名预留(repo map 等)" not in CAPS
-    assert caps_sum() == 5500
+    # D4 v3 提案撤销:角色分权后可选栏实测 985 ≤ 1250,总额维持 5500
+    assert caps_sum() == 5750

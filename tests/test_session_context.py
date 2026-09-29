@@ -223,8 +223,8 @@ def test_default_budget_matches_d4() -> None:
     from sigma.sessions.context import DEFAULT_RESIDENT_BUDGET_TOKENS
 
     context = SessionContext(system_prompt="s", tools_schema=[], clock=CLOCK)
-    assert DEFAULT_RESIDENT_BUDGET_TOKENS == 5500
-    assert context.resident_budget_tokens == 5500
+    assert DEFAULT_RESIDENT_BUDGET_TOKENS == 5750  # D4 v3(团队任务,待追认)
+    assert context.resident_budget_tokens == 5750
 
 
 def test_resident_tokens_counts_instructions_and_schema() -> None:

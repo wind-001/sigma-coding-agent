@@ -929,12 +929,25 @@ def _optional_registry_with_team() -> ToolRegistry:
 
 
 def test_g_team6_measured_backfilled_and_within_cap() -> None:
-    """TeamBoard 的 schema 实测数字必须回填 MEASURED,且可选栏不超 cap 1250。"""
-    schemas = _optional_registry_with_team().schemas()
+    """可选栏(含 multi_agent)schema 实测必须回填 MEASURED,且不超 cap 1250。"""
+    from sigma.tools.builtin.multi_agent import MultiAgentTool
+
+    registry = _optional_registry_with_team()
+    team_tool = registry.get("team_board")
+    registry.register(
+        MultiAgentTool(
+            lead_session_id="sess-main",
+            workspace_root=None,
+            factory=None,
+            store=team_tool._store,
+            mailbox=None,
+        )
+    )
+    schemas = registry.schemas()
     total = estimate_text(
         json.dumps(schemas, ensure_ascii=False, sort_keys=True)
     )
-    key = "工具 schema(可选:联网 2+task+team_board)"
+    key = "工具 schema(可选:联网 2+task+team_board+multi_agent)"
     assert key in MEASURED, "实测数字必须进 resident_caps.MEASURED"
     assert MEASURED[key] == total, "MEASURED 必须与实测一致(表即常量,漂移当场红)"
     cap_key = "工具 schema(可选:联网+task+team+multi_agent)"
@@ -946,7 +959,7 @@ def test_g_team6_measured_backfilled_and_within_cap() -> None:
 
 
 def test_g885_caps_sum_still_equals_budget() -> None:
-    """分项和 == 总额(D4 v3:5750,可选栏 1500——待星辰追认)。"""
+    """分项和 == 总额(5500 维持:角色分权后可选栏实测 985,上调提案撤销)。"""
     assert caps_sum() == RESIDENT_BUDGET_TOKENS == 5750
 
 
