@@ -1,0 +1,201 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "TeamBoard 任务板状态机·活环(v3.1,终态见卡片)",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main-lifecycle",
+        "label": "主干生命周期",
+        "focus": [
+          "created",
+          "pending",
+          "running",
+          "success"
+        ],
+        "note": "创建 → 认领 → 执行 → 完成;守卫写在连线上"
+      },
+      {
+        "id": "recovery",
+        "label": "失败与恢复",
+        "focus": [
+          "running",
+          "fail",
+          "pending"
+        ],
+        "note": "fail/worker_lost 都回 pending 重派;attempts 封顶进 dead(终态,见卡片)"
+      },
+      {
+        "id": "deps",
+        "label": "依赖等待",
+        "focus": [
+          "blocked",
+          "pending",
+          "running"
+        ],
+        "note": "deps 未就绪先入 blocked,dep 成功自动释放;终态与取消见卡片与详规"
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "主干"
+    },
+    {
+      "id": "waiting",
+      "label": "依赖等待",
+      "variant": "normal"
+    },
+    {
+      "id": "recovery",
+      "label": "恢复",
+      "variant": "exception"
+    },
+    {
+      "id": "terminal",
+      "label": "终态"
+    }
+  ],
+  "mainPath": [
+    "created",
+    "pending",
+    "running",
+    "success"
+  ],
+  "nodes": [
+    {
+      "id": "created",
+      "lane": "main",
+      "col": 0,
+      "type": "external",
+      "label": "创建",
+      "sublabel": "DFS 环检测",
+      "width": 132
+    },
+    {
+      "id": "pending",
+      "lane": "main",
+      "col": 1,
+      "type": "backend",
+      "label": "pending 待认领",
+      "sublabel": "deps 全 success",
+      "width": 140
+    },
+    {
+      "id": "running",
+      "lane": "main",
+      "col": 2,
+      "type": "backend",
+      "label": "running 进行中",
+      "sublabel": "lease 自动续",
+      "tag": "CAS 认领",
+      "width": 140
+    },
+    {
+      "id": "success",
+      "lane": "main",
+      "col": 3,
+      "type": "cloud",
+      "label": "success 完成",
+      "sublabel": "吸收态",
+      "width": 132
+    },
+    {
+      "id": "blocked",
+      "lane": "waiting",
+      "col": 1,
+      "type": "messagebus",
+      "label": "blocked 依赖等待",
+      "sublabel": "dep 成功即释放",
+      "width": 140
+    },
+    {
+      "id": "fail",
+      "lane": "recovery",
+      "col": 2,
+      "type": "security",
+      "label": "fail 可重派",
+      "sublabel": "attempts+1",
+      "width": 132
+    }
+  ],
+  "edges": [
+    {
+      "id": "create-pending",
+      "from": "created",
+      "to": "pending",
+      "label": "create·deps 全 success",
+      "variant": "emphasis"
+    },
+    {
+      "id": "create-blocked",
+      "from": "created",
+      "to": "blocked",
+      "label": "create·deps 未就绪",
+      "variant": "default"
+    },
+    {
+      "id": "claim",
+      "from": "pending",
+      "to": "running",
+      "label": "claim·CAS 原子",
+      "variant": "emphasis"
+    },
+    {
+      "id": "finish",
+      "from": "running",
+      "to": "success",
+      "label": "finish·assignee",
+      "variant": "emphasis"
+    },
+    {
+      "id": "worker-lost",
+      "from": "running",
+      "to": "pending",
+      "label": "worker_lost·事件驱动回收",
+      "variant": "security"
+    },
+    {
+      "id": "fail-t",
+      "from": "running",
+      "to": "fail",
+      "label": "fail·attempts+1",
+      "variant": "security"
+    },
+    {
+      "id": "reclaim",
+      "from": "fail",
+      "to": "pending",
+      "label": "reclaim·lead·attempts<max",
+      "variant": "emphasis"
+    },
+    {
+      "id": "dep-release",
+      "from": "blocked",
+      "to": "pending",
+      "label": "dep_succeeded·全就绪",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "迁移纪律",
+      "items": [
+        "非法迁移 ValueError(带状态/事件/调用者);claim 单步 CAS",
+        "终态未入图:fail 封顶→dead;cancel 三入口→cancelled——全表见详规 §2.1"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "v3.1 要点",
+      "items": [
+        "worker_lost 事件驱动回收,无后台扫描器;心跳派发器自动续",
+        "schema 实测 274 token 进可选栏;max_attempts=3 可配"
+      ]
+    }
+  ]
+}
