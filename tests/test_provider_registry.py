@@ -19,6 +19,7 @@ from sigma.providers.registry import (
 def _spec(name: str, *, url: str = "https://example.invalid/v1") -> ProviderSpec:
     return ProviderSpec(name=name, base_url=url, default_model="m")
 
+import dataclasses
 
 class TestRegister:
     def test_register_and_resolve(self) -> None:
@@ -126,6 +127,6 @@ class TestBuiltins:
         固化进注册表就等于把密钥塞进了配置对象——
         而配置对象会被打印、会被序列化进日志。
         """
-        fields = set(ProviderSpec.model_fields)
+        fields = {f.name for f in dataclasses.fields(ProviderSpec)}
         assert fields == {"name", "base_url", "default_model"}
         assert not any("key" in f or "token" in f for f in fields)

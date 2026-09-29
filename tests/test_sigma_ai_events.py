@@ -1,22 +1,23 @@
-"""门槛 G3：六类 ``StreamEvent`` 逐类 round-trip。
+"""门槛 G3：六类 ``StreamEvent`` 逐类**全字段保真**。
 
-为什么事件必须能序列化
-    事件流是 **UI / 落盘（transcript）/ 测试** 三方共用的契约
-    （``events.py`` 模块 docstring）。只要有一类事件不能 round-trip，
-    确定性回放就地失效——而回放是整个 agent loop 测试的地基。
+为什么门槛长这样（P6 批次C 改写，原为 JSON 两次往返）
+    事件是 frozen dataclass（三问判定：生产路径**不序列化**——
+    事件被 loop 分派后聚合成 ``AssistantMessage`` 才落盘）。
+    但门槛要保护的性质没变：**一个事件的全部字段必须原样可达**，
+    新加的字段自动被覆盖。实现换成 ``dataclasses.replace(event)``
+    两次复制后全字段相等——复制走的是字段迭代，与 JSON 往返同等"逐字段"，
+    且不依赖一个生产中不存在的序列化通道。
 
-本文件是 1c 的测试，先前只有 ``errors.py`` 的 payload 往返被覆盖，
-六类事件本身**没有一条针对性的断言**。这是补上的缺口。
-
-对应 ``docs/plans/P1-批次1-详规.md`` 第 5 节门槛 G3。
+对应 ``docs/plans/P1-批次1-详规.md`` 第 5 节门槛 G3；
+载体判据变更见 ``docs/plans/P6-目录结构重构-详规.md`` 批次C。
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 from sigma.providers.errors import ErrorCode, ProviderErrorPayload
 from sigma.providers.events import (
     ErrorEvent,
@@ -62,18 +63,17 @@ _ROUNDTRIP_SAMPLES: list[Any] = [
     "event", _ROUNDTRIP_SAMPLES, ids=[type(e).__name__ for e in _ROUNDTRIP_SAMPLES]
 )
 def test_stream_event_roundtrip_by_class(event: Any) -> None:
-    """G3：每类事件两次往返后**完全相等**。
+    """G3：每类事件两次全字段复制后**完全相等**。
 
-    断言用 ``model_dump()`` 的**全字段相等**而不是逐字段 ``assert``：
-    逐字段写会漏掉"新加的字段没人测"——而新加字段恰恰是最容易在
-    序列化里丢的东西。全字段相等对新增字段自动生效。
+    断言用 dataclass 的**全字段相等**而不是逐字段 ``assert``：
+    逐字段写会漏掉"新加的字段没人测"。``replace`` 走字段迭代，
+    对新增字段自动生效；frozen 保证复制不会原地改。
     """
-    cls = type(event)
-    once = cls.model_validate_json(event.model_dump_json())
-    twice = cls.model_validate_json(once.model_dump_json())
+    once = replace(event)
+    twice = replace(once)
 
-    assert once.model_dump() == event.model_dump()
-    assert twice.model_dump() == event.model_dump()
+    assert once == event
+    assert twice == event
 
 
 def test_text_delta_signature_none_survives() -> None:
@@ -82,7 +82,7 @@ def test_text_delta_signature_none_survives() -> None:
     ``None`` 与 ``""`` 在协议上不是一回事——某些 provider 会拒绝空签名串。
     把 ``None`` 序列化成 ``""`` 会在多轮对话里产生难定位的异常。
     """
-    back = TextDelta.model_validate_json(TextDelta(text="x").model_dump_json())
+    back = replace(TextDelta(text="x"))
     assert back.text_signature is None
 
 
@@ -93,7 +93,7 @@ def test_tool_call_delta_index_is_required() -> None:
     给它默认值会让"忘了填 index"静默变成"所有分片都归到第 0 个工具"，
     症状是工具参数被拼成一堆乱码——**而不报警**。
     """
-    with pytest.raises(ValidationError):
+    with pytest.raises(TypeError):
         ToolCallDelta()  # type: ignore[call-arg]
 
 
@@ -108,10 +108,10 @@ def test_error_event_holds_payload_not_exception() -> None:
     payload = ProviderErrorPayload(code=ErrorCode.RATE_LIMIT, message="slow down")
     event = ErrorEvent(error=payload)
 
-    back = ErrorEvent.model_validate_json(event.model_dump_json())
+    back = replace(event)
     assert isinstance(back.error, ProviderErrorPayload)
     assert back.error.code is ErrorCode.RATE_LIMIT
-    # 关键：往返后仍然可判断"该不该重试"。丢了 code 这条信息就没了。
+    # 关键：复制后仍然可判断"该不该重试"。丢了 code 这条信息就没了。
     assert back.error.retriable is True
 
 

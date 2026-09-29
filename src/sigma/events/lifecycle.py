@@ -24,13 +24,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel
-
 from sigma.agent.messages import AgentMessage
 
 
-class ApprovalDecision(BaseModel):
-    """一次审批的**决定**。
+@dataclass(frozen=True)
+class ApprovalDecision:
+    """一次审批的**决定**（frozen dataclass,P6 批次C 三问判定:
+    不生成 schema、不落盘、按键结果直接构造——三问皆否）。
 
     ``allowed=False`` 时 ``reason`` 必填——它会进工具结果,模型要能读到
     "为什么被拒"才能自我纠正(与"单个失败不中断批次"同构)。

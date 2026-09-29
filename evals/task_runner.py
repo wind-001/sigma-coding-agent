@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import re
 import shutil
@@ -49,7 +50,7 @@ from pathlib import Path
 
 EVALS = Path(__file__).resolve().parent
 REPO = EVALS.parent
-sys.path.insert(0, str(REPO / "core"))
+sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(EVALS))
 
 from judges import Judge, JudgeVerdict, PytestJudge  # noqa: E402
@@ -350,7 +351,7 @@ async def run_one(
                 suffix += f"-r{max_rounds}"
                 updates["max_rounds"] = max_rounds
             updates["name"] = profile.name + suffix
-            profile = profile.model_copy(update=updates)
+            profile = dataclasses.replace(profile, **updates)
         try:
             result = await _run_agent(
                 spec,

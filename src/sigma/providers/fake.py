@@ -132,6 +132,7 @@ class FakeProvider(BaseProvider):
         model: str,
         signal: CancelToken,
     ) -> AsyncIterator[StreamEvent]:
+        from sigma.providers.errors import ProviderErrorPayload
         from sigma.providers.events import (
             ErrorEvent,
             StopEvent,
@@ -140,6 +141,7 @@ class FakeProvider(BaseProvider):
             ToolCallDelta,
             UsageEvent,
         )
+        from sigma.providers.messages import Usage
 
         if self._cursor >= len(self._rounds):
             raise TranscriptExhausted(
@@ -171,6 +173,14 @@ class FakeProvider(BaseProvider):
                     f"transcript 里出现未知事件类型：{event_type!r}。"
                     f"已知类型：{sorted(builders)}"
                 )
+            # 流事件是 dataclass（P6 批次C），构造器不再做嵌套转换——
+            # 两个仍为 pydantic 的载体必须显式重建，否则 transcript 里的
+            # 嵌套 dict 会以 dict 形态滞留在事件里，消费方
+            # ``event.usage.completion_tokens`` 直接 AttributeError。
+            if event_type == "usage":
+                raw = {**raw, "usage": Usage.model_validate(raw["usage"])}
+            elif event_type == "error":
+                raw = {**raw, "error": ProviderErrorPayload.model_validate(raw["error"])}
             yield builders[event_type](**raw)
 
     def estimate_tokens(self, messages: list[LlmMessage]) -> int:

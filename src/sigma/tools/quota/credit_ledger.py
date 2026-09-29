@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
+from dataclasses import dataclass
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
@@ -82,8 +83,14 @@ class LedgerUsage(BaseModel):
         return max(0, self.cycle_limit - self.cycle_used)
 
 
-class QuotaDecision(BaseModel):
-    """一次额度判定的结果。allowed=False 时 reason 必须能直接给模型看。"""
+@dataclass(frozen=True)
+class QuotaDecision:
+    """一次额度判定的结果。allowed=False 时 reason 必须能直接给模型看。
+
+    载体是 frozen dataclass（P6 批次C 三问判定）：进程内判定结果,
+    不落盘（落盘的是 ``LedgerUsage``）、不生成 schema、无外部输入,
+    三问皆否。frozen 因为决定一经给出就要进 details 留痕,不该被改。
+    """
 
     allowed: bool
     reason: str = ""

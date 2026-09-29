@@ -15,9 +15,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     # 删掉 BaseLoop 之后这里也精简了：原先还要 `AgentMessage` 与 `TurnResult`
@@ -98,7 +99,8 @@ class BaseTool(ABC):
 # 那条断言其实**比原来更强**：即使有人新写一个不继承任何基类的 loop，也能拦住。
 
 
-class ToolDefinition(BaseModel):
+@dataclass
+class ToolDefinition:
     """注册表里存的东西。**只装元数据，不装可执行引用。**
 
     这是架构 4.2 节「``BaseTool`` 行为 + ``ToolDefinition`` 元数据」两段式的落地。
@@ -107,11 +109,10 @@ class ToolDefinition(BaseModel):
     这一条让"扩展工具与内置工具同路径"成为**类型层面的约束**，
     而不只是一句约定（架构 4.4 节）。
 
-    ``arbitrary_types_allowed`` 是必需的：``BaseTool`` 是 ``ABC``，
-    Pydantic 无法校验它，只做 ``isinstance`` 检查。
+    载体是 ``dataclass``（P6 批次C 三问判定）：它是注册表的**内存元数据**，
+    不生成 schema、不落盘、字段类型由注册路径保证——
+    三问皆否，不需要为持一个 ABC 实例开 pydantic 的任意类型开关。
     """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
     description: str

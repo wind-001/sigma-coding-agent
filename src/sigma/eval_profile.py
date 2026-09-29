@@ -21,10 +21,11 @@ P4-批次2 扩了两个字段（``todo`` / ``sub_agent``），它们**一落地�
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from dataclasses import dataclass
 
 
-class EvalProfile(BaseModel):
+@dataclass
+class EvalProfile:
     """消融档位。**只影响 harness 行为，不影响模型与工具本身。**
 
     报告里每一行数据都必须带 ``name``：没有档位名，两个月后没人说得清

@@ -29,13 +29,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-class ProviderSpec(BaseModel):
+@dataclass(frozen=True)
+class ProviderSpec:
     """一个 provider 的**静态描述**。
 
     刻意只有三个字段——只装"怎么连上它"，**不含凭据**。

@@ -33,7 +33,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pydantic import BaseModel
 
 from sigma.providers.tokens import TruncatedText, estimate_text, truncate_to_tokens
 
@@ -52,20 +51,23 @@ FRONTMATTER_FENCE = "---"
 DEFAULT_MAX_BODY_TOKENS = 1500
 
 
-class SkillMeta(BaseModel):
+@dataclass(frozen=True)
+class SkillMeta:
     """一个技能在**索引**里的样子。
 
     三个字段与需求一致：``name`` / ``description`` / ``location``。
     另加 ``source``（绝对路径，运行时用）——**它不进索引文本**，
     因为它既长又是本机路径，对模型没有价值。
+
+    载体是 frozen dataclass（P6 批次C 三问判定）：不生成 schema、不落盘、
+    必填校验由 ``discover_skills`` 手写（校验的是 markdown frontmatter，
+    非结构化输入），三问皆否。frozen 因为元数据是扫描结果，不该被改。
     """
 
     name: str
     description: str
     location: str
     source: Path
-
-    model_config = {"arbitrary_types_allowed": True}
 
 
 @dataclass

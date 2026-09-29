@@ -75,7 +75,8 @@ SUB_SYSTEM_PROMPT_PREFIX = (
 MAILBOX_WAIT_TIMEOUT_S = 300.0
 
 
-class SubAgentRounds(BaseModel):
+@dataclass
+class SubAgentRounds:
     """子 agent 的轮数预算：三档，由**派发的模型**按任务难度选。
 
     三档取值与依据（全部来自本项目实测，不是拍脑袋）

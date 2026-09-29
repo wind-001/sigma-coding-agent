@@ -5,8 +5,13 @@
     由 import-linter 契约强制（架构方案第 8 节 / 门槛 G8）。
 
 两段式
-    数据载体用 Pydantic ``BaseModel``（``AGENTS.md`` 第 3 条，见 ``messages.py``）；
-    抽象接口用 ``abc.ABC``（``AGENTS.md`` 第 2 条）。
+    会话里要落盘的数据载体用 Pydantic ``BaseModel``（见 ``messages.py``，
+    三问判定的第 2 问成立：JSONL 序列化）；抽象接口用 ``abc.ABC``
+    （``AGENTS.md`` 第 2 条）。
+
+    本文件的 ``SamplingParams`` / ``StreamOptions`` 是**进程内请求参数**——
+    不生成 schema、不落盘、外部字段转换由协议层手工完成，
+    三问皆否，按 P6 批次C 用 ``dataclass``（AGENTS.md 第 3 条 v2）。
 
     为什么用 ABC 而不是 ``typing.Protocol``：
     Protocol 是结构化类型，不产生继承关系，忘实现抽象方法时只在**首次调用**
@@ -27,9 +32,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -39,11 +43,12 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# 请求参数（数据载体，BaseModel）
+# 请求参数（进程内数据载体，dataclass——三问判定见模块 docstring）
 # ---------------------------------------------------------------------------
 
 
-class SamplingParams(BaseModel):
+@dataclass
+class SamplingParams:
     """采样参数。
 
     评测要控制变量，所以这几个参数必须能从上层传下来。
@@ -54,7 +59,8 @@ class SamplingParams(BaseModel):
     top_p: float | None = None
 
 
-class StreamOptions(BaseModel):
+@dataclass
+class StreamOptions:
     """流式请求的可选项。
 
     ``include_usage`` 尤其关键：OpenAI 兼容协议**默认不在流里返回 usage**，

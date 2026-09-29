@@ -18,11 +18,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Literal
 
-from pydantic import BaseModel, ConfigDict
 
 from sigma.providers.base import CancelToken
 from sigma.providers.messages import ContentBlock, Usage
@@ -35,7 +34,8 @@ if TYPE_CHECKING:
     from sigma.agent.messages import AgentMessage
 
 
-class ToolResult(BaseModel):
+@dataclass
+class ToolResult:
     """工具执行结果。**两段式**（调研笔记 9.5.8 / 14.1 第 4 条）。
 
     ``content`` 进上下文、给模型看；``details`` 不进上下文，只给 UI / 审计 / 评测。
@@ -53,11 +53,12 @@ class ToolResult(BaseModel):
     """
 
     content: list[ContentBlock]
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = field(default_factory=dict)
     is_error: bool = False
 
 
-class ToolContext(BaseModel):
+@dataclass
+class ToolContext:
     """工具执行上下文。
 
     ``signal`` 必须在 P1 就进接口——**取消与超时后加是破坏性变更**
@@ -67,8 +68,6 @@ class ToolContext(BaseModel):
     ``emit`` 在 P1 只用于 CLI 打点：P1 没有 TUI，不做流式渲染。
     用 :meth:`say` 而不是直接调 ``emit``，免得每个工具都判一次 None。
     """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     session_id: str
     workspace_root: Path
@@ -94,15 +93,15 @@ class ToolContext(BaseModel):
 class TurnResult:
     """一轮 ``run_turn`` 的结果。
 
-    **为什么用 dataclass 而不是 BaseModel**（这是本模块唯一的例外）：
+    **为什么用 dataclass**（P6 批次C 后本模块三个载体全是 dataclass）：
 
     它装的是**活的 ``AgentMessage`` 实例**，不是可落盘的元数据。
     Pydantic 的价值在校验与序列化，这两样在这里都用不上；
     而 ``AgentMessage`` 是 ``ABC``，让 Pydantic 去校验一个抽象基类字段，
     只会引入"重建实例"的风险，收益为零。
 
-    这不是随手破例。判据与架构 0.3 节一致——**基类答"谁是谁"，
-    模型答"装着什么"**，而 ``TurnResult`` 两样都不是：
+    这不是随手破例，是 AGENTS.md 第 3 条 v2（三问判定）的直接结论——
+    **基类答"谁是谁"，模型答"装着什么"**，而 ``TurnResult`` 两样都不是：
     它只是把一个返回值捆绑起来，交给调用方立刻消费，不落盘、不过网。
 
     ``messages`` 是**本次新增**的消息（assistant + 工具结果），

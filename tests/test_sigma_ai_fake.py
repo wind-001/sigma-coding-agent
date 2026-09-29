@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from sigma.providers.base import CancelToken
 from sigma.providers.errors import ErrorCode
 from sigma.providers.events import (
@@ -82,14 +83,34 @@ def _round_text(text: str) -> list[dict[str, Any]]:
     ]
 
 
-def _dump(events: list[Any]) -> str:
-    """把一个事件列表压成可比对的字符串。
+def _event_dict(event: Any) -> Any:
+    """把一个事件（或其字段）转成 JSON 可比对的纯数据。
 
-    用 ``model_dump()`` 而不是 ``repr``：``repr`` 在字段顺序变化时结果会变，
-    而字段顺序变化不影响行为——那会制造假失败。
+    流事件是 frozen dataclass（P6 批次C），但它可能持有仍为 pydantic 的
+    载体（``UsageEvent.usage`` / ``ErrorEvent.error``），所以要递归：
+    dataclass 走字段迭代、BaseModel 走 ``model_dump``，其余原样。
+    用字段迭代而不是 ``repr``：``repr`` 在字段顺序变化时会变，制造假失败。
     """
+    import dataclasses  # noqa: PLC0415 — 只在这个转换器里用
+
+    if dataclasses.is_dataclass(event) and not isinstance(event, type):
+        return {
+            f.name: _event_dict(getattr(event, f.name))
+            for f in dataclasses.fields(event)
+        }
+    if isinstance(event, BaseModel):
+        return event.model_dump()
+    if isinstance(event, list):
+        return [_event_dict(x) for x in event]
+    if isinstance(event, dict):
+        return {k: _event_dict(v) for k, v in event.items()}
+    return event
+
+
+def _dump(events: list[Any]) -> str:
+    """把一个事件列表压成可比对的字符串（口径见 :func:`_event_dict`）。"""
     return json.dumps(
-        [event.model_dump() for event in events], ensure_ascii=False, sort_keys=True
+        [_event_dict(event) for event in events], ensure_ascii=False, sort_keys=True
     )
 
 
