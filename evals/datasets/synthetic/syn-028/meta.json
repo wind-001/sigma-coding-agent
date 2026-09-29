@@ -1,0 +1,39 @@
+{
+  "id": "syn-028",
+  "kind": "synthetic",
+  "title": "令牌桶限流器的四处缺陷（初始空桶 / 补充无上限 / 失败也扣令牌 / 参数无校验）",
+  "description": "工作区里的 ratelimit_lite 是一个令牌桶限流器（try_acquire / available，时间经 clock 参数注入以便测试），规则以模块 docstring 为准。它现在有四处 bug：\n\n1. 桶初始是空的：按约定刚建好的桶应该是**满**的（capacity 个令牌，允许一次容量级突发），现在从 0 起步，第一次 acquire 就失败——大部分用例都被这条压着；\n2. 补充没有上限封顶：令牌按 elapsed * rate 累加，但忘了不超过 capacity——长时间空闲后可用量远超桶容量，突发上限失效（available() 同样不封顶）；\n3. 失败的 acquire 也扣令牌：现在是无条件先扣再判断是否 >= 0，令牌不够时返回 False 却把桶扣成负数，后续恢复变慢——「失败不得扣减」被违反；\n4. 构造参数无校验：rate <= 0 或 capacity <= 0 应在构造时抛 ValueError，现在照单全收（rate=0 的桶永远补不上令牌）。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：第 1 处不修，很多用例根本走不到能暴露第 2、3 处的路径；修完一处要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import ratelimit_lite` 会失败）。\n- 只改工作区内的文件；时间一律从注入的 clock 读取，不许引入 sleep 或自行推进时间。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "13 failed, 1 passed in 0.23s",
+    "failed_tests": [
+      "tests/test_ratelimit_lite.py::test_initial_bucket_is_full",
+      "tests/test_ratelimit_lite.py::test_burst_beyond_capacity_fails",
+      "tests/test_ratelimit_lite.py::test_default_clock_allows_initial_burst",
+      "tests/test_ratelimit_lite.py::test_refill_by_elapsed",
+      "tests/test_ratelimit_lite.py::test_refill_fractional_ticks",
+      "tests/test_ratelimit_lite.py::test_refill_accumulates_exact_ticks",
+      "tests/test_ratelimit_lite.py::test_refill_capped_at_capacity",
+      "tests/test_ratelimit_lite.py::test_acquire_multiple_tokens_at_once",
+      "tests/test_ratelimit_lite.py::test_failed_acquire_does_not_consume",
+      "tests/test_ratelimit_lite.py::test_available_is_settled_and_capped",
+      "tests/test_ratelimit_lite.py::test_shared_clock_refills_both_buckets",
+      "tests/test_ratelimit_lite.py::test_rejects_nonpositive_rate",
+      "tests/test_ratelimit_lite.py::test_rejects_nonpositive_capacity"
+    ],
+    "recorded_at": "2026-09-29T23:57:16.162",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 14 passed。"
+  }
+}
