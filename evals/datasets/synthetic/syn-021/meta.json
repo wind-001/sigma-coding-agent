@@ -1,0 +1,35 @@
+{
+  "id": "syn-021",
+  "kind": "synthetic",
+  "title": "语义化版本的比较与范围匹配（prerelease 序 / 操作符截断 / AND 当 OR）",
+  "description": "工作区里的 semver_lite 做语义化版本的解析、比较与范围匹配（parse_version / compare / satisfies），规则以模块 docstring（semver.org §11）为准。它现在有四处 bug：\n\n1. 正式版与 prerelease 的先后反了：``1.2.3`` 应**高于** ``1.2.3-alpha.1``，现在反而更低（patch 相同后直接把 prerelease 标识符序列交给比较，没有「正式版更高」的特判）；\n2. prerelease 标识符比较两处错：数字标识符按**字符串**比（``alpha.9 < alpha.10`` 不成立）；「纯数字标识符低于含字母标识符」的方向也写反了（``1`` 反而高于 ``alpha``）；\n3. 范围操作符的匹配顺序：``>`` / ``<`` 排在 ``>=`` / ``<=`` 前面，``>=1.2.0`` 被截成 ``>`` + ``=1.2.0``，直接炸 ValueError——所有带 ``>=`` / ``<=`` 的范围用例全军覆没；\n4. 空格分隔的多个比较子应是 **AND**（``\">=1.0.0 <2.0.0\"`` 是区间），现在写成了「任一满足即满足」，``3.0.0`` 能匹配上这个区间（这条被第 3 处挡着——先修好操作符顺序它才暴露出来，改完要回归跑全部测试）。\n\n请修好这四处，让 tests/ 下的测试全部通过。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import semver_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "9 failed, 6 passed in 0.19s",
+    "failed_tests": [
+      "tests/test_semver_lite.py::test_release_beats_prerelease",
+      "tests/test_semver_lite.py::test_numeric_identifier_compares_numerically",
+      "tests/test_semver_lite.py::test_numeric_identifier_below_alphanumeric",
+      "tests/test_semver_lite.py::test_priority_chain_is_total_order",
+      "tests/test_semver_lite.py::test_satisfies_ge",
+      "tests/test_semver_lite.py::test_satisfies_le",
+      "tests/test_semver_lite.py::test_satisfies_range_is_and",
+      "tests/test_semver_lite.py::test_satisfies_or",
+      "tests/test_semver_lite.py::test_satisfies_prerelease_in_range"
+    ],
+    "recorded_at": "2026-09-29T22:31:44.948",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 15 passed。"
+  }
+}

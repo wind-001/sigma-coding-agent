@@ -1,0 +1,35 @@
+{
+  "id": "syn-020",
+  "kind": "synthetic",
+  "title": "JSONL 容错读取的四处缺陷（空行 / 行号 / 修复越界 / 非对象行）",
+  "description": "工作区里的 jsonl_lite 是一个 JSONL（每行一个 JSON 对象）的容错读取器（parse_lines 返回 ParseResult(records, bad_lines)，load 读文件），日志入库前的清洗在用它。约定以模块 docstring 为准。它现在有四处 bug：\n\n1. 纯空白行没有静默跳过——被当成坏行记进了 bad_lines（docstring：空行不算坏行，但占行号）；\n2. 行号从 0 起——约定从 1 起按原文行计，坏行的 line_no 全体偏一（与上一条有交互：只修空行不修行号，后面所有坏行的行号照样对不上）；\n3. 尾逗号修复越界：现在是无条件先 ``replace(\",}\", \"}\")`` 再解析——字符串值里的 ``\",}\"`` 序列会被偷偷改掉（``{\"note\": \"a,}b\"}`` 的值变成 ``\"a}b\"``）。约定是**先按原文解析，失败了才修复，且修复只允许碰行尾的 ``\",}\"``**；\n4. 非 JSON 对象的行（``42``、``[1, 2]``、``null``…）解析成功就进了 records——约定它们算坏行，原因记 ``\"not an object\"``，不进 records。\n\n请修好这四处，让 tests/ 下的测试全部通过。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import jsonl_lite` 会失败）。\n- 只改工作区内的文件。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "9 failed, 3 passed in 0.28s",
+    "failed_tests": [
+      "tests/test_jsonl_lite.py::test_string_value_with_comma_brace_untouched",
+      "tests/test_jsonl_lite.py::test_repair_keeps_inner_comma_brace",
+      "tests/test_jsonl_lite.py::test_blank_lines_are_skipped_silently",
+      "tests/test_jsonl_lite.py::test_line_numbers_start_at_one",
+      "tests/test_jsonl_lite.py::test_line_numbers_count_blank_lines",
+      "tests/test_jsonl_lite.py::test_non_object_number_is_bad_line",
+      "tests/test_jsonl_lite.py::test_non_object_array_is_bad_line",
+      "tests/test_jsonl_lite.py::test_unrepairable_line_reported_with_reason",
+      "tests/test_jsonl_lite.py::test_load_from_file"
+    ],
+    "recorded_at": "2026-09-29T22:31:44.948",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 12 passed。"
+  }
+}
