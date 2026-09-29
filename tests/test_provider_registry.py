@@ -128,5 +128,8 @@ class TestBuiltins:
         而配置对象会被打印、会被序列化进日志。
         """
         fields = {f.name for f in dataclasses.fields(ProviderSpec)}
-        assert fields == {"name", "base_url", "default_model"}
+        # ``protocol`` 是 P3 详规明确要求增加的字段（线协议名，用于
+        # cli/_make_provider 分派实现类），不是凭据——字段集钉住
+        # 防的是"顺手塞字段"，这里是计划内的第 4 个。
+        assert fields == {"name", "base_url", "default_model", "protocol"}
         assert not any("key" in f or "token" in f for f in fields)

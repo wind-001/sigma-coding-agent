@@ -27,7 +27,7 @@ P1 明确不做（写清边界，避免被读成"忘了"）
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from dataclasses import dataclass
 
@@ -39,13 +39,20 @@ if TYPE_CHECKING:
 class ProviderSpec:
     """一个 provider 的**静态描述**。
 
-    刻意只有三个字段——只装"怎么连上它"，**不含凭据**。
-    凭据属于调用期（见模块 docstring）。
+    字段只装"怎么连上它"，**不含凭据**——凭据属于调用期（见模块 docstring）。
+
+    ``protocol`` 是 2026-09-29 兑现的预留位：registry docstring 早先写明
+    "要接 Anthropic 那类非兼容协议时，需要增加'用哪个实现类'的字段"。
+    落地的形状是**线协议名**而不是实现类引用——注册表依旧不 import 任何
+    provider 实现（它保持在依赖图的最底层），"名字 → 类"的分派由调用方
+    （``cli/_make_provider``）做。带默认值 ``"openai-compat"``，因此
+    既有五条 spec 与全部既有调用点零改动。
     """
 
     name: str
     base_url: str
     default_model: str
+    protocol: Literal["openai-compat", "anthropic"] = "openai-compat"
 
 
 class UnknownProvider(KeyError):
@@ -108,12 +115,16 @@ class ProviderRegistry:
 
 
 def builtin_providers() -> ProviderRegistry:
-    """P1 内置的 provider 列表。
+    """P1 内置的 provider 列表（P3 起含第二个协议）。
 
-    这五个都是 **OpenAI 兼容协议**的服务，所以共用同一个
-    `OpenAICompatProvider`——注册表登记的是**连接参数**，不是实现类。
-    将来要接 Anthropic 那类非兼容协议时，`ProviderSpec` 需要增加
-    "用哪个实现类"的字段；**现在不加**，因为没有第二个实现可填。
+    前五个都是 **OpenAI 兼容协议**的服务，共用同一个 ``OpenAICompatProvider``；
+    ``anthropic`` 走 Messages API（``AnthropicProvider``）——注册表登记的
+    仍是**连接参数 + 线协议名**，不是实现类引用（协议名 → 实现类的分派
+    在 ``cli/_make_provider``）。这正是早先 docstring 预留的
+    "'用哪个实现类'的字段"，兑现为 ``ProviderSpec.protocol``。
+
+    ``anthropic`` 条目的 ``default_model`` 只是**预设值**——``--model``
+    随时可覆盖，不影响任何结构（详规 §7 明确不拍板的项之一）。
     """
     registry = ProviderRegistry()
     for spec in (
@@ -141,6 +152,12 @@ def builtin_providers() -> ProviderRegistry:
             name="ollama",
             base_url="http://localhost:11434/v1",
             default_model="qwen2.5:7b",
+        ),
+        ProviderSpec(
+            name="anthropic",
+            base_url="https://api.anthropic.com",
+            default_model="claude-sonnet-4-5",
+            protocol="anthropic",
         ),
     ):
         registry.register(spec)

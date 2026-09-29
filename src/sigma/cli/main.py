@@ -79,6 +79,7 @@ from sigma.agent.messages import (
     ToolResultAgentMessage,
 )
 from sigma.agent.types import TurnResult
+from sigma.providers.anthropic import AnthropicProvider
 from sigma.providers.base import BaseProvider
 from sigma.providers.openai import OpenAICompatProvider
 from sigma.providers.registry import builtin_providers
@@ -466,11 +467,27 @@ def _report(result: TurnResult) -> None:
 
 def _make_provider(
     args: argparse.Namespace, base_url: str, api_key: str
-) -> OpenAICompatProvider:
+) -> BaseProvider:
+    """按 preset 的**线协议**分派实现类（P3-G-ANTH-8）。
+
+    为什么分派在这里而不是注册表里：registry 只存连接参数 + 协议名，
+    保持不 import 任何 provider 实现（它是依赖图的最底层）；
+    "名字 → 类"的知识属于产品壳层。``--preset anthropic`` 即走
+    Messages API 协议，``sdk.run_task`` / ``InteractiveSession`` 按
+    ``BaseProvider`` 注入，零改动。
+    """
+    preset = args.preset or DEFAULT_PRESET
+    spec = builtin_providers().resolve(preset)
+    if spec.protocol == "anthropic":
+        return AnthropicProvider(
+            base_url=base_url,
+            api_key=api_key,
+            provider_name=preset,
+        )
     return OpenAICompatProvider(
         base_url=base_url,
         api_key=api_key,
-        provider_name=args.preset or DEFAULT_PRESET,
+        provider_name=preset,
     )
 
 
@@ -829,7 +846,12 @@ async def _run_once(
             enable_repo_map=enable_repo_map,
         )
     finally:
-        await provider.aclose()
+        # ``aclose`` 是可选能力（``BaseProvider`` 上没有它），按"有没有"调用——
+        # 与 ``SessionManager.aclose`` 同一款 getattr 模式（P3 起返回类型是
+        # 基类：分派出的可能是 openai 兼容或 anthropic 两个实现之一）。
+        closer = getattr(provider, "aclose", None)
+        if closer is not None:
+            await closer()
 
 
 class SessionManager:
