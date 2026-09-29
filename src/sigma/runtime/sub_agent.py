@@ -123,7 +123,8 @@ SubAgentFactory = Callable[[str, ToolContext, str, int], Awaitable[TurnResult]]
 轮数预算是成本闸，不能让子会话自己决定。
 
 由产品壳（sigma.sdk.InteractiveSession）注入：组装子会话需要 provider、keys、
-skills 目录、shadow_git_dir——全是产品壳的知识，sigma_tools 反依赖 sigma 层会成环。
+skills 目录、shadow_git_dir——全是产品壳的知识，runtime 反依赖产品壳会成环
+（层表里 runtime 在 sdk 之下），所以只能由组装方把工厂递下来。
 """
 
 

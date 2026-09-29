@@ -9,7 +9,7 @@ REM    set SIGMA_NO_PAUSE=1      -> don't wait for a key at the end (for scripts
 REM
 REM  Design notes:
 REM    - This file ONLY picks the interpreter and forwards arguments.
-REM      Every bit of logic lives in sigma.cli:main.
+REM      Every bit of logic lives in sigma.cli.main:main.
 REM    - All text here is ASCII on purpose: cmd.exe reads .bat in the
 REM      console's ANSI codepage (GBK on Chinese Windows), so UTF-8
 REM      Chinese in this file turns into mojibake. Chinese output happens

@@ -1,15 +1,17 @@
-"""sigma —— L5：产品壳。
+"""sigma —— 自研 coding agent harness（唯一顶层包，P6 起按功能域分子包）。
 
-职责
-    CLI / REPL / 一次性模式，以及 SDK 入口 ``create_session()``。
-    这一层只做组装，不承载任何 agent 逻辑。
+子包与分层
+    cli(终端壳) / sdk(唯一装配点) / runtime(核心循环+sub_agent) / agent(消息模型) /
+    providers(协议层,最底层) / events(生命周期事件) / hooks(订阅者与总线) /
+    tools(工具) / skills(技能) / sessions(会话) / memory(跨会话记忆) /
+    security(三层边界) / observability(观测) / prompts(提示词资产) / config(配置)。
+    依赖方向由 pyproject 的 import-linter 15 层契约强制——低层引用高层即 CI 失败。
 
-允许依赖
-    sigma_tools, sigma.sessions, sigma.agent, sigma.providers
+入口
+    ``python -m sigma`` / console script → ``sigma.cli.main:main``；
+    SDK 组装 → ``sigma.sdk``（唯一装配点,cli 与评测都经它）。
 
-实现状态
-    P0 时仅包声明与占位 CLI——已失效的历史状态，
-    现 CLI/REPL/SDK 完整可用（本行 2026-09-27 评审时补注日期）。
+现行结构详录:``docs/architecture.md`` §3.1(v1.9)。
 """
 
 from __future__ import annotations

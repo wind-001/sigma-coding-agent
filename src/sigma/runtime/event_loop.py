@@ -180,7 +180,7 @@ class AgentLoop:
         # 很多轮"之后——每次 send 清零等于没有 steering。loop 实例由
         # InteractiveSession 持有，生命周期与会话一致，正好。
         #
-        # 判据只看**工具名**（"todo"），不 import sigma_tools：
+        # 判据只看**工具名**（"todo"），不 import sigma.tools：
         # loop 层与工具层是兄弟层，格式知识留在工具层，这里只需要知道名字。
         # **不要求调用成功**——模型试图看计划（哪怕参数错了）即是有意识，
         # 拼装失败的调用 name 为 None，自然不会被误判为"碰过"。

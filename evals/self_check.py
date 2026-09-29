@@ -50,7 +50,7 @@ from sigma.sdk import build_system_prompt
 REPO = Path(__file__).resolve().parent.parent
 EVALS_DIR = Path(__file__).resolve().parent
 # 与 task_runner.py / runner.py 同款:脚本直跑时手动补路径
-# (editable 安装只覆盖 core/,evals 兄弟模块不在这条路上)。
+# (editable 安装只覆盖 src/,evals 兄弟模块不在这条路上)。
 sys.path.insert(0, str(REPO / "core"))
 sys.path.insert(0, str(EVALS_DIR))
 

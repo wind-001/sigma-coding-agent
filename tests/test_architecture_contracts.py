@@ -6,9 +6,12 @@
     否则无法区分「契约在工作」和「契约根本没生效」。
 
 为什么每个 fixture 还要断言「只有一条契约坏掉」
+    【P6 历史注记：本节论证的是旧五包布局的 ``independence`` 契约，
+    该契约已随布局废除；fixture 测试保留，因为它验证的是
+    「工具能区分哪条契约坏了」这一通用能力，对新层表依然成立。】
     ``layers`` 契约是线性栈，它默认放行所有向下的 import，
-    无法表达「同级互不依赖」。所以 ``sigma_tools`` 与 ``sigma.sessions``
-    的兄弟关系必须靠单独的 ``independence`` 契约钉住。
+    无法表达「同级互不依赖」。所以旧布局的 ``sigma_tools`` 与 ``sigma_session``
+    兄弟关系必须靠单独的 ``independence`` 契约钉住。
     如果这个样例同时把 layers 也弄坏了，就说明它测的不是兄弟约束。
 
 这个文件对应 docs/architecture.md 第 8 节的门禁，

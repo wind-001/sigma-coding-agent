@@ -1,7 +1,7 @@
 """审批拦截层(L3):决策型审批钩子的产品壳实现(P3-批次2)。
 
 三层拦截在这里补完最后一块:
-    L1 写路径约束(sigma_tools/_paths)——越界**拒绝**,审批豁免后放行;
+    L1 写路径约束(security/path_sandbox.py)——越界**拒绝**,审批豁免后放行;
     L2 影子 git checkpoint(sigma.agent/checkpoint)——可回滚兜底;
     L3 审批(**本模块**)——危险/越界的动作在执行前交给人确认。
 
