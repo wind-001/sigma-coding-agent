@@ -580,6 +580,32 @@ class AgentLoop:
                 # 一次合法调用**（理由见 AssembledCall.to_block 的 docstring）
                 blocks.append(item.to_block())
 
+        if not blocks:
+            # 「零文本 + 零有效调用」的一轮不得落成空 content
+            # （P0 详规 Review-2026-09-26 第 81 行「已知边界」①，2026-09-29 修）。
+            #
+            # 缺陷有两半：convert.py 把空 content 映射为 null，真实 API 对
+            # "空 assistant 且无 tool_calls" 可能直接拒收；审计链上这一轮
+            # 也"什么都不剩"。在 loop 侧补一条可见注记一次修掉两半——
+            #
+            # 为什么在 loop 侧而不是 convert 侧（备选：空 content 映射为空串）：
+            #   1. "这轮有 N 个调用拼装失败"是聚合时才知道的事实，到 convert
+            #      （纯函数）手里信息已经丢了，它没有依据捏造内容；
+            #   2. 空串只是换一种被拒的方式，且审计链仍然什么都不剩；
+            #   3. 改 convert 的映射会静默改写所有空 assistant 消息的协议形状，
+            #      范围远大于缺陷本身。
+            #
+            # 与 _failure_message 的 user 注记同一条纪律：失败不伪装成合法
+            # 调用块，但也不许静默消失。注记文本是确定性的——回放逐字节一致。
+            if calls:
+                note = (
+                    f"[系统注记] 本轮没有可解析输出：{len(calls)} 个工具调用"
+                    "全部拼装失败，没有被接受、也没有执行。"
+                )
+            else:
+                note = "[系统注记] 本轮没有可解析输出：模型未产出任何文本或工具调用。"
+            blocks.append(TextBlock(text=note))
+
         assistant = AssistantMessage(
             content=blocks,
             provider=type(self._provider).__name__,
