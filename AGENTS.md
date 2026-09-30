@@ -17,3 +17,5 @@
 ![四层架构图](docs/assets/pi-layered-architecture.png)
 
 7 开始实现架构的某一个部分之前,应该先生成一个计划文档让我审阅,我来决定是否可行
+
+8 门禁分两级:组件级开发循环用快门(scripts/fast_gate.py,契约检查+改动相关测试,秒级);批次边界/提交前/合并前/结构与依赖变更后必须跑全量门(pytest 全量+mypy src+lint-imports,约6分钟)。门禁清单的权威来源是 docs/architecture.md 第8节
