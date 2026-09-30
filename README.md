@@ -4,14 +4,14 @@
 
 [![ci](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.12-blue)
-![tests](https://img.shields.io/badge/tests-716%20passed-brightgreen)
-![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-105-brightgreen)
+![tests](https://img.shields.io/badge/tests-937%20passed-brightgreen)
+![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-123-brightgreen)
 
 > **现状**（数字绑**本次提交**；换代码 / 换环境必须重跑，见[计数纪律](#计数纪律)）：
 > P0–P2 ✅ · **P3 安全边界与审批（L1 写路径 / L2 影子 checkpoint / L3 审批层）✅** ·
 > **P4 技能系统 · todo · sub_agent · 影子库优化 ✅** · **P5-批次1 观测层（trace + `--timeline`）✅**
-> ——**716 单测全绿 · 三道门禁全绿（mypy strict 63 files / 契约 3 kept）· 18 份注入脚本 105 条实验 · 回放 6/6**。
-> 未完成的部分不藏：正式集 30 条只落了 12、`reproduce` 0/20、压缩质量验收门、扩展层热重载、
+> ——**937 单测全绿 · 三道门禁全绿（mypy strict 96 files / 契约 2 kept）· 20 份注入脚本 123 条实验 · 回放 6/6**。
+> 未完成的部分不藏：正式集 30 条落 28（`reproduce` 0/20，方向待拍板）、压缩质量验收门、扩展层热重载、
 > 技能命中率未实测、7.6 八项主张只有 5 项有对照数据（见[进度与未完成](#进度与未完成)）。
 
 ---
@@ -53,11 +53,12 @@ sigma 0.0.1（一次性模式）
 
 **1. 约束是机器强制的，不靠自觉。**
 分层依赖不许反向 → `lint-imports` 契约：单顶层包 `sigma` 下 15 个功能域子包
-（cli / runtime / providers / events / hooks / tools / skills / sessions / memory /
-security / observability / prompts / config）按层排序，低层引用高层即 CI 失败。
+（cli / runtime / agent / providers / events / hooks / tools / skills / sessions /
+memory / security / observability / prompts / config / team）按层排序，
+低层引用高层即 CI 失败。
 （P6 前的五包布局曾需要额外的 `independence` 契约钉兄弟层——那条"只写 layers
 会静默放行违规依赖"的教训促成了现在这张更细的层表。）
-类型 → `mypy --strict`；行为 → 724 个单测。**CI 就这三条命令，跑不过不合。**
+类型 → `mypy --strict`；行为 → 937 个单测。**CI 就这三条命令，跑不过不合。**
 
 **2. 门槛必须是"可被证伪"的。**
 73 条门槛，每条都配一次 **破坏 → 断言变红 → 还原 → 断言变绿** 的注入实验
@@ -145,9 +146,9 @@ sigma --no-checkpoint -p "任务"                 # 关掉快照（危险：破�
 ### 6. 跑测试（不需要任何 API key）
 
 ```bash
-pytest -q                 # 716 个单测
-mypy core                 # strict
-lint-imports              # 三条分层契约
+pytest -q                 # 937 个单测
+mypy src                  # strict（P6 起包根是 src/）
+lint-imports              # 两条契约：分层 + 禁引评测/扩展
 python evals/runner.py    # 回放六个场景，报告落 evals/reports/
 ```
 
@@ -236,11 +237,11 @@ flowchart LR
 完整清单（"钩子挡不住什么"）在 [`docs/architecture.md` 6.3 节](docs/architecture.md)，
 不做容器的理由见 [`docs/decisions/D6`](docs/decisions/D6-不做容器隔离.md)。
 
-## 质量体系：三道门禁 + 105 条注入实验
+## 质量体系：三道门禁 + 123 条注入实验
 
-**三道门禁**（CI 里就是这三条）：`lint-imports` · `mypy core`（strict）· `pytest`。
+**三道门禁**（CI 里就是这三条）：`lint-imports` · `mypy src`（strict）· `pytest`。
 
-**每条门槛都配一次注入实验**：`scripts/gate_injection_*.py` 共 **18 份脚本、105 条实验**
+**每条门槛都配一次注入实验**：`scripts/gate_injection_*.py` 共 **20 份脚本、123 条实验**
 （条数是机械数出来的——按 AST 数每个脚本实际注册/调用的实验条数，不是抄文档）。
 一条实验 = **破坏 → 断言变红 → 还原 → 断言变绿**；脚本自己报 `N/N 被成功证伪` 才算过。
 
@@ -259,7 +260,9 @@ flowchart LR
 | batch16 | **观测层（G865–G872）** | 8 |
 | batch17 | **自证波1（G873 / G874 / G875 / G878）** | 4 |
 | p2_compaction / p5 | 压缩视图与 P5 其余 | 2 + 2 |
-| | **合计** | **105** |
+| batch18 | **跨会话记忆（G879–G886）** | 7 |
+| team_v3 | **团队协作 v3：装配级角色面 / 幂等收尾 / 失败兜底 / D 组门禁（心跳真跑、异常路径、空转不退、表漂移）** | 11 |
+| | **合计** | **123** |
 
 **一条门槛长什么样**（以 G68 为例——"回滚要删掉事后新建的文件"）：
 
@@ -273,8 +276,9 @@ reset = self._git("reset", "--hard", "--quiet", ref)
 
 跑注入实验：`python scripts/gate_injection_batch13.py` → **9/9 被成功证伪**（安全边界）、
 `scripts/gate_injection_batch14.py` → **5/5**（技能系统）、`batch16` → **8/8**（观测层）、
-`batch17` → **4/4**（自证波1）。
-**本文件不宣称"105 条全部已被复验"**——每条的可证伪性以各脚本自报的 `N/N` 作数；
+`batch17` → **4/4**（自证波1）、`batch18` → **7/7**（跨会话记忆）、
+`team_v3` → **11/11**（团队协作 v3 + Review 批次的 D 组门禁）。
+**本文件不宣称"123 条全部已被复验"**——每条的可证伪性以各脚本自报的 `N/N` 作数；
 要逐条复验，按上表跑对应脚本即可（它们改真实源码、`finally` 还原）。
 
 ---
@@ -298,7 +302,7 @@ src/sigma/      唯一顶层包（src 布局，P6 起按功能域分子包）
   prompts/      系统提示词资产（全部文案，同源纪律）
   config/       .env/密钥、常驻区预算表
   sdk.py        唯一装配层
-tests/          724 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
+tests/          937 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
 evals/          评测运行器 + 报告（adversarial 20+10 条已落地；synthetic 12/30；reproduce 0/20）
 examples/       真 API 演示（smoke / agent_demo / web_research）
 extensions/     运行时加载的扩展样例（P4）

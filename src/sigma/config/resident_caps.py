@@ -28,13 +28,14 @@
 
 from typing import Final
 
-#: 常驻区总额(D4 v2)。与 ``sigma.sessions.context.DEFAULT_RESIDENT_BUDGET_TOKENS``
+#: 常驻区总额(D4 v3)。与 ``sigma.sessions.context.DEFAULT_RESIDENT_BUDGET_TOKENS``
 #: 数值一致;G885 断言两者相等——两处定义、一处对账,漂移当场红。
 # 修订记录(D4 v3,2026-09-30,团队任务入场):可选栏同口径实测(含
 # {"type":"function"} 信封)**1441**,超 1250 达 191——multi_agent(引擎
 # 入口)与 team_board 的 lead/worker 双面 op 集都是真实成本。按消费纪律
-# 先报数字:可选栏 1250→1500,总额 5500→5750。**待星辰追认**;
-# 不同意的回退点:本文件两处 + context.py 一处 + 三条测试断言。
+# 先报数字:可选栏 1250→1500,总额 5500→5750。**星辰已追认(2026-09-30)**;
+# 方向是"分区管理,允许工具 schema 占据较大份额"(A1),本批次不重划分区。
+# 回退点(供日后翻账):本文件两处 + context.py 一处 + 三条测试断言。
 # 教训补记:一度按裸 schema 之和(985,漏算信封)误判"无需上调"并回退——
 # **口径必须与历史测量一致**,这是比数字本身更重要的教训。
 RESIDENT_BUDGET_TOKENS: Final[int] = 5750
@@ -46,9 +47,11 @@ MEASURED: Final[dict[str, int]] = {
     "系统提示词(全关基准)": 225,
     "系统提示词(全开+记忆纪律段)": 493,
     "工具 schema(核心 6+ask_user)": 1857,
-    # P4 团队任务(2026-09-30):team_board 进"可选栏"。实测 1230 = 复测基线 956
-    # (2026-09-28 记 957,差 1 系其间文案演化)+ team_board 自身 274,落在
-    # 详规 §2.4 估计(200–300)内;cap 1250 分毫未动,余 20(详规余 293 的口径)。
+    # P4 团队任务(2026-09-30):team_board(lead/worker 双面 op 集)+ multi_agent
+    # (引擎入口)一起进"可选栏"。**口径 = 含 {"type":"function"} 信封的整栏实测**
+    # (与历史测量一致):1441,cap 1500,余 59。裸 schema 之和只有 985——那是
+    # **错口径**(漏算信封),D4 修订记录里专门记了这次教训。
+    # 依据与分项:docs/architecture.md §5.1、docs/decisions/D4-上下文预算.md。
     "工具 schema(可选:联网 2+task+team_board+multi_agent)": 1441,
     "AGENTS.md(本仓库自样本)": 104,
     "技能索引(3 个示例技能)": 57,
