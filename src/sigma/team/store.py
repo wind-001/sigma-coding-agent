@@ -23,12 +23,13 @@ import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Final
 
 from sigma.team.board import Board, now_stamp
 
 #: 板文件的固定落点(相对工作区根)。工具自己的账本,不是用户路径,
 #: 所以 ``.sigma`` 目录不存在时自动创建(与 todo 同一条处置)。
-BOARD_RELATIVE = ".sigma/team/board.json"
+BOARD_RELATIVE: Final[str] = ".sigma/team/board.json"
 
 
 class BoardStore:

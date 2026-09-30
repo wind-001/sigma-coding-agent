@@ -19,16 +19,19 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
-from sigma.agent.types import ToolContext, ToolResult
+from sigma.agent.types import ToolContext, ToolResult, TurnResult
 from sigma.providers.messages import TextBlock
 from sigma.team.engine import EngineConfig, TeamEngine
 from sigma.team.mailbox import Mailbox
 from sigma.team.store import BoardStore
 from sigma.tools.base import BaseTool
+from sigma.tools.shell import reject_result, strip_schema_noise
 
 
 class MultiAgentParams(BaseModel):
@@ -42,19 +45,14 @@ class MultiAgentParams(BaseModel):
     reason: str = Field(default="", description="stop 可选:收摊原因")
 
 
-def _reject(message: str, details: dict[str, Any]) -> ToolResult:
-    return ToolResult(content=[TextBlock(text=message)], details=details, is_error=True)
-
-
-def _strip_schema_noise(schema: dict[str, Any]) -> dict[str, Any]:
-    schema.pop("title", None)
-    schema.pop("default", None)
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        for field_schema in properties.values():
-            if isinstance(field_schema, dict):
-                _strip_schema_noise(field_schema)
-    return schema
+#: 子会话工厂的**结构**契约(与 ``runtime.SubAgentFactory`` 同形)。
+#:
+#: 为什么不 import ``sigma.runtime.sub_agent`` 的类型别名:层表把 ``tools``
+#: 排在 ``runtime`` **之下**——tools 不得 import runtime。这里需要的只是
+#: "一个可调用对象长这样",在本层自陈一个同形别名即可:运行期不需要认识
+#: runtime 的任何类型,静态检查照样管用(且与既有 ``SubAgentFactory`` 别名
+#: 逐字同形——两处任一变形,``sdk`` 的装配点当场红)。
+SubSessionFactory = Callable[[str, ToolContext, str, int], Awaitable[TurnResult]]
 
 
 class MultiAgentTool(BaseTool):
@@ -71,14 +69,14 @@ class MultiAgentTool(BaseTool):
     def json_schema(self) -> dict[str, Any]:
         schema = super().json_schema()
         schema.pop("description", None)
-        return _strip_schema_noise(schema)
+        return strip_schema_noise(schema)
 
     def __init__(
         self,
         *,
         lead_session_id: str,
-        workspace_root: Any,
-        factory: Any,
+        workspace_root: Path,
+        factory: SubSessionFactory,
         store: BoardStore,
         mailbox: Mailbox,
         max_rounds: int = 16,
@@ -132,12 +130,12 @@ class MultiAgentTool(BaseTool):
 
     async def _start(self, params: MultiAgentParams, ctx: ToolContext) -> ToolResult:
         if self.engine_running:
-            return _reject(
+            return reject_result(
                 "团队已在运行(先 stop 再重新 start)。", {"already_running": True}
             )
         goal = params.goal.strip()
         if not goal:
-            return _reject("start 需要 goal(团队总目标一句话)。", {"missing": "goal"})
+            return reject_result("start 需要 goal(团队总目标一句话)。", {"missing": "goal"})
         worker_count = max(1, min(params.workers, 3))
         # runner:引擎的 worker 执行通道——复用与 task 相同的隔离子会话工厂
         # (克隆 registry、同款安全边界);signal 沿用本次调用的 ctx。

@@ -120,3 +120,38 @@ class WorkerBoard:
                 caller=self._worker_id,
                 result=reason,
             )
+
+    # ---- 幂等收尾(引擎用,不是 LLM 面)--------------------------------
+
+    async def try_finish(self, task_id: str, result: str) -> TeamTask | None:
+        """幂等收尾:任务已不在 ``running`` 就返回 ``None``(跳过,不抛)。
+
+        为什么需要它(①-c 的连带面)
+            worker 面(``team_board`` 的 worker 角色)现在**真的有** finish/fail
+            ——子 agent 可以自己把任务收掉。引擎在 runner 返回后再无条件
+            finish,就会撞上非法迁移(``fail+FINISH`` 不在迁移表里);异常又被
+            except 分支放大成第二次非法迁移(``fail+FAIL``),协程带着异常结束,
+            而任务停在**非终态的 fail** 上 ⇒ 引擎永不收敛。
+            先回读板再决定动手,是这条链唯一便宜的断点。
+
+        读-判-写在同一事务里(同一把 store 锁):与 worker 自己的收尾互斥,
+        不存在"读完发现还在 running、写之前它已经被收掉"的窗口。
+        """
+        return await self._conclude(task_id, FINISH, result)
+
+    async def try_fail(self, task_id: str, reason: str) -> TeamTask | None:
+        """幂等认输,语义同 :meth:`try_finish`。"""
+        return await self._conclude(task_id, FAIL, reason)
+
+    async def _conclude(self, task_id: str, event: str, text: str) -> TeamTask | None:
+        async with self._store.transaction(self._root) as board:
+            task = board.find(task_id)
+            if task is None or task.state != "running":
+                return None  # 已被 worker 自己收尾(或被回收/取消):重复动手会非法迁移
+            return apply(
+                board,
+                event,
+                task_id=task_id,
+                caller=self._worker_id,
+                result=text,
+            )

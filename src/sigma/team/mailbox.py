@@ -14,30 +14,34 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Final
+
+from pydantic import BaseModel, ValidationError
 
 from sigma.team.board import now_stamp
 
 #: 信箱目录(相对工作区根)。每个 agent 一个 ``<session-id>.jsonl``。
-MAILBOX_DIR_RELATIVE = ".sigma/team/inbox"
+MAILBOX_DIR_RELATIVE: Final[str] = ".sigma/team/inbox"
 
 #: session id → 文件名的安全字符集。Windows 文件名不容 ``\\ / : * ? " < > |``,
 #: 多余的字符替换成下划线——消息正文不受影响,只有落点文件名被净化。
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
-@dataclass
-class MailMessage:
-    """一条信箱消息。``at`` 用注入的 clock,测试才能离线且确定。"""
+class MailMessage(BaseModel):
+    """一条信箱消息。``at`` 用注入的 clock,测试才能离线且确定。
+
+    载体同 :class:`~sigma.team.board.TeamTask`(落盘 + 外部输入校验 ⇒ pydantic;
+    AGENTS.md 第 3 条三问判定,Review-2026-09-30 B3)。
+    """
 
     sender: str
     text: str
     at: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {"sender": self.sender, "text": self.text, "at": self.at}
+        return self.model_dump()
 
     @classmethod
     def from_dict(cls, raw: Any) -> MailMessage:
@@ -46,11 +50,10 @@ class MailMessage:
         for field_name in ("sender", "text", "at"):
             if field_name not in raw:
                 raise ValueError(f"信箱行缺少 {field_name}")
-        return cls(
-            sender=str(raw["sender"]),
-            text=str(raw["text"]),
-            at=str(raw["at"]),
-        )
+        try:
+            return cls.model_validate(raw)
+        except ValidationError as exc:
+            raise ValueError(f"信箱行不合法:{exc}") from exc
 
 
 def _safe_name(session_id: str) -> str:

@@ -29,6 +29,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, Field
 
 from sigma.tools.base import BaseTool
+from sigma.tools.shell import reject_result, strip_schema_noise
 from sigma.agent.types import ToolContext, ToolResult
 from sigma.team.board import apply
 from sigma.team.mailbox import Mailbox
@@ -68,24 +69,6 @@ class TeamBoardParams(BaseModel):
     text: str = Field(default="")
 
 
-def _reject(message: str, details: dict[str, Any]) -> ToolResult:
-    """参数级拒绝:直接给 is_error 结果,不进状态机。"""
-    return ToolResult(content=[TextBlock(text=message)], details=details, is_error=True)
-
-
-def _strip_schema_noise(schema: dict[str, Any]) -> dict[str, Any]:
-    """递归剥掉 schema 里的 title/default(字段 description 保留——
-    那是模型唯一的使用说明)。见 :meth:`TeamBoard.json_schema`。"""
-    schema.pop("title", None)
-    schema.pop("default", None)
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        for field_schema in properties.values():
-            if isinstance(field_schema, dict):
-                _strip_schema_noise(field_schema)
-    return schema
-
-
 def _check_required(params: TeamBoardParams) -> ToolResult | None:
     """写操作的参数预检(与状态机的迁移守卫分开):空字段在这里就被拒,
     理由更直白;守卫管的是"板上的规则",这里管的是"调用是否成形"。"""
@@ -93,16 +76,16 @@ def _check_required(params: TeamBoardParams) -> ToolResult | None:
         return None
     if params.op == "create":
         if not params.title.strip():
-            return _reject("create 需要 title(任务一句话)。", {"missing": "title"})
+            return reject_result("create 需要 title(任务一句话)。", {"missing": "title"})
         return None
     if not params.id.strip():
-        return _reject(f"{params.op} 需要 id(任务 id)。", {"missing": "id"})
+        return reject_result(f"{params.op} 需要 id(任务 id)。", {"missing": "id"})
     if params.op in ("finish", "fail") and not params.result.strip():
-        return _reject(
+        return reject_result(
             f"{params.op} 需要 result(结论或失败原因)。", {"missing": "result"}
         )
     if params.op in ("reclaim", "abandon") and not params.note.strip():
-        return _reject(
+        return reject_result(
             "reclaim 需要 note(接管原因,审计痕迹)。", {"missing": "note"}
         )
     return None
@@ -134,7 +117,7 @@ class TeamBoard(BaseTool):
         """
         schema = super().json_schema()
         schema.pop("description", None)
-        return _strip_schema_noise(schema)
+        return strip_schema_noise(schema)
 
     def __init__(
         self,
@@ -186,7 +169,7 @@ class TeamBoard(BaseTool):
         if params.op == "list":
             return self._list(ctx)
         if params.op not in self._allowed:
-            return _reject(
+            return reject_result(
                 f"当前角色是 {self._role},无 {params.op} 操作"
                 f"(合法:{'/'.join(sorted(self._allowed))})。"
                 "角色由引擎按会话分配,不是调用方可选的。",
@@ -239,9 +222,9 @@ class TeamBoard(BaseTool):
         to = params.to.strip()
         text = params.text.strip()
         if not to:
-            return _reject("send 需要 to(目标 session-id 或 lead)。", {"missing": "to"})
+            return reject_result("send 需要 to(目标 session-id 或 lead)。", {"missing": "to"})
         if not text:
-            return _reject("send 需要 text(消息正文)。", {"missing": "text"})
+            return reject_result("send 需要 text(消息正文)。", {"missing": "text"})
         target = self._lead if to == "lead" else to
         await self._mailbox.send(
             ctx.workspace_root, to=target, sender=ctx.session_id, text=text

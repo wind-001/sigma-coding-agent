@@ -178,6 +178,7 @@ def _check_abandon(task: TeamTask) -> None:
         ("fail", "reclaim", {"task_id": "t1", "caller": LEAD, "lead": LEAD, "note": "接管"}, "pending", _check_reclaim_fail),
         ("fail", "abandon", {"task_id": "t1", "caller": LEAD, "lead": LEAD}, "dead", _check_abandon),
         ("blocked", "dep_succeeded", {"task_id": "t1", "caller": "system:scanner"}, "pending", lambda task: None),
+        ("blocked", "cancel", {"task_id": "t1", "caller": LEAD, "lead": LEAD}, "cancelled", _check_cancel),
         ("pending", "cancel", {"task_id": "t1", "caller": LEAD, "lead": LEAD}, "cancelled", _check_cancel),
     ],
     ids=[
@@ -192,6 +193,7 @@ def _check_abandon(task: TeamTask) -> None:
         "fail+reclaim",
         "fail+abandon",
         "blocked+dep_succeeded",
+        "blocked+cancel",
         "pending+cancel",
     ],
 )
@@ -213,13 +215,49 @@ _EVENTS = (
     "create", "claim", "finish", "fail", "reclaim",
     "abandon", "cancel", "heartbeat", "worker_lost", "lease_expired", "dep_succeeded",
 )
-_LEGAL_KEYS = set(TRANSITIONS)
+
+#: 合法迁移的**手写清单**(D5,Review-2026-09-30)。
+#:
+#: 刻意不写 ``set(TRANSITIONS)``:由表反推非法组合有个致命洞——**往表里新增一行时,
+#: 它会自动从"非法"集合里消失**,于是"加迁移不必补测试"可以一路绿过去,
+#: 与 ``board.py`` 头注释"改表不补测试(或反之)当场红"正好相反。
+#: 手写清单配下面的等式断言:改表不补清单 → 等式红;补清单不补用例 →
+#: 非法行集合随之变化,参数化用例会逐条抓到。
+_LEGAL_ROWS_HANDWRITTEN: tuple[tuple[str, str], ...] = (
+    (ABSENT, "create"),
+    ("pending", "claim"),
+    ("running", "finish"),
+    ("running", "fail"),
+    ("running", "heartbeat"),
+    ("running", "worker_lost"),
+    ("running", "lease_expired"),
+    ("running", "cancel"),
+    ("running", "reclaim"),
+    ("fail", "reclaim"),
+    ("fail", "abandon"),
+    ("blocked", "dep_succeeded"),
+    ("blocked", "cancel"),
+    ("pending", "cancel"),
+)
+
+_ALL_STATES = ("pending", "running", "blocked", "success", "fail", "dead", "cancelled")
+
 _ILLEGAL_ROWS = [
     (pre, event)
-    for pre in ("pending", "running", "blocked", "success", "fail", "dead", "cancelled")
+    for pre in _ALL_STATES
     for event in _EVENTS
-    if (pre, event) not in _LEGAL_KEYS
+    if (pre, event) not in _LEGAL_ROWS_HANDWRITTEN
 ]
+
+
+def test_g_team1_legal_rows_match_transitions() -> None:
+    """D5 的等式:手写合法清单必须与 ``TRANSITIONS`` **逐行相等**。
+
+    注入变红:往 TRANSITIONS 加一行(或删一行)而不动清单 → 本断言当场红。
+    """
+    assert set(_LEGAL_ROWS_HANDWRITTEN) == set(TRANSITIONS), (
+        "迁移表与手写合法清单不一致——增删迁移必须同时更新清单与参数化用例"
+    )
 
 
 @pytest.mark.parametrize(("pre", "event"), _ILLEGAL_ROWS, ids=[f"{p}+{e}" for p, e in _ILLEGAL_ROWS])
@@ -839,6 +877,45 @@ async def test_sub_agent_gets_team_board(tmp_path: Path) -> None:
     assert "sess-main-sa1" in _text(drained), "发件人应是子会话 id"
 
 
+async def test_g_team14_sub_sessions_get_worker_face(tmp_path: Path) -> None:
+    """G-TEAM-14 的靶子（①-c，**装配级**）：子会话拿到的是 worker 面。
+
+    与 G-TEAM-10 的分工：G-TEAM-10 手工 new 两个对象，只证明"类支持 role"
+    ——装配永远只下发 lead 面它也照样绿（评审抓到的空转门禁）。这里断言的是
+    **装配结果**：子会话调 board op=create 被工具面拒绝，板上建不出这个任务。
+    """
+    rounds = [
+        _call_round("c1", "task", action="dispatch", description="板任务 t1：调查 X"),
+        _call_round(
+            "s1",
+            "team_board",
+            action="board",
+            op="create",
+            title="子会话偷偷建的任务",
+        ),
+        _text_round("子任务完成"),
+        _text_round("已派发"),
+        _text_round("收到"),
+    ]
+    session, provider = _session(tmp_path, rounds, enable_team_tasks=True)
+    assert session._registry.get("team_board")._role == "lead", (
+        "主会话必须是 lead 面（创建/分配任务的入口）"
+    )
+
+    await session.send("主任务")
+
+    sub_tools = provider.seen_tool_names[1]
+    assert "team_board" in sub_tools, f"子会话仍应看到 team_board：{sub_tools}"
+    assert "multi_agent" not in sub_tools, (
+        "multi_agent 不进子会话（详规 §5：不做多团队并存）"
+    )
+    board = BoardStore().load(tmp_path)
+    titles = [] if board is None else [task.title for task in board.tasks]
+    assert "子会话偷偷建的任务" not in titles, (
+        f"子会话的 create 必须在工具面上不存在，板上却出现了：{titles}"
+    )
+
+
 async def test_team_disabled_no_registration(tmp_path: Path) -> None:
     """关闭时不注册:主会话与子 agent 的工具集里都没有 team_board。"""
     rounds = [
@@ -959,7 +1036,7 @@ def test_g_team6_measured_backfilled_and_within_cap() -> None:
 
 
 def test_g885_caps_sum_still_equals_budget() -> None:
-    """分项和 == 总额(5500 维持:角色分权后可选栏实测 985,上调提案撤销)。"""
+    """分项和 == 总额(D4 v3:5750;可选栏 1500,同口径实测 1441)。"""
     assert caps_sum() == RESIDENT_BUDGET_TOKENS == 5750
 
 

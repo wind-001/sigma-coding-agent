@@ -170,9 +170,9 @@ def test_disabled_flag_skips_scan(
 
 
 def test_caps_key_and_sum() -> None:
-    """G-P1RM-6:预算表键名同步——"repo map" 具名占用 500,分项和仍 5500。"""
+    """G-P1RM-6:预算表键名同步——"repo map" 具名占用 500;分项和 == 总额(D4 v3:5750)。"""
     assert "repo map" in CAPS
     assert CAPS["repo map"] == 500
     assert "具名预留(repo map 等)" not in CAPS
-    # D4 v3 提案撤销:角色分权后可选栏实测 985 ≤ 1250,总额维持 5500
+    # D4 v3(团队任务入场):可选栏 1250→1500、总额 5500→5750(实测 1441)
     assert caps_sum() == 5750

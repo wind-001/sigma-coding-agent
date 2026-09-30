@@ -26,9 +26,10 @@ G-TEAM-1 逐行参数化钉住:改表不补测试(或反之)当场红。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Final, Sequence, cast
+from typing import Any, Final, Sequence
+
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 #: 合法状态,恰七值(v3)。顺序 = 生命周期序(渲染与文档同序)。
 STATES: Final[tuple[str, ...]] = (
@@ -94,79 +95,77 @@ def now_stamp() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
 
 
-@dataclass
-class TeamTask:
+class TeamTask(BaseModel):
     """一个任务。落盘形状见详规 §2.2(v3 增补 attempts/lease_deadline/creator)。
 
     ``result`` 双职:finish 写结论、fail 写失败原因(表里的"写 reason"落在这里)——
     一个任务同一时刻只有一个"结果"语义,拆两个字段反而要约定"哪个为空算什么"。
     ``lease_deadline`` 是**注入时钟的秒数**(不是 epoch、不是 ISO 串)——
     lease 比较发生在同一次注入时钟的刻度里,可读性由 render/审计另管。
+
+    载体是 ``BaseModel``(AGENTS.md 第 3 条三问判定,Review-2026-09-30 B3):
+    ①不生成工具 schema,但 ②**落盘**(board.json)且 ③**校验外部输入**
+    (被改坏的板文件、被手改的 attempts)——②③ 任一成立即用 pydantic,
+    v1 的"dataclass + 手写 from_dict 校验"是这条规则的违规实例。
     """
 
     id: str
     title: str
     state: str = "pending"
     assignee: str = ""
-    deps: list[str] = field(default_factory=list)
+    deps: list[str] = Field(default_factory=list)
     result: str = ""
     note: str = ""
     creator: str = ""
     attempts: int = 0
     lease_deadline: float = 0.0
 
+    @field_validator("state")
+    @classmethod
+    def _known_state(cls, value: str) -> str:
+        """状态必须落在 :data:`STATES` 里。
+
+        **刻意用 str + validator 而不是 ``Literal[...]``**:Literal 的报错由
+        pydantic 生成(英文 + 落点 loc/type),而这里的报错要能直读详规的
+        状态表——"未知任务状态 'claimed'(合法:pending/running/...)"
+        比 ``Input should be 'pending', 'running', ...`` 对模型有用得多。
+        """
+        if value not in STATES:
+            raise ValueError(f"未知任务状态 {value!r}(合法:{'/'.join(STATES)})")
+        return value
+
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "title": self.title,
-            "state": self.state,
-            "assignee": self.assignee,
-            "deps": list(self.deps),
-            "result": self.result,
-            "note": self.note,
-            "creator": self.creator,
-            "attempts": self.attempts,
-            "lease_deadline": self.lease_deadline,
-        }
+        """落盘形状。**字段名不动**(旧 board.json 必须还能读回)。"""
+        return self.model_dump()
 
     @classmethod
     def from_dict(cls, raw: Any) -> TeamTask:
         """从落盘形状重建。**形状不对抛 ValueError**——半截/被改坏的文件
-        静默当成空板,会让 create 覆盖掉还有人在跑的任务。"""
+        静默当成空板,会让 create 覆盖掉还有人在跑的任务。
+
+        两层:先挡"根本不是对象 / 连 id 都没有"这两类(它们的文案比
+        pydantic 的更有指向性),其余交给 pydantic 校验。
+        """
         if not isinstance(raw, dict):
             raise ValueError("任务条目不是 JSON 对象")
         if "id" not in raw:
             raise ValueError("任务条目缺少 id")
-        state = raw.get("state", "pending")
-        if state not in STATES:
-            raise ValueError(
-                f"未知任务状态 {state!r}(合法:{'/'.join(STATES)})"
-            )
-        deps = raw.get("deps", [])
-        if not isinstance(deps, list):
-            raise ValueError(f"任务 {raw['id']} 的 deps 不是列表")
-        return cls(
-            id=str(raw["id"]),
-            title=str(raw.get("title", "")),
-            state=cast(str, state),
-            assignee=str(raw.get("assignee", "")),
-            deps=[str(item) for item in deps],
-            result=str(raw.get("result", "")),
-            note=str(raw.get("note", "")),
-            creator=str(raw.get("creator", "")),
-            attempts=int(raw.get("attempts", 0)),
-            lease_deadline=float(raw.get("lease_deadline", 0.0)),
-        )
+        try:
+            return cls.model_validate(raw)
+        except ValidationError as exc:
+            raise ValueError(f"任务条目不合法:{exc}") from exc
 
 
-@dataclass
-class Board:
+class Board(BaseModel):
     """整块板。``next_id`` 单调递增,id 永不复用——复用会让"重派"与
-    "新任务"在历史里无法区分(与 todo 同一条纪律)。"""
+    "新任务"在历史里无法区分(与 todo 同一条纪律)。
+
+    载体同 :class:`TeamTask`(落盘 + 外部输入校验 ⇒ pydantic)。
+    """
 
     updated_at: str = ""
     next_id: int = 1
-    tasks: list[TeamTask] = field(default_factory=list)
+    tasks: list[TeamTask] = Field(default_factory=list)
     #: 重试上限(v3 迁移表第 10/11 行):reclaim 守卫 attempts < max_attempts,
     #: 达上限由扫描器自动 abandon 进 dead。落盘随板走——它是板的一部分配置。
     max_attempts: int = 3
@@ -175,12 +174,7 @@ class Board:
         return next((task for task in self.tasks if task.id == task_id), None)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "updated_at": self.updated_at,
-            "next_id": self.next_id,
-            "max_attempts": self.max_attempts,
-            "tasks": [task.to_dict() for task in self.tasks],
-        }
+        return self.model_dump()
 
     @classmethod
     def from_dict(cls, raw: Any) -> Board:
@@ -189,12 +183,14 @@ class Board:
         tasks_raw = raw.get("tasks", [])
         if not isinstance(tasks_raw, list):
             raise ValueError("任务板文件的 tasks 不是列表")
-        return cls(
-            updated_at=str(raw.get("updated_at", "")),
-            next_id=int(raw.get("next_id", len(tasks_raw) + 1)),
-            max_attempts=int(raw.get("max_attempts", 3)),
-            tasks=[TeamTask.from_dict(item) for item in tasks_raw],
-        )
+        # next_id 缺省 = 现有任务数 + 1(与 v1 同口径):老文件没有这个字段时,
+        # 新 id 不能与已有 id 撞车。
+        payload = dict(raw)
+        payload.setdefault("next_id", len(tasks_raw) + 1)
+        try:
+            return cls.model_validate(payload)
+        except ValidationError as exc:
+            raise ValueError(f"任务板文件不合法:{exc}") from exc
 
     def render(self) -> str:
         """渲染给人与模型都易读的看板。进度行放最前——它是"一眼看全局"的口径。"""
@@ -252,7 +248,7 @@ def apply(
     if event == CREATE:
         # v3:create 的 deps 守卫只要求**存在**;未就绪 → blocked 挂起,
         # dep_succeeded 扫描放行(详规 v3 迁移表第 2 行)。
-        ready = _deps_all_success(board, deps)
+        ready = deps_all_success(board, deps)
         state = "pending" if ready else "blocked"
         created = TeamTask(
             id=f"t{board.next_id}",
@@ -394,7 +390,13 @@ def _require_deps_success(board: Board, deps: Sequence[str]) -> None:
             )
 
 
-def _deps_all_success(board: Board, deps: Sequence[str]) -> bool:
+def deps_all_success(board: Board, deps: Sequence[str]) -> bool:
+    """依赖是否全部 ``success``。
+
+    公开而非私有:扫描器(:mod:`sigma.team.scanner`)的放行判据与 create 的
+    分流判据**必须是同一条**——两份实现会在某次改判据时漂移,而症状是
+    "板上有任务永远不动",离根因很远。
+    """
     return all(
         (dep := board.find(dep_id)) is not None and dep.state == "success"
         for dep_id in deps

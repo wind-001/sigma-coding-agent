@@ -25,6 +25,7 @@ from __future__ import annotations
 from sigma.team.board import (
     ABANDON,
     Board,
+    deps_all_success,
     CANCEL,
     DEP_SUCCEEDED,
     LEASE_EXPIRED,
@@ -68,7 +69,7 @@ def dep_tick(board: Board) -> list[TeamTask]:
 
     # 放行:blocked 的 deps 全 success → pending
     for task in list(board.tasks):
-        if task.state == "blocked" and _deps_all_success(board, task.deps):
+        if task.state == "blocked" and deps_all_success(board, task.deps):
             changed.append(
                 apply(
                     board,
@@ -115,10 +116,3 @@ def dep_tick(board: Board) -> list[TeamTask]:
         if not touched:
             break
     return changed
-
-
-def _deps_all_success(board: Board, deps: list[str]) -> bool:
-    return all(
-        (dep := board.find(dep_id)) is not None and dep.state == "success"
-        for dep_id in deps
-    )

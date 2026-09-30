@@ -456,6 +456,12 @@ class InteractiveSession:
         self._tool_lock: asyncio.Lock | None = tool_lock
         self._mailbox_drain: Callable[[], list[AgentMessage]] | None = None
         self._mailbox_wait: Callable[[], Awaitable[list[AgentMessage]]] | None = None
+        # 团队协作域的共享资源（①-c）：主会话与子会话**必须共享同一实例**
+        # （同一块板 + 同一把 store 锁，claim 互斥才成立）。这里先定型为 None：
+        # 子会话工厂的闭包在 dispatch 时才执行，那时团队段可能还没跑到——
+        # 不先置 None，`enable_team_tasks=False` 时工厂读它就是个 AttributeError。
+        self._team_store: BoardStore | None = None
+        self._team_mailbox: Mailbox | None = None
         if enable_sub_agent:
             if "task" in self._registry.names():
                 raise ValueError(
@@ -585,8 +591,28 @@ class InteractiveSession:
         ) -> TurnResult:
             # 子会话的 registry = 主 registry 的克隆（同款工具、独立登记簿），
             # 构造上排除 task（递归禁止）与 todo（子会话换独立账本，见下）。
+            # ①-c（2026-09-30 拍板）再加两个排除项：
+            #   team_board —— 换成 **worker 面**后重注册（见下），越权 op 在子会话的
+            #     工具面上根本不存在（详规 §2 的"物理堵门"原本只写在文档里）；
+            #   multi_agent —— 详规 §5 明写不做"多团队并存（单主会话一板）"，
+            #     子会话能自己 start 引擎会让这条边界失守。
+            # 必须先 exclude 再 register：registry 重名抛错且**拒绝静默覆盖**（G24）。
             # 用 ``ToolRegistry.clone`` 而不是手写循环：同一个概念不该有两份实现。
-            sub_registry = self._registry.clone(exclude=("task", "todo"))
+            sub_registry = self._registry.clone(
+                exclude=("task", "todo", "team_board", "multi_agent")
+            )
+            # worker 面**共享主会话的 store/mailbox**：另造一份就是两把锁，
+            # claim 互斥（G-TEAM-2）会变成名义上的——与 multi_agent 引擎同一条纪律。
+            # store 为 None = 本会话没开团队模式（--no-team），那就什么都不注册。
+            if self._team_store is not None and self._team_mailbox is not None:
+                sub_registry.register(
+                    TeamBoard(
+                        lead_session_id=self._session_id,
+                        role="worker",
+                        store=self._team_store,
+                        mailbox=self._team_mailbox,
+                    )
+                )
             # 子 agent 的 todo 换独立账本（主清单不被子触碰，"至多一条 running"
             # 各自成立）；**但只在主会话有 todo 时才注册**——无 todo 消融档
             # （enable_todo=False，P4-批次2 D-A2）不能经子会话把 todo 偷渡回来。
