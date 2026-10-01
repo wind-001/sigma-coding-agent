@@ -196,7 +196,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               <span className="wb-typing__dot" />
               <span className="wb-typing__dot" />
               <span className="wb-typing__dot" />
-              正在执行(sigma 同步一轮,完成后回放自动更新)
+              正在执行,回复流式输出中…
             </div>
           ) : null}
         </div>
@@ -210,7 +210,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             disabled={!canCompose}
             placeholder={
               canCompose
-                ? '输入提示词,Enter 发送(同步执行一轮,Shift+Enter 换行)'
+                ? '输入提示词,Enter 发送(流式输出,Shift+Enter 换行)'
                 : '正在执行,请等当前轮完成…'
             }
             onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void =>

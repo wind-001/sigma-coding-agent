@@ -37,11 +37,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs
 
 from sigma import __version__
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
-from sigma.config.resident_caps import CAPS, MEASURED, RESIDENT_BUDGET_TOKENS, caps_sum
 from sigma.config.settings import resolve_api_key
+from sigma.events.lifecycle import HookEvent, TextChunk
+from sigma.hooks.base import BaseHook
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
 from sigma.providers.anthropic.provider import AnthropicProvider
@@ -84,8 +86,34 @@ _TASKS: dict[str, dict[str, Any]] = {}
 _TASKS_LOCK = threading.Lock()
 #: 正在执行的会话 id(同一会话不允许并发轮——会话树不是并发安全的)。
 _RUNNING: set[str] = set()
+#: 每个执行中会话的流式增量缓冲:{"pieces": list[str], "lock", "done", "error"}。
+#: pieces 由 TextChunk 钩子订阅者逐块追加("逐块透传,不聚合"——聚合了就没流式了)。
+_DELTAS: dict[str, dict[str, Any]] = {}
+_DELTAS_LOCK = threading.Lock()
 #: 测试注入点:提供假 provider(否则按 sigma 配置真构造)。
 _PROVIDER_FACTORY: Callable[[], BaseProvider] | None = None
+
+
+class _StreamCollector(BaseHook):
+    """TextChunk 订阅者:把模型文本**增量**追加进本会话的缓冲。
+
+    这是 sigma 文档写明的唯一扩展面("钩子是唯一扩展面")——
+    流式零核心改动。 ThinkingChunk 不订(OpenAI 兼容 provider 不产生)。
+    """
+
+    name = "workbench-stream"
+
+    def __init__(self, pieces: list[str], lock: threading.Lock) -> None:
+        self._pieces = pieces
+        self._lock = lock
+
+    def events(self) -> tuple[type[HookEvent], ...]:
+        return (TextChunk,)
+
+    def on_event(self, event: HookEvent) -> None:
+        if isinstance(event, TextChunk):
+            with self._lock:
+                self._pieces.append(event.text)
 
 
 def _default_preset() -> str:
@@ -126,7 +154,14 @@ def _make_provider(base_url: str, api_key: str) -> BaseProvider:
     return OpenAICompatProvider(base_url=base_url, api_key=api_key, provider_name=preset)
 
 
-def _run_turn(task_id: str, text: str, workspace: Path, sessions_root: Path) -> str:
+def _run_turn(
+    task_id: str,
+    text: str,
+    workspace: Path,
+    sessions_root: Path,
+    *,
+    extra_hooks: list[BaseHook] | None = None,
+) -> str:
     """跑一轮:新建或续跑会话,返回最终状态(completed/error/stopped)。
 
     会话树:**有文件就续**(断点续跑,增量持久化免费),没有就建带 store
@@ -147,9 +182,13 @@ def _run_turn(task_id: str, text: str, workspace: Path, sessions_root: Path) -> 
 
     disabled = _checkpoint_disabled(workspace, no_checkpoint_flag=False)
     shadow_dir = None if disabled else _shadow_dir(workspace)
-    try:
-        result = asyncio.run(
-            run_task(
+
+    async def _one_loop() -> str:
+        """run_task 与 provider.aclose 必须**同一个事件循环**:
+        分两个 asyncio.run 时,httpx 连接绑定在第一个循环上,
+        在第二个循环里关闭会抛 RuntimeError("Event loop is closed")(Windows 实测)。"""
+        try:
+            result = await run_task(
                 text,
                 provider=provider,
                 workspace_root=workspace,
@@ -158,13 +197,15 @@ def _run_turn(task_id: str, text: str, workspace: Path, sessions_root: Path) -> 
                 tree=tree,
                 shadow_git_dir=shadow_dir,
                 max_rounds=20,
+                extra_hooks=tuple(extra_hooks) if extra_hooks else (),
             )
-        )
-    finally:
-        closer = getattr(provider, "aclose", None)
-        if closer is not None:
-            asyncio.run(closer())
-    return str(result.status)
+            return str(result.status)
+        finally:
+            closer = getattr(provider, "aclose", None)
+            if closer is not None:
+                await closer()
+
+    return asyncio.run(_one_loop())
 
 
 def _create_task(body: dict[str, Any]) -> dict[str, Any]:
@@ -207,15 +248,20 @@ def _draft_payload(record: dict[str, Any]) -> dict[str, Any]:
 def _post_message(
     sessions_root: Path, workspace: Path, task_id: str, text: str
 ) -> tuple[int, dict[str, Any]]:
-    """发一条消息并**同步**跑一轮(执行完才返回最终任务载荷)。
+    """发一条消息:**立即返回 running**,一轮在后台线程执行(前端流式轮询)。
 
     并发守卫:同一会话同时只允许一轮(``409``);未知任务 ``404``;
-    未配 key ``400``(指路文案)。执行失败不放大成 HTTP 500——会话文件里
-    已经落了的事实照常回放,任务标 failed。
+    未配 key ``400``(指路文案,启动线程前先验,快速失败)。
+    执行失败不放大成 HTTP 500——会话文件里已经落了的事实照常回放,
+    最终状态经 deltas 端点的 done/error 与任务载荷传达。
     """
     text = text.strip()
     if text == "":
         return 400, {"detail": "消息不能为空"}
+    try:
+        _execution_params()  # 快速失败:没配 key 不起线程
+    except LookupError as exc:
+        return 400, {"detail": str(exc)}
     with _TASKS_LOCK:
         record = _TASKS.get(task_id)
         if record is None and not session_path(sessions_root, task_id).is_file():
@@ -225,24 +271,69 @@ def _post_message(
         _RUNNING.add(task_id)
         if record is not None:
             record["status"] = "running"
+    buffer: dict[str, Any] = {
+        "pieces": [],
+        "lock": threading.Lock(),
+        "done": False,
+        "error": None,
+    }
+    with _DELTAS_LOCK:
+        _DELTAS[task_id] = buffer
+    collector = _StreamCollector(buffer["pieces"], buffer["lock"])
+    threading.Thread(
+        target=_turn_thread,
+        args=(task_id, text, workspace, sessions_root, collector, buffer),
+        daemon=True,
+        name=f"wb-turn-{task_id}",
+    ).start()
+    payload = _merged_task_payload(sessions_root, task_id)
+    payload["status"] = "running"
+    return 200, payload
+
+
+def _turn_thread(
+    task_id: str,
+    text: str,
+    workspace: Path,
+    sessions_root: Path,
+    collector: _StreamCollector,
+    buffer: dict[str, Any],
+) -> None:
+    """后台执行一轮;结束封缓冲(done=True),失败信息进缓冲与任务记录。"""
     try:
-        try:
-            _run_turn(task_id, text, workspace, sessions_root)
-        except LookupError as exc:
-            with _TASKS_LOCK:
-                if record is not None:
-                    record["status"] = "draft"  # 没跑起来,退回草稿
-            return 400, {"detail": str(exc)}
-        except Exception as exc:
-            with _TASKS_LOCK:
-                if record is not None:
-                    record["status"] = "failed"
-                    record["lastError"] = f"{type(exc).__name__}: {exc}"
-        payload = _merged_task_payload(sessions_root, task_id)
-        return 200, payload
+        status = _run_turn(task_id, text, workspace, sessions_root, extra_hooks=[collector])
+        with _TASKS_LOCK:
+            record = _TASKS.get(task_id)
+            if record is not None and status != "completed":
+                record["status"] = "failed" if status == "error" else "draft"
+    except Exception as exc:
+        buffer["error"] = f"{type(exc).__name__}: {exc}"
+        with _TASKS_LOCK:
+            record = _TASKS.get(task_id)
+            if record is not None:
+                record["status"] = "failed"
+                record["lastError"] = buffer["error"]
     finally:
+        buffer["done"] = True
         with _TASKS_LOCK:
             _RUNNING.discard(task_id)
+
+
+def _deltas_payload(task_id: str, since: int) -> dict[str, Any]:
+    """``since`` 之后的文本增量;running=False 表示轮已结束(含最终错误)。"""
+    with _DELTAS_LOCK:
+        buffer = _DELTAS.get(task_id)
+    if buffer is None:
+        return {"seq": 0, "text": "", "running": False, "error": None}
+    with buffer["lock"]:
+        pieces = list(buffer["pieces"])
+    text = "".join(pieces[since:]) if since < len(pieces) else ""
+    return {
+        "seq": min(since, len(pieces)) if since > len(pieces) else len(pieces),
+        "text": text,
+        "running": not bool(buffer["done"]),
+        "error": buffer.get("error"),
+    }
 
 
 def _merged_task_payload(sessions_root: Path, task_id: str) -> dict[str, Any]:
@@ -691,8 +782,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - 基类命名
         # URL 按 "/" 切分,不用 Path.parts——Windows 上 Path("/a").parts 的
         # 首元素是 "\\",按平台漂移;URL 语义只认正斜杠。
-        clean = self.path.split("?", 1)[0]
+        clean, _, query = self.path.partition("?")
         parts = [p for p in clean.split("/") if p]
+        self._query = parse_qs(query)
         # API 路由:/api/v1/...
         if len(parts) >= 3 and parts[0] == "api" and parts[1] == "v1":
             self._route_api(parts[2:])
@@ -725,6 +817,14 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "timeline":
             self._send_json(200, _timeline_payload(root, parts[1]))
             return
+        # /tasks/{id}/deltas?since=N:流式增量(TextChunk 钩子缓冲)。
+        if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "deltas":
+            try:
+                since = int(self._query.get("since", ["0"])[0])
+            except ValueError:
+                since = 0
+            self._send_json(200, _deltas_payload(parts[1], max(0, since)))
+            return
         # /automations、/plugins、/models
         if parts == ["automations"]:
             self._send_json(200, [])
@@ -734,18 +834,6 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             return
         if parts == ["models"]:
             self._send_json(200, [{"id": "current", "name": "当前配置模型", "efforts": ["—"]}])
-            return
-        # /budget:常驻区预算表(D4 v3,"表即常量")——工作台"上下文构成"看板的数据源。
-        if parts == ["budget"]:
-            self._send_json(
-                200,
-                {
-                    "residentBudgetTokens": RESIDENT_BUDGET_TOKENS,
-                    "capsSum": caps_sum(),
-                    "caps": CAPS,
-                    "measured": MEASURED,
-                },
-            )
             return
         # /memory:契约之外的附加数据面(工作台"记忆"区)。
         if parts == ["memory"]:

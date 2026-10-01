@@ -1040,3 +1040,20 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* 首页水印:lkx 字母标,居中、淡灰(星辰 2026-10-01) */
+.hero__watermark--lkx {
+  top: 0;
+  left: 0;
+  transform: none;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 170px;
+  font-weight: 700;
+  letter-spacing: 12px;
+  color: #ededef;
+  line-height: 1;
+}

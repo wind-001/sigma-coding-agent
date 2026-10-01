@@ -11,7 +11,7 @@ import {
   type TaskFilter,
   type TaskPatch,
   type TaskTimeline,
-  type WorkbenchBudget,
+  type TaskDeltas,
 } from './client'
 
 /**
@@ -129,7 +129,7 @@ export class HttpSigmaClient implements SigmaApiClient {
     })
   }
 
-  getBudget(): Promise<WorkbenchBudget> {
-    return this.request<WorkbenchBudget>('/budget')
+  getTaskDeltas(taskId: string, since: number): Promise<TaskDeltas> {
+    return this.request<TaskDeltas>(`/tasks/${taskId}/deltas?since=${since}`)
   }
 }

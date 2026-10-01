@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -378,20 +379,33 @@ def execution_env(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def test_execution_loop_create_and_run(http_server: tuple[str, Path], execution_env: str) -> None:
+    """执行环(流式):POST 立即返回 running → deltas 逐块到齐 → 任务 completed。"""
     base, sessions_root = http_server
     code, created = _post(base, "/api/v1/tasks")
     assert code == 200 and created["status"] == "draft"
-    # 草稿出现在列表里
-    code, tasks = _get(base, "/api/v1/tasks")
-    assert [t["id"] for t in tasks if t["id"] == created["id"]] == [created["id"]]
 
-    code, final = _post(base, f"/api/v1/tasks/{created['id']}/messages", {"text": "你好"})
+    code, started = _post(base, f"/api/v1/tasks/{created['id']}/messages", {"text": "你好"})
     assert code == 200
-    assert final["status"] == "completed"
+    assert started["status"] == "running"
+
+    # 轮询流式增量直到轮结束
+    text_acc, seq = "", 0
+    for _ in range(200):
+        code, d = _get(base, f"/api/v1/tasks/{created['id']}/deltas?since={seq}")
+        assert code == 200
+        text_acc += d["text"]
+        seq = d["seq"]
+        if not d["running"]:
+            break
+        time.sleep(0.05)
+    assert "我是 sigma" in text_acc
+
+    # 轮结束:任务 completed,回放含双方消息,会话事实落盘,时间线有真实用量
+    code, final = _get(base, f"/api/v1/tasks/{created['id']}")
+    assert code == 200 and final["status"] == "completed"
     roles = [(event.get("role"), event["text"]) for event in final["events"] if event["kind"] == "message"]
     assert any(role == "user" and "你好" in text for role, text in roles)
     assert any(role == "assistant" and "我是 sigma" in text for role, text in roles)
-    # 会话事实已落盘(与 CLI 同一份 JSONL);时间线拿到真实用量
     assert (sessions_root / f"{created['id']}.jsonl").is_file()
     code, timeline = _get(base, f"/api/v1/tasks/{created['id']}/timeline")
     assert code == 200 and timeline["totalPrompt"] == 50 and timeline["cacheRate"] == 0.8

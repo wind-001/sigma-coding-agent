@@ -192,6 +192,14 @@ export interface WorkbenchBudget {
   measured: Record<string, number>
 }
 
+/** 流式增量(最小执行环):since 之后的新文本;running=false 表示轮已结束。 */
+export interface TaskDeltas {
+  seq: number
+  text: string
+  running: boolean
+  error: string | null
+}
+
 export interface SigmaApiClient {
   readonly mode: 'mock' | 'http'
   ping(): Promise<PingInfo>
@@ -214,11 +222,11 @@ export interface SigmaApiClient {
    */
   getTaskTimeline?(taskId: string): Promise<TaskTimeline | null>
   /**
-   * 发一条消息并**同步执行一轮**(最小执行环,σ-server M2 切片)。
-   * 长轮询:返回时该轮已跑完,载荷含完整回放与最终状态。
+   * 发一条消息并**启动一轮执行**(立即返回 running;σ-server M2 切片)。
+   * 文本经 deltas 端点流式送达;轮结束后用 getTask 取最终载荷。
    * 可选方法:mock 不实现。
    */
   addTaskMessage?(taskId: string, text: string): Promise<Task>
-  /** 常驻区预算表(上下文看板;可选方法,mock 不实现)。 */
-  getBudget?(): Promise<WorkbenchBudget>
+  /** 流式增量轮询(TextChunk 钩子缓冲;可选方法,mock 不实现)。 */
+  getTaskDeltas?(taskId: string, since: number): Promise<TaskDeltas>
 }

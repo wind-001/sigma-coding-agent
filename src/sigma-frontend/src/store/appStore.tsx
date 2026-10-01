@@ -177,8 +177,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         showToast(error instanceof Error ? error.message : String(error))
       }
     }
-    /** 最小执行环:追加消息 → 同步跑一轮 → 载荷替换(乐观置 running)。
-     * ⚠ 以 `apiClient.addTaskMessage(...)` 方法调用形式执行——取出来调会丢 this。 */
+    /** 最小执行环(流式):发消息启动一轮 → 轮询 deltas 增量追加 live 气泡 →
+     * 完成后取最终载荷替换。⚠ 以 `apiClient.xxx(...)` 方法调用形式执行——
+     * 取出来调会丢 this(实测白屏)。 */
     const send = async (taskId: string, text: string): Promise<string> => {
       if (apiClient.addTaskMessage === undefined) {
         throw new Error('当前后端不支持执行(桥接服务过旧或处于 mock 模式)')
@@ -189,8 +190,52 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       if (existing !== undefined) {
         dispatch({ type: 'taskReplaced', task: { ...existing, status: 'running' } })
       }
-      showToast('正在执行(执行完自动更新)…')
-      const final = await apiClient.addTaskMessage(taskId, trimmed)
+      const started = await apiClient.addTaskMessage(taskId, trimmed)
+      dispatch({ type: 'taskReplaced', task: started })
+      if (apiClient.getTaskDeltas !== undefined) {
+        let offset = 0
+        let live = ''
+        let streamError: string | null = null
+        for (;;) {
+          await new Promise<void>((resolve): void => {
+            setTimeout(resolve, 250)
+          })
+          const d = await apiClient.getTaskDeltas(taskId, offset)
+          if (d.error !== null && d.error !== undefined) {
+            streamError = d.error
+            break
+          }
+          if (d.text !== '') {
+            live += d.text
+            offset = d.seq
+            const current = stateRef.current.tasks.find((t) => t.id === taskId)
+            if (current !== undefined) {
+              const settled = current.events.filter((e) => e.id !== '__live__')
+              dispatch({
+                type: 'taskReplaced',
+                task: {
+                  ...current,
+                  events: [
+                    ...settled,
+                    { id: '__live__', kind: 'message', role: 'assistant', text: live, at: '' },
+                  ],
+                },
+              })
+            }
+          }
+          if (!d.running) break
+        }
+        if (streamError !== null) {
+          // 出错也要取回真实状态再抛:否则任务永远停在 running(执行指示不会消失)。
+          const landed = await apiClient.getTask(taskId)
+          if (landed !== null) {
+            dispatch({ type: 'taskReplaced', task: landed })
+          }
+          throw new Error(streamError)
+        }
+      }
+      const final = await apiClient.getTask(taskId)
+      if (final === null) throw new Error('执行结束但会话不存在(未执行的草稿已随重启消失?)')
       dispatch({ type: 'taskReplaced', task: final })
       return final.status === 'completed' ? '本轮执行完成' : `本轮结束:${final.status}`
     }

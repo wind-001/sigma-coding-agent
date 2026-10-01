@@ -31,8 +31,8 @@ cd src/sigma-frontend && npm ci && npm run dev   # http://localhost:5173
 | **看板:运行指标** | ✅ 真实 | `build_timeline`(轮数/token/缓存命中率/工具错误/截断/耗时) |
 | **看板:上下文构成** | ✅ 真实 | 常驻区预算表(D4 v3,`resident_caps` 表即常量:7 分区 cap+实测,总额 5750) |
 | 会话详情:气泡流回放 | ✅ 真实 | 会话 JSONL 逐条映射(user/assistant 气泡、tool_call chip、错误行) |
-| **新建会话 + 发消息(真执行)** | ✅ 真实 | `POST /tasks` 建草稿;`POST /tasks/{id}/messages` **同步跑一轮**——`run_task` 驱动 InteractiveSession,落盘/断点续跑/影子快照/trace 与 CLI 同源 |
-| 续聊(已完成会话追加消息) | ✅ 真实 | 同上,`SessionTree.from_store` 续跑 |
+| **新建会话 + 发消息(真执行)** | ✅ 真实 | `POST /tasks` 建草稿;`POST /tasks/{id}/messages` 启动一轮——`run_task` 驱动 InteractiveSession,落盘/断点续跑/影子快照/trace 与 CLI 同源 |
+| **回复流式输出** | ✅ 真实 | TextChunk 钩子订阅(钩子=唯一扩展面,零核心改动)→ `/tasks/{id}/deltas` 增量端点 → 前端 250ms 轮询,live 气泡逐段增长 |
 | 插件市场(清单) | ✅ 真实 | 内置工具(`default_registry`)+ 技能扫描 |
 | 状态筛选 / 分组 / 搜索(Ctrl+K) | ✅ 真实 | 前端本地过滤(数据面单项目、量级小) |
 | 断线容错 | ✅ | 桥接未启动 → 空态 + 常驻提示,界面不停在"加载中" |
