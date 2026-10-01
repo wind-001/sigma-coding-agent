@@ -29,6 +29,8 @@ import pytest
 
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
 from sigma.agent.types import ToolResult
+from sigma.providers.base import BaseProvider, SamplingParams
+from sigma.providers.events import StopEvent, TextDelta, UsageEvent
 from sigma.providers.messages import (
     AssistantMessage,
     TextBlock,
@@ -41,6 +43,32 @@ from sigma.sessions.store import JsonlStore
 from sigma.sessions.tree import SessionTree
 
 _TS = "2026-10-01T10:00:00.000"
+
+
+class _ScriptedProvider:
+    """执行环测试的假 provider:固定一轮文本回复(不联网、零花费)。"""
+
+    def __init__(self, reply: str) -> None:
+        self._reply = reply
+
+    async def stream(  # type: ignore[override]
+        self,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+        *,
+        model: str,
+        signal: Any,
+        sampling: SamplingParams | None = None,
+    ) -> Any:
+        yield TextDelta(text=self._reply, text_signature=None)
+        yield UsageEvent(usage=Usage(prompt_tokens=50, completion_tokens=5, cached_tokens=40))
+        yield StopEvent(stop_reason="stop")
+
+    def estimate_tokens(self, messages: list[Any]) -> int:
+        return 10
+
+    async def aclose(self) -> None:
+        return None
 
 
 def _load_server_module() -> ModuleType:
@@ -269,7 +297,7 @@ def test_memory_payload(tmp_path: Path) -> None:
 
 
 @pytest.fixture()
-def http_server(tmp_path: Path):
+def http_server(tmp_path: Path) -> tuple[str, Path]:
     sessions_root = tmp_path / "sessions"
     _write_session(
         sessions_root,
@@ -289,7 +317,7 @@ def http_server(tmp_path: Path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
-    yield base
+    yield base, sessions_root
     server.shutdown()
     server.server_close()
 
@@ -302,9 +330,12 @@ def _get(base: str, path: str) -> tuple[int, Any]:
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
-def _post(base: str, path: str) -> tuple[int, Any]:
+def _post(base: str, path: str, payload: dict[str, Any] | None = None) -> tuple[int, Any]:
     request = urllib.request.Request(
-        f"{base}{path}", data=b"{}", headers={"Content-Type": "application/json"}, method="POST"
+        f"{base}{path}",
+        data=json.dumps(payload or {}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -313,18 +344,80 @@ def _post(base: str, path: str) -> tuple[int, Any]:
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
-def test_http_get_endpoints(http_server: str) -> None:
-    code, ping = _get(http_server, "/api/v1/system/ping")
+def test_http_get_endpoints(http_server: tuple[str, Path]) -> None:
+    base, _root = http_server
+    code, ping = _get(base, "/api/v1/system/ping")
     assert code == 200 and ping["ok"] is True and ping["mode"] == "http"
-    code, tasks = _get(http_server, "/api/v1/tasks")
+    code, tasks = _get(base, "/api/v1/tasks")
     assert code == 200 and [task["id"] for task in tasks] == ["s-http"]
-    code, timeline = _get(http_server, "/api/v1/tasks/s-http/timeline")
+    code, timeline = _get(base, "/api/v1/tasks/s-http/timeline")
     assert code == 200 and timeline["totalPrompt"] == 100
-    code, missing = _get(http_server, "/api/v1/tasks/nope")
+    code, missing = _get(base, "/api/v1/tasks/nope")
     assert code == 200 and missing is None  # 契约:getTask → Task | null
 
 
-def test_http_write_verbs_are_501_with_guidance(http_server: str) -> None:
-    code, body = _post(http_server, "/api/v1/tasks")
+def test_http_write_verbs_are_501_with_guidance(http_server: tuple[str, Path]) -> None:
+    base, _root = http_server
+    code, body = _post(base, "/api/v1/automations/none/enabled")
     assert code == 501
-    assert "待接入" in body["detail"] and "M2" in body["detail"]
+    assert "待接入" in body["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 执行环:创建任务 → 发消息 → run_task 真跑(假 provider)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def execution_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    """注入假 provider 与密钥——执行走**真实的** run_task/落盘/回放链路。"""
+    monkeypatch.setenv("SIGMA_API_KEY", "test-key")
+    monkeypatch.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("你好!我是 sigma。"))
+    return "ok"
+
+
+def test_execution_loop_create_and_run(http_server: tuple[str, Path], execution_env: str) -> None:
+    base, sessions_root = http_server
+    code, created = _post(base, "/api/v1/tasks")
+    assert code == 200 and created["status"] == "draft"
+    # 草稿出现在列表里
+    code, tasks = _get(base, "/api/v1/tasks")
+    assert [t["id"] for t in tasks if t["id"] == created["id"]] == [created["id"]]
+
+    code, final = _post(base, f"/api/v1/tasks/{created['id']}/messages", {"text": "你好"})
+    assert code == 200
+    assert final["status"] == "completed"
+    texts = [event["text"] for event in final["events"]]
+    assert any(t.startswith("用户:你好") for t in texts)
+    assert any("我是 sigma" in t for t in texts)
+    # 会话事实已落盘(与 CLI 同一份 JSONL);时间线拿到真实用量
+    assert (sessions_root / f"{created['id']}.jsonl").is_file()
+    code, timeline = _get(base, f"/api/v1/tasks/{created['id']}/timeline")
+    assert code == 200 and timeline["totalPrompt"] == 50 and timeline["cacheRate"] == 0.8
+
+
+def test_post_message_empty_text_rejected(http_server: tuple[str, Path], execution_env: str) -> None:
+    base, _root = http_server
+    code, created = _post(base, "/api/v1/tasks")
+    request = urllib.request.Request(
+        f"{base}/api/v1/tasks/{created['id']}/messages",
+        data=json.dumps({"text": "  "}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=10)
+    assert excinfo.value.code == 400
+
+
+def test_post_message_unknown_task_404(http_server: tuple[str, Path], execution_env: str) -> None:
+    base, _root = http_server
+    request = urllib.request.Request(
+        f"{base}/api/v1/tasks/nope/messages",
+        data=b'{"text": "hi"}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=10)
+    assert excinfo.value.code == 404

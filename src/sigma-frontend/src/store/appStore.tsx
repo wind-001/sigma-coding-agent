@@ -103,6 +103,8 @@ export interface AppActions {
   createSessionInProject(projectId: string): Promise<void>
   /** 发送会话首条消息:写入描述、标题取首行(原为「新会话」时)并开始执行 */
   sendFirstMessage(taskId: string, text: string): Promise<void>
+  /** 向已有会话追加一条消息并同步执行一轮(草稿首条 / 已完成续聊同一条路) */
+  sendMessage(taskId: string, text: string): Promise<void>
   setSidebarView(view: SidebarView): void
   setStatusFilter(filter: StatusFilter): void
   setActiveProjectId(projectId: string): void
@@ -175,6 +177,23 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         showToast(error instanceof Error ? error.message : String(error))
       }
     }
+    /** 最小执行环:追加消息 → 同步跑一轮 → 载荷替换(乐观置 running)。 */
+    const send = async (taskId: string, text: string): Promise<string> => {
+      const loader = apiClient.addTaskMessage
+      if (loader === undefined) {
+        throw new Error('当前后端不支持执行(桥接服务过旧或处于 mock 模式)')
+      }
+      const trimmed: string = text.trim()
+      if (trimmed === '') return '消息为空'
+      const existing = stateRef.current.tasks.find((t) => t.id === taskId)
+      if (existing !== undefined) {
+        dispatch({ type: 'taskReplaced', task: { ...existing, status: 'running' } })
+      }
+      showToast('正在执行(执行完自动更新)…')
+      const final = await loader(taskId, trimmed)
+      dispatch({ type: 'taskReplaced', task: final })
+      return final.status === 'completed' ? '本轮执行完成' : `本轮结束:${final.status}`
+    }
     return {
       setDraft(value: string): void {
         patch({ draft: value })
@@ -197,7 +216,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         }
         await runOrToast(async () => {
           const title = text.split('\n')[0].slice(0, 40)
-          const task = await apiClient.createTask({
+          const created = await apiClient.createTask({
             projectId: s.activeProjectId,
             title,
             description: text,
@@ -205,9 +224,10 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             model: s.composerModel,
             effort: s.composerEffort,
           })
-          dispatch({ type: 'taskAdded', task })
-          patch({ view: 'task', selectedTaskId: task.id, draft: '' })
-          return `任务「${title.slice(0, 16)}…」已创建`
+          dispatch({ type: 'taskAdded', task: created })
+          patch({ view: 'task', selectedTaskId: created.id, draft: '' })
+          // 最小执行环:首条消息直接开跑(同步一轮,完成即替换载荷)。
+          return await send(created.id, text)
         })
       },
       async setTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
@@ -244,22 +264,11 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         })
       },
       async sendFirstMessage(taskId: string, text: string): Promise<void> {
-        const trimmed: string = text.trim()
-        if (trimmed === '') return
-        const task: Task | undefined = stateRef.current.tasks.find((t) => t.id === taskId)
-        if (task === undefined) return
-        await runOrToast(async () => {
-          const title: string = task.title !== '新会话' ? task.title : trimmed.split('\n')[0].slice(0, 40)
-          const description: string = task.description === '' ? trimmed : `${task.description}\n\n${trimmed}`
-          const updated = await apiClient.updateTask(taskId, {
-            title,
-            description,
-            status: 'running',
-            appendEvent: { kind: 'message', text: `首条消息:${trimmed}` },
-          })
-          dispatch({ type: 'taskReplaced', task: updated })
-          return '消息已发送,会话开始执行'
-        })
+        // 与续聊同一条执行路径;标题/描述由服务端按首条消息事实重建。
+        await runOrToast((): Promise<string> => send(taskId, text))
+      },
+      async sendMessage(taskId: string, text: string): Promise<void> {
+        await runOrToast((): Promise<string> => send(taskId, text))
       },
       setSidebarView(view: SidebarView): void {
         patch({ sidebarView: view })

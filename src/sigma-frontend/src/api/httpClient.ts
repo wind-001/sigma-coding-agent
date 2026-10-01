@@ -120,4 +120,11 @@ export class HttpSigmaClient implements SigmaApiClient {
   getTaskTimeline(taskId: string): Promise<TaskTimeline | null> {
     return this.request<TaskTimeline | null>(`/tasks/${taskId}/timeline`)
   }
+
+  addTaskMessage(taskId: string, text: string): Promise<Task> {
+    return this.request<Task>(`/tasks/${taskId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    })
+  }
 }

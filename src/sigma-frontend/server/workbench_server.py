@@ -1,25 +1,26 @@
-"""sigma 工作台桥接服务(只读)。
+"""sigma 工作台桥接服务(最小执行环)。
 
-为 ``src/sigma-frontend``(React 工作台)提供**真实 sigma 数据**的 HTTP 只读子集:
+为 ``src/sigma-frontend``(React 工作台)提供 sigma 真实数据的 HTTP 子集:
 端点与前端 ``httpClient.ts`` 的契约一一对应(sigma-frontend/docs/sigma-backend-api-design.md),
-另加一个 ``GET /tasks/{id}/timeline``(观测层 --timeline 的数据面,前端渲染运行时间线)。
+另加 ``GET /tasks/{id}/timeline``(观测层 --timeline 的数据面)。
 
 定位与边界(为什么不是 sigma-server)
-    sigma-frontend/docs 里那份 σ-server 详规(FastAPI + SSE + 执行)是**待拍板未实现**的
-    M1/M2/M3;本服务不抢它的活——只用 stdlib ``http.server`` 把 sigma **现有**的数据面
-    (会话 JSONL / 观测时间线 / 技能 / 记忆 / 内置工具)以契约形状读出来,零新依赖、
-    零核心改动、零写盘。执行类端点(start/messages/interrupt/steer/approvals/SSE)
-    统一返回 501 + 指路文案——前端据此把对应控件标成"待接入"。
+    σ-server(FastAPI + SSE + 审批环)是**待拍板**的 M1/M2/M3。本服务是
+    其中"能以现有能力落地"的最小执行环,stdlib ``http.server`` 实现,
+    零新依赖、零核心改动:
 
-    前端任务(前端 Task)= 一个 sigma 会话(JSONL)。对话不二次存储:
-    列表用 ``session_previews``(前 4 KB 一瞥),详情/回放整树解析——
-    与 CLI ``/sessions`` 和 ``--timeline`` 同源,没有第二份事实。
+    - **读**:会话 JSONL / 观测时间线 / 技能 / 记忆 / 内置工具——与 CLI 同源;
+    - **写**:`POST /tasks`(草稿,元数据仅内存)+ `POST /tasks/{id}/messages`
+      (**同步跑一轮**:``run_task`` 驱动 InteractiveSession,会话落真实 JSONL,
+      断点续跑、影子快照、trace 与 CLI 完全同一条代码)。
 
-只读的三道边界
-    1. 不执行扩展代码:插件列表只含内置工具与技能(markdown 扫描),
-       ``extensions/*.py`` 的装载即执行,只读服务不做;
-    2. 不写任何文件:PATCH/DELETE/POST 一律 501(会话 JSONL 是审计事实,只读);
-    3. 只绑 127.0.0.1:本机单用户工具,不做鉴权(σ-server 的 token 方案见其详规)。
+    仍未接入(前端对应控件标"待接入"):审批交互确认(**工具调用自动放行**
+    ——L1 路径沙箱与 L2 影子快照照常在岗)、打断 / steering、流式增量、
+    自动化调度、插件装卸。会话事实永远只有一份(磁盘 JSONL),
+    工作台重启只丢未执行的草稿。
+
+    三道边界:不执行扩展代码(插件清单不含 ``extensions/*.py``——装载即执行);
+    执行受 L1/L2 约束(写不越工作区、写批次前自动快照);只绑 127.0.0.1。
 
 用法
     ./.venv/Scripts/python.exe src/sigma-frontend/server/workbench_server.py
@@ -29,17 +30,32 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sigma import __version__
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
+from sigma.config.settings import resolve_api_key
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
+from sigma.providers.anthropic.provider import AnthropicProvider
+from sigma.providers.base import BaseProvider
 from sigma.providers.messages import AssistantMessage, TextBlock, ToolCallBlock, UserMessage
-from sigma.sessions.sessions import TRACE_SUFFIX, session_path, session_previews
+from sigma.providers.openai.provider import OpenAICompatProvider
+from sigma.providers.registry import builtin_providers
+from sigma.providers.stamps import now as _now_stamp
+from sigma.sdk import run_task
+from sigma.sessions.sessions import (
+    TRACE_SUFFIX,
+    new_session_id,
+    session_path,
+    session_previews,
+)
 from sigma.sessions.store import JsonlStore
 from sigma.sessions.tree import SessionTree
 from sigma.skills.scanner import SKILLS_DIRNAME, discover_skills
@@ -51,6 +67,227 @@ PROJECT_ID = "proj-sigma"
 TASKS_LIMIT = 100
 #: 详情回放事件上限(老会话可能有几百条)。
 EVENTS_LIMIT = 300
+
+# ---------------------------------------------------------------------------
+# 执行环(σ-server M2 的最小切片):创建任务 → 驱动 InteractiveSession → 回放
+#
+# 任务元数据**只在内存**(``_TASKS``);一旦发出第一条消息,执行经
+# ``run_task`` 落进真实的会话 JSONL(~/.sigma/sessions/<id>.jsonl)——
+# 会话事实永远只有一份,与 CLI 同源,工作台重启后草稿消失而已执行的会话
+# 全部还在磁盘上。审批(交互确认)/打断/流式是 M2 的其余部分,仍未接入:
+# 本切片的工具调用**自动放行**(approval=None),L1 路径沙箱与 L2 影子
+# 快照照常在岗。
+# ---------------------------------------------------------------------------
+
+_TASKS: dict[str, dict[str, Any]] = {}
+_TASKS_LOCK = threading.Lock()
+#: 正在执行的会话 id(同一会话不允许并发轮——会话树不是并发安全的)。
+_RUNNING: set[str] = set()
+#: 测试注入点:提供假 provider(否则按 sigma 配置真构造)。
+_PROVIDER_FACTORY: Callable[[], BaseProvider] | None = None
+
+
+def _default_preset() -> str:
+    """默认厂商预设。cli.main 是这个常量的所有者,惰性导入(装配成本一次性)。"""
+    from sigma.cli.main import DEFAULT_PRESET  # noqa: PLC0415 - 见 docstring
+
+    return DEFAULT_PRESET
+
+
+def _execution_params() -> tuple[str, str, str]:
+    """解析执行三要素 ``(base_url, api_key, model)``。
+
+    与 CLI 同一条解析链(env SIGMA_BASE_URL / SIGMA_MODEL / SIGMA_PRESET
+    > 厂商预设默认值;密钥:命令行 > 环境变量 > 用户级 .env > 项目 .env)。
+    没配 key 抛 ``LookupError``,由端点转成 400 的指路文案。
+    """
+    api_key, _source = resolve_api_key()
+    if not api_key:
+        raise LookupError(
+            "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env(推荐)"
+            "——与 sigma CLI 用的是同一份配置。"
+        )
+    preset = os.environ.get("SIGMA_PRESET", _default_preset())
+    spec = builtin_providers().resolve(preset)
+    base_url = os.environ.get("SIGMA_BASE_URL") or spec.base_url
+    model = os.environ.get("SIGMA_MODEL") or spec.default_model
+    return base_url, api_key, model
+
+
+def _make_provider(base_url: str, api_key: str) -> BaseProvider:
+    """按预设的**线协议**分派 provider 实现类(与 cli._make_provider 同判据)。"""
+    if _PROVIDER_FACTORY is not None:
+        return _PROVIDER_FACTORY()
+    preset = os.environ.get("SIGMA_PRESET", _default_preset())
+    spec = builtin_providers().resolve(preset)
+    if spec.protocol == "anthropic":
+        return AnthropicProvider(base_url=base_url, api_key=api_key, provider_name=preset)
+    return OpenAICompatProvider(base_url=base_url, api_key=api_key, provider_name=preset)
+
+
+def _run_turn(task_id: str, text: str, workspace: Path, sessions_root: Path) -> str:
+    """跑一轮:新建或续跑会话,返回最终状态(completed/error/stopped)。
+
+    会话树:**有文件就续**(断点续跑,增量持久化免费),没有就建带 store
+    的新树(一下笔就落盘)。L2 影子快照按 CLI 同一条规则装配
+    (家目录工作区自动禁)。trace 默认开 → 时间线端点拿到真实指标。
+    """
+    base_url, api_key, model = _execution_params()
+    provider = _make_provider(base_url, api_key)
+    path = session_path(sessions_root, task_id)
+    if path.is_file():
+        tree = SessionTree.from_store(JsonlStore(sessions_root, task_id))
+    else:
+        tree = SessionTree(store=JsonlStore(sessions_root, task_id))
+    from sigma.cli.main import (  # noqa: PLC0415 - cli 是这些工具函数的所有者
+        checkpoint_disabled_reason as _checkpoint_disabled,
+    )
+    from sigma.cli.main import shadow_git_dir_for as _shadow_dir  # noqa: PLC0415
+
+    disabled = _checkpoint_disabled(workspace, no_checkpoint_flag=False)
+    shadow_dir = None if disabled else _shadow_dir(workspace)
+    try:
+        result = asyncio.run(
+            run_task(
+                text,
+                provider=provider,
+                workspace_root=workspace,
+                model=model,
+                session_id=task_id,
+                tree=tree,
+                shadow_git_dir=shadow_dir,
+                max_rounds=20,
+            )
+        )
+    finally:
+        closer = getattr(provider, "aclose", None)
+        if closer is not None:
+            asyncio.run(closer())
+    return str(result.status)
+
+
+def _create_task(body: dict[str, Any]) -> dict[str, Any]:
+    """创建草稿任务(前端 Composer/侧栏「新建会话」)。元数据仅内存。"""
+    record: dict[str, Any] = {
+        "id": new_session_id(),
+        "title": str(body.get("title") or "").strip(),
+        "description": str(body.get("description") or "").strip(),
+        "access": str(body.get("access") or ""),
+        "model": str(body.get("model") or ""),
+        "effort": str(body.get("effort") or ""),
+        "status": "draft",
+        "createdAt": _now_stamp(),
+    }
+    with _TASKS_LOCK:
+        _TASKS[record["id"]] = record
+    return _draft_payload(record)
+
+
+def _draft_payload(record: dict[str, Any]) -> dict[str, Any]:
+    created = str(record.get("createdAt") or "")
+    return {
+        "id": record["id"],
+        "projectId": PROJECT_ID,
+        "title": str(record.get("title") or "") or "(新会话)",
+        "description": str(record.get("description") or ""),
+        "status": "draft",
+        "access": str(record.get("access") or ""),
+        "model": str(record.get("model") or ""),
+        "effort": str(record.get("effort") or ""),
+        "createdAt": created,
+        "updatedAt": created,
+        "events": [],
+        "messageCount": 0,
+        "sizeBytes": 0,
+        "modifiedEpoch": 0,
+    }
+
+
+def _post_message(
+    sessions_root: Path, workspace: Path, task_id: str, text: str
+) -> tuple[int, dict[str, Any]]:
+    """发一条消息并**同步**跑一轮(执行完才返回最终任务载荷)。
+
+    并发守卫:同一会话同时只允许一轮(``409``);未知任务 ``404``;
+    未配 key ``400``(指路文案)。执行失败不放大成 HTTP 500——会话文件里
+    已经落了的事实照常回放,任务标 failed。
+    """
+    text = text.strip()
+    if text == "":
+        return 400, {"detail": "消息不能为空"}
+    with _TASKS_LOCK:
+        record = _TASKS.get(task_id)
+        if record is None and not session_path(sessions_root, task_id).is_file():
+            return 404, {"detail": f"任务 {task_id} 不存在(草稿随工作台重启消失,已执行的会话在磁盘上)"}
+        if task_id in _RUNNING:
+            return 409, {"detail": "该会话正在执行中,请等当前轮完成再发下一条"}
+        _RUNNING.add(task_id)
+        if record is not None:
+            record["status"] = "running"
+    try:
+        try:
+            _run_turn(task_id, text, workspace, sessions_root)
+        except LookupError as exc:
+            with _TASKS_LOCK:
+                if record is not None:
+                    record["status"] = "draft"  # 没跑起来,退回草稿
+            return 400, {"detail": str(exc)}
+        except Exception as exc:
+            with _TASKS_LOCK:
+                if record is not None:
+                    record["status"] = "failed"
+                    record["lastError"] = f"{type(exc).__name__}: {exc}"
+        payload = _merged_task_payload(sessions_root, task_id)
+        return 200, payload
+    finally:
+        with _TASKS_LOCK:
+            _RUNNING.discard(task_id)
+
+
+def _merged_task_payload(sessions_root: Path, task_id: str) -> dict[str, Any]:
+    """执行后的任务载荷:磁盘会话重建(事实),草稿记录补充 access/effort(意图)。"""
+    with _TASKS_LOCK:
+        record = dict(_TASKS[task_id]) if task_id in _TASKS else None
+    payload: dict[str, Any] | None = None
+    if session_path(sessions_root, task_id).is_file():
+        try:
+            payload = _task_payload(
+                sessions_root, task_id, first_user_text=None, message_count=0, modified=0
+            )
+        except Exception:
+            payload = None  # 坏数据降级:退回草稿形状
+    if payload is None:
+        assert record is not None  # 执行过必有文件或草稿记录二者之一
+        payload = _draft_payload(record)
+        if record.get("lastError"):
+            payload["events"] = [
+                {"id": "e0", "kind": "note", "text": f"✗ 执行失败:{record['lastError']}", "at": _now_stamp()}
+            ]
+    elif record is not None:
+        payload["access"] = str(record.get("access") or "")
+        payload["effort"] = str(record.get("effort") or "")
+    return payload
+
+
+def _all_task_payloads(sessions_root: Path) -> list[dict[str, Any]]:
+    """草稿(内存)+ 已执行会话(磁盘)合并;同 id 磁盘版本优先(事实更全)。"""
+    disk = {payload["id"]: payload for payload in _list_task_payloads(sessions_root)}
+    with _TASKS_LOCK:
+        records = {rid: dict(record) for rid, record in _TASKS.items()}
+    merged: dict[str, dict[str, Any]] = {}
+    for rid, record in records.items():
+        if rid in disk:
+            payload = disk[rid]
+            payload["access"] = str(record.get("access") or "") or payload["access"]
+            payload["effort"] = str(record.get("effort") or "") or payload["effort"]
+        else:
+            payload = _draft_payload(record)
+        if rid in _RUNNING:
+            payload = {**payload, "status": "running"}
+        merged[rid] = payload
+    for rid, payload in disk.items():
+        merged.setdefault(rid, payload)
+    return sorted(merged.values(), key=lambda p: str(p.get("updatedAt") or ""), reverse=True)
 
 
 def _clip(text: str, width: int) -> str:
@@ -451,9 +688,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if parts == ["projects"]:
             self._send_json(200, [_project_payload(self.workspace)])
             return
-        # /tasks(过滤参数本服务不实现——数据面单项目、量级小,前端本地过滤已够)
+        # /tasks(草稿+磁盘合并;过滤参数前端本地做——单项目、量级小)
         if parts == ["tasks"]:
-            self._send_json(200, _list_task_payloads(root))
+            self._send_json(200, _all_task_payloads(root))
             return
         # /tasks/{id}[/timeline]
         if len(parts) == 2 and parts[0] == "tasks":
@@ -480,7 +717,34 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"detail": f"未知端点:{'/'.join(parts)}"})
 
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
+        clean = self.path.split("?", 1)[0]
+        parts = [p for p in clean.split("/") if p]
+        # 创建草稿任务(Composer / 侧栏「新建会话」)。
+        if parts == ["api", "v1", "tasks"]:
+            self._send_json(200, _create_task(self._read_json_body()))
+            return
+        # 发消息并同步跑一轮(执行完返回最终载荷;长轮询——UI 侧乐观显示 running)。
+        if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"] and parts[4] == "messages":
+            body = self._read_json_body()
+            code, payload = _post_message(
+                self.sessions_root, self.workspace, parts[3], str(body.get("text", ""))
+            )
+            self._send_json(code, payload)
+            return
         self._not_implemented(_what_from_path(self.path), "M2")
+
+    def _read_json_body(self) -> dict[str, Any]:
+        """读 JSON 请求体;空/坏体按 {} 处理(各端点自己校验必填)。"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def do_PATCH(self) -> None:  # noqa: N802 - 基类命名
         self._not_implemented(_what_from_path(self.path), "M2")

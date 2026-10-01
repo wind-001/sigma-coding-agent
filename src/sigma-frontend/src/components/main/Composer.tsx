@@ -10,11 +10,6 @@ const BRANCH_OPTIONS: readonly string[] = ['main', 'dev']
 const FALLBACK_EFFORTS: readonly string[] = ['最低', '中', '高', '最高']
 /** activeProjectId 无对应项目时的仓库占位文案 */
 const REPO_PLACEHOLDER: string = '选择项目'
-/**
- * 执行链路未接入(σ-server M2):工作台当前为只读回放。
- * 发送在 UI 层就禁用——而不是点了才弹 501 错误;"待接入"必须可见。
- */
-const EXECUTION_PENDING: boolean = true
 
 /** 任务输入卡片:头部仓库/分支选择条 + 正文输入 + 底部工具行(状态与动作均来自全局 store) */
 export default function Composer(): JSX.Element {
@@ -40,7 +35,6 @@ export default function Composer(): JSX.Element {
   }, [state.focusComposerSignal])
 
   const handleSend = (): void => {
-    if (EXECUTION_PENDING) return
     void actions.submitDraft()
   }
 
@@ -105,18 +99,9 @@ export default function Composer(): JSX.Element {
           value={state.draft}
           onChange={handleTextareaChange}
           onKeyDown={handleTextareaKeyDown}
-          placeholder={
-            EXECUTION_PENDING
-              ? '只读工作台:任务执行待接入(σ-server M2),当前可浏览真实会话'
-              : '描述你的任务,Enter 发送,Shift+Enter 换行'
-          }
+          placeholder="描述你的任务,Enter 发送——会在当前项目下新建会话并开始执行"
         />
       </div>
-      {EXECUTION_PENDING ? (
-        <div className="composer__pending">
-          执行链路待接入(σ-server M2)——浏览会话 / 时间线 / 插件为真实数据,发送不可用
-        </div>
-      ) : null}
 
       <div className="composer__footer">
         <button type="button" className="composer__icon-btn" aria-label="添加">
@@ -167,8 +152,7 @@ export default function Composer(): JSX.Element {
           type="button"
           className="composer__send"
           aria-label="发送"
-          disabled={EXECUTION_PENDING}
-          title={EXECUTION_PENDING ? '执行链路待接入(σ-server M2)' : '发送'}
+          title="新建会话并开始执行"
           onClick={handleSend}
         >
           <ArrowUp size={17} />

@@ -64,6 +64,9 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const state = useAppState()
   const actions = useAppActions()
   const [timeline, setTimeline] = useState<TaskTimeline | null>(null)
+  const [composeText, setComposeText] = useState<string>('')
+  const [sending, setSending] = useState<boolean>(false)
+  const composeReady: boolean = composeText.trim().length > 0 && !sending
 
   // 运行时间线:可选方法(mock 未实现时跳过);失败静默(时间线是增强,不是事实源)。
   useEffect((): (() => void) => {
@@ -88,6 +91,20 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const projectName: string = project?.name ?? '未知工作区'
   const statusMeta = STATUS_META[task.status]
   const engineLabel: string = [task.model, task.effort].filter((part) => part !== '').join(' · ')
+
+  const handleSendCompose = (): void => {
+    if (!composeReady || sending) return
+    const text = composeText
+    setSending(true)
+    void (async (): Promise<void> => {
+      try {
+        await actions.sendMessage(task.id, text)
+        setComposeText('')
+      } finally {
+        setSending(false)
+      }
+    })()
+  }
 
   return (
     <div className="task-detail">
@@ -131,6 +148,45 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
         {task.description !== '' ? (
           <div className="task-detail__desc-card">
             <p className="task-detail__desc">{task.description}</p>
+          </div>
+        ) : null}
+
+        {task.status !== 'running' && task.status !== 'archived' ? (
+          <div className="task-detail__compose">
+            <textarea
+              className="task-detail__compose-input"
+              value={composeText}
+              rows={2}
+              placeholder={
+                task.status === 'draft'
+                  ? '发送首条消息,会话开始执行(Enter 发送,Shift+Enter 换行)'
+                  : '继续这条会话,Enter 发送(同步执行一轮,完成后回放自动更新)'
+              }
+              onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void =>
+                setComposeText(event.target.value)
+              }
+              onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  handleSendCompose()
+                }
+              }}
+            />
+            <div className="task-detail__compose-foot">
+              <span className="task-detail__compose-hint">
+                {sending
+                  ? '正在执行(同步一轮),完成后自动更新…'
+                  : '工具调用自动放行(L1 路径沙箱 + L2 影子快照在岗);审批确认 / 打断待接入 σ-server M2'}
+              </span>
+              <button
+                type="button"
+                className="task-detail__btn task-detail__btn--primary task-detail__compose-send"
+                disabled={!composeReady}
+                onClick={handleSendCompose}
+              >
+                发送
+              </button>
+            </div>
           </div>
         ) : null}
 
@@ -235,9 +291,9 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
 
         <div className="task-detail__actions task-detail__actions--readonly">
           <p className="task-detail__pending-note">
-            执行控制(开始 / 推进 / 打断 / 审批)待接入 —— σ-server M2
-            (见 sigma-frontend/docs/sigma-backend-api-design.md)。当前工作台为只读回放,
-            数据源 = ~/.sigma/sessions 的真实会话,与 CLI 同源。
+            执行环(MVP)已接:消息经 sigma 真实跑一轮——断点续跑 / 影子快照 / trace 与 CLI 同源。
+            待接入:审批交互确认、打断、流式增量、自动化(σ-server M2/M3,见
+            sigma-frontend/docs/sigma-backend-api-design.md)。数据源 = ~/.sigma/sessions,与 CLI 同一份。
           </p>
         </div>
       </div>

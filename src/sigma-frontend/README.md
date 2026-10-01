@@ -30,18 +30,22 @@ cd src/sigma-frontend && npm ci && npm run dev   # http://localhost:5173
 | 会话列表(标题/状态/时间) | ✅ 真实 | `session_previews` + 整树解析;状态由 trace 末轮落点/悬空工具调用推导 |
 | 会话详情:动态回放 | ✅ 真实 | 会话 JSONL 逐条映射(message / tool_call / 错误 note) |
 | 会话详情:运行时间线 | ✅ 真实 | `build_timeline`(轮次/token/缓存命中率/工具错误/审批/耗时) |
+| **新建会话 + 发消息(真执行)** | ✅ 真实 | `POST /tasks` 建草稿;`POST /tasks/{id}/messages` **同步跑一轮**——`run_task` 驱动 InteractiveSession,落盘/断点续跑/影子快照/trace 与 CLI 同源 |
+| 续聊(已完成会话追加消息) | ✅ 真实 | 同上,`SessionTree.from_store` 续跑 |
 | 插件市场(清单) | ✅ 真实 | 内置工具(`default_registry`)+ 技能扫描 |
 | 状态筛选 / 分组 / 搜索(Ctrl+K) | ✅ 真实 | 前端本地过滤(数据面单项目、量级小) |
 | 断线容错 | ✅ | 桥接未启动 → 空态 + 常驻提示,界面不停在"加载中" |
-| 任务创建 / 发消息 / 状态流转 | ⏳ 待接入 | σ-server M2(执行/审批/SSE)——UI 已标"待接入",发送禁用 |
+| 审批交互确认 / 打断 / 流式增量 | ⏳ 待接入 | σ-server M2 其余部分:**工具调用当前自动放行**(L1 路径沙箱 + L2 影子快照在岗),UI 已注明 |
 | 自动化(定时执行) | ⏳ 待接入 | σ-server M3(sigma 目前没有调度器) |
-| 插件装卸 | ⏳ 待接入 | σ-server M3;扩展工具(\*.py)装载即执行代码,只读服务刻意不列出 |
-| 模型选择 / 推理力度 | ⏳ 装饰 | 只读回放无"下次执行用什么"的语义,控件保留但仅用于展示 |
+| 插件装卸 | ⏳ 待接入 | σ-server M3;扩展工具(\*.py)装载即执行代码,服务端刻意不装载不列出 |
+| 模型选择 / 推理力度 | ⚠ 展示用 | 实际模型来自 sigma 配置(`SIGMA_PRESET`/`SIGMA_MODEL`/预设默认,与 CLI 同一条解析链);composer 选择仅存档 |
 
-**写操作的三道边界**(桥接服务 docstring 同款):不执行扩展代码、不写任何文件
-(PATCH/DELETE/POST 一律 501 + 指路)、只绑 127.0.0.1。
-执行链路(σ-server:FastAPI + SSE + 审批环)的完整设计见
-`docs/sigma-backend-api-design.md`——它是**待拍板的 M1/M2/M3**,本工作台不抢它的活。
+**执行前提**:配置好模型密钥(与 sigma CLI 同一份:`SIGMA_API_KEY` 环境变量或
+`~/.sigma/.env`,推荐);未配置时发消息返回 400 指路文案。
+**写边界**:执行受 L1 写路径沙箱与 L2 影子快照约束;草稿任务元数据仅在内存
+(工作台重启丢失未执行的草稿,已执行的会话全在磁盘)。
+σ-server 完整设计(审批环/SSE/自动化)见 `docs/sigma-backend-api-design.md`——
+本桥接是其中能以现有能力落地的最小切片,不抢它的活。
 
 ## 目录
 

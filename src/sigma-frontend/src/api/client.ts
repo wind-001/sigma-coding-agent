@@ -198,4 +198,10 @@ export interface SigmaApiClient {
    * 可选方法:mock 不实现,消费方须以 `apiClient.getTaskTimeline?.()` 调用。
    */
   getTaskTimeline?(taskId: string): Promise<TaskTimeline | null>
+  /**
+   * 发一条消息并**同步执行一轮**(最小执行环,σ-server M2 切片)。
+   * 长轮询:返回时该轮已跑完,载荷含完整回放与最终状态。
+   * 可选方法:mock 不实现。
+   */
+  addTaskMessage?(taskId: string, text: string): Promise<Task>
 }
