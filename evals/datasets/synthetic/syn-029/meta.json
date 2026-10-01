@@ -1,0 +1,43 @@
+{
+  "id": "syn-029",
+  "kind": "synthetic",
+  "title": "分数运算模块的四处缺陷（构造不约分 / 符号不搬 / 比较不支持整数 / 无校验且除法写成乘法）",
+  "description": "工作区里的 fraction_lite 是一个分数运算模块（构造规范化 / 属性 / 四则运算 / 比较与 str），规则以模块 docstring 为准。它现在有四处 bug：\n\n1. 构造不约分：按约定 FractionLite(2, 4) 应规范化为 1/2（按 gcd 约分到最简），现在原样存成 2/4——大部分用例都被这条压着，相等性、哈希、str、运算结果全部连带出错；\n2. 符号不规范：分母为负时应把符号搬到分子（FractionLite(1, -2) 应存成 -1/2），现在不搬——相等性与比较连带出错；\n3. 比较未按数值进行、也不支持整数：__eq__/__lt__ 现在直接比较原始的 (分子, 分母) 对（这是字典序，不是数值序），且完全没有处理与 int 的比较——按约定 FractionLite(4, 2) == 2、FractionLite(1, 2) < 1 都应成立，现在前者恒为 False、后者直接抛 TypeError；\n4. 构造无校验、除法写成了乘法：denominator 为 0 应在构造时抛 ValueError，现在照单全收；__truediv__ 忘了「乘以对方的倒数」，写成了和 __mul__ 一样的乘法——1/2 ÷ 1/4 现在得到 1/8 而不是 2。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：第 1、2 处不修，分数之间的相等与排序用例根本过不了；比较相关的用例要等规范化修好后才轮到暴露第 3 处。修完一处要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，否则 `import fraction_lite` 会失败）。\n- 只改工作区内的文件；模块保持纯 stdlib、确定性，不许引入时间、随机或第三方依赖。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "17 failed, 1 passed in 0.37s",
+    "failed_tests": [
+      "tests/test_fraction_lite.py::test_constructor_reduces_by_gcd",
+      "tests/test_fraction_lite.py::test_constructor_reduces_negative_gcd",
+      "tests/test_fraction_lite.py::test_sign_moved_to_numerator",
+      "tests/test_fraction_lite.py::test_zero_normalizes_to_zero_over_one",
+      "tests/test_fraction_lite.py::test_rejects_zero_denominator",
+      "tests/test_fraction_lite.py::test_str_uses_canonical_form",
+      "tests/test_fraction_lite.py::test_equal_fractions_hash_the_same",
+      "tests/test_fraction_lite.py::test_eq_between_fractions",
+      "tests/test_fraction_lite.py::test_eq_with_int",
+      "tests/test_fraction_lite.py::test_lt_between_fractions",
+      "tests/test_fraction_lite.py::test_lt_with_int",
+      "tests/test_fraction_lite.py::test_sort_uses_value_order",
+      "tests/test_fraction_lite.py::test_add_returns_reduced_sum",
+      "tests/test_fraction_lite.py::test_sub_handles_negative_results",
+      "tests/test_fraction_lite.py::test_mul_reduces_product",
+      "tests/test_fraction_lite.py::test_truediv_multiplies_by_reciprocal",
+      "tests/test_fraction_lite.py::test_chained_expression"
+    ],
+    "recorded_at": "2026-10-01T18:10:32.223",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 18 passed。"
+  }
+}

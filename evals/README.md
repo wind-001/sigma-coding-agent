@@ -3,8 +3,9 @@
 > 状态（2026-09-28）：**`runner.py` 已落地**（跑六个回放场景，报告落 `reports/`）；
 > **`self_check.py` / `gate_replay.py` / `rollback_stats.py` 已落地**（7.6 主张的零成本验证行
 > → `reports/self_check.md`，P5-批次2 波1）。
-> `datasets/` **部分落地**：`adversarial/` 20 条对抗 + 10 条正常已落地并出数；
-> `synthetic/` **12/30**；`reproduce/` **0/20**（仍需真实 API key + 判定脚本）。
+> `datasets/`：`adversarial/` 20 条对抗 + 10 条正常已落地并出数；
+> `synthetic/` **30/30**（2026-10-01 补齐 syn-029/030，初始失败均真实录制、
+> 可解性经"手工修复→还原"双向验证）；`reproduce/` **0/20**（仍需真实 API key + 判定脚本）。
 
 **不要在这里写空壳实现。** 骨架到位、实现没接，是本项目明确要避免的失败模式。
 

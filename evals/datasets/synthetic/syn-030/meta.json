@@ -1,0 +1,38 @@
+{
+  "id": "syn-030",
+  "kind": "synthetic",
+  "title": "样本统计模块的四处缺陷（方差按 n / 中位数不排序 / 空输入静默 / 分位数不排序不插值）",
+  "description": "工作区里的 stat_lite 是一个样本统计模块（mean / median / variance / stdev / percentile，纯 stdlib、确定性），规则以模块 docstring 的「契约」为准。它现在有四处 bug：\n\n1. variance 按 n 求偏差平方均值（总体方差），而契约是**样本方差**——除以 n-1（贝塞尔校正）；stdev 直接建在 variance 上，连带全错——所有 variance / stdev 用例都被这条压住；\n2. median 没先排序：拿到无序输入直接取正中元素，奇偶长度的结果都可能是错的（契约要求先对副本排序，且不得改动调用方传入的序列）；输入碰巧有序时它又碰巧对，容易误判为「只有个别输入坏」；\n3. mean / median 空输入按契约应抛 ValueError，现在静默返回：mean([]) 返回 0.0，median([]) 返回 None；\n4. percentile 既没排序也没插值：拿原始顺序的列表直接取 idx = int(p/100*n)（契约要求先排序，再按 rank = p/100*(n-1) 在 floor/ceil 两元素间线性插值）——无序输入和任何非整 rank 的 p 全错，只有「有序输入 + 整 rank」碰巧对。\n\n请修好这四处，让 tests/ 下的测试全部通过。注意 bug 之间有交互：stdev 的对错完全挂在 variance 上，修第 1 处要连回归 stdev；第 2、4 处都要「先排序」，但分别在 median 和 percentile 里，别修一处漏一处；修完一处要回归跑全部测试。\n\n约束：\n- **不要修改 tests/ 下的测试文件**——判定时会用原始版本覆盖回去，改了也没用。\n- 用 `python -m pytest tests/ -q` 自己验证（必须带 `-m`，保证工作区根目录在 sys.path 上，`import stat_lite` 才稳定）。\n- 只改工作区内的文件；契约要求全部函数不改动调用方传入的序列，不许用排序「顺手」改写输入。",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0，而那测的是模型愿不愿意改测试，不是它会不会修 bug。注意 target 相对【工作区】、source 相对【任务目录】——两个基准不同，写反了防篡改会静默失效。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "12 failed, 6 passed in 0.22s",
+    "failed_tests": [
+      "tests/test_stat_lite.py::test_mean_empty_raises",
+      "tests/test_stat_lite.py::test_median_odd_unsorted",
+      "tests/test_stat_lite.py::test_median_even_unsorted",
+      "tests/test_stat_lite.py::test_median_empty_raises",
+      "tests/test_stat_lite.py::test_variance_is_sample_variance",
+      "tests/test_stat_lite.py::test_variance_known_example",
+      "tests/test_stat_lite.py::test_stdev_is_sqrt_of_sample_variance",
+      "tests/test_stat_lite.py::test_stdev_known_example",
+      "tests/test_stat_lite.py::test_percentile_sorts_unordered_input",
+      "tests/test_stat_lite.py::test_percentile_linear_interpolation",
+      "tests/test_stat_lite.py::test_percentile_quartile_interpolation",
+      "tests/test_stat_lite.py::test_percentile_zero_and_hundred_are_min_max"
+    ],
+    "recorded_at": "2026-10-01T18:06:20.541",
+    "note": "按详规 §2.2 的硬性构造顺序：先有会失败的测试，后有任务描述。可解性已单独验证：修复后 18 passed。"
+  }
+}
