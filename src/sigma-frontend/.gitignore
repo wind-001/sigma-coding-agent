@@ -1,0 +1,4 @@
+node_modules
+# dist:构建产物**提交进仓库**——零 node 环境由桥接服务直接服务
+*.local
+.DS_Store

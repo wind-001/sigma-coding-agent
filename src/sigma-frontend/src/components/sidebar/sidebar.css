@@ -1,0 +1,504 @@
+.sidebar {
+  /* 本文件局部变量(配合 global.css 的全局变量使用) */
+  --sb-icon-strong: #3d414a;
+  --sb-icon-neutral: #8b909a;
+  --sb-icon-active: #565b63;
+  --sb-label: #2b2e35;
+  --sb-item-text: #43474f;
+  --sb-time: #a8adb6;
+  --sb-section-title: #a5aab3;
+
+  width: 320px;
+  height: 100vh;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 14px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  font-family: var(--font-sans);
+}
+
+/* 1. 品牌行 */
+.sidebar__brand {
+  display: flex;
+  align-items: center;
+  padding: 14px 4px;
+}
+
+.sidebar__logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: #131313;
+  color: #ffffff;
+  font-size: 17px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.sidebar__history {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+}
+
+.sidebar__history-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--sb-icon-active);
+  transition: background-color 120ms ease;
+}
+
+.sidebar__history-btn:hover {
+  background: var(--bg-hover);
+}
+
+/* 2. 导航菜单 */
+.sidebar__nav {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar__nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 9px;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.sidebar__nav-item:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar__nav-icon {
+  color: var(--sb-icon-strong);
+  flex-shrink: 0;
+}
+
+.sidebar__nav-label {
+  font-size: 14.5px;
+  color: var(--sb-label);
+}
+
+.sidebar__nav-shortcut {
+  margin-left: auto;
+  font-size: 12px;
+  color: #a2a7b0;
+}
+
+/* 3. 分组 / 项目切换行 */
+.sidebar__switcher {
+  margin-top: 12px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: #5a5f68;
+  transition: background-color 120ms ease;
+}
+
+.sidebar__chip:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar__chip--active {
+  background: var(--bg-card);
+  border-color: var(--border-strong);
+  padding: 4px 12px;
+  font-weight: 600;
+  color: var(--sb-label);
+}
+
+.sidebar__chip--active:hover {
+  background: var(--bg-card);
+}
+
+/* 装饰图标按钮(Pin / 筛选 / 回收站 / 底部操作) */
+.sidebar__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--sb-icon-neutral);
+  transition: color 120ms ease;
+}
+
+.sidebar__icon-btn:hover {
+  color: var(--sb-icon-active);
+}
+
+.sidebar__switcher-pin {
+  margin-left: auto;
+}
+
+/* 4. 工具行 */
+.sidebar__tools {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+/* 5/7. 分区标题 */
+.sidebar__section-title {
+  padding: 10px 6px 4px;
+  font-size: 12.5px;
+  color: var(--sb-section-title);
+  user-select: none;
+}
+
+/* 6. 项目组滚动区 */
+.sidebar__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.12) transparent;
+}
+
+.sidebar__scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sidebar__scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+}
+
+.sidebar__scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar__group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.sidebar__group-header:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar__group-icon {
+  color: #7d828c;
+  flex-shrink: 0;
+}
+
+.sidebar__group-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: #2e3138;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 组内条目 / 任务条目 */
+.sidebar__item {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 10px 0 26px;
+  border-radius: 8px;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.sidebar__item--task {
+  padding-left: 4px;
+}
+
+.sidebar__item:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar__item--selected,
+.sidebar__item--selected:hover {
+  background: var(--bg-active);
+}
+
+.sidebar__item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar__item-title {
+  font-size: 14px;
+  color: var(--sb-item-text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sidebar__item-time {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--sb-time);
+}
+
+/* 8. 底部用户行 */
+.sidebar__user {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding: 12px 4px;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #d8dbe0;
+  color: #6f747e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sidebar__username {
+  margin-left: 10px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--sb-label);
+}
+
+.sidebar__user-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.sidebar__user-actions .sidebar__icon-btn {
+  color: #7d828c;
+}
+
+/* ============================================================
+   动态列表:计数徽标 / 状态圆点 / 分组视图组头 / 空状态
+   ============================================================ */
+
+/* 任务数小徽标(组头右侧 / 小节标题旁) */
+.sidebar__count {
+  margin-left: 6px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--sb-time);
+}
+
+.sidebar__group-header .sidebar__count {
+  margin-left: auto;
+}
+
+/* 标题前 6px 状态圆点(颜色由 STATUS_META 内联注入) */
+.sidebar__item-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 分组视图组头:同小节标题但略大 */
+.sidebar__section-title--lg {
+  padding-top: 14px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+/* 列表为空 / 加载中 */
+.sidebar__empty {
+  padding: 16px 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   状态筛选下拉(ListFilter 触发)
+   ============================================================ */
+
+.sidebar__filter {
+  position: relative;
+  display: inline-flex;
+}
+
+/* 筛选生效(非「全部»)时触发按钮橙色提示 */
+.sidebar__icon-btn--active,
+.sidebar__icon-btn--active:hover {
+  color: var(--accent-orange);
+}
+
+.sidebar__filter-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 128px;
+  padding: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(17, 20, 26, 0.1);
+  z-index: 60;
+}
+
+.sidebar__filter-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: #33363c;
+  text-align: left;
+  white-space: nowrap;
+  transition: background-color 120ms ease;
+}
+
+.sidebar__filter-item:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar__filter-item--selected {
+  color: var(--accent-orange);
+  font-weight: 500;
+}
+
+.sidebar__filter-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   会话操作:组头「新建会话」/ 条目悬停删除
+   ============================================================ */
+
+.sidebar__group-header-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar__group-header-row .sidebar__group-header {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar__group-add {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--sb-icon-neutral);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.sidebar__group-add:hover {
+  color: var(--sb-icon-active);
+  background: var(--bg-active);
+}
+
+.sidebar__group-header-row:hover .sidebar__group-add,
+.sidebar__group-add:focus-visible {
+  opacity: 1;
+}
+
+.sidebar__group-header-row:hover .sidebar__count {
+  opacity: 0;
+}
+
+.sidebar__item-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar__item-row .sidebar__item {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar__item-del {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--sb-icon-neutral);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.sidebar__item-del:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+
+.sidebar__item-row:hover .sidebar__item-del {
+  opacity: 1;
+}
+
+.sidebar__item-time,
+.sidebar__count {
+  transition: opacity 120ms ease;
+}
+
+.sidebar__item-row:hover .sidebar__item-time {
+  opacity: 0;
+}

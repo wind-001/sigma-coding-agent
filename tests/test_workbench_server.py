@@ -1,0 +1,330 @@
+"""工作台桥接服务的门槛测试(只读契约子集)。
+
+被测对象 ``src/sigma-frontend/server/workbench_server.py`` 不在 ``sigma``
+包里(路径含连字符,不可常规 import),按文件路径加载——与产品路径
+同一条代码。夹具用**真实的** ``JsonlStore`` + ``SessionTree`` 落盘会话,
+不过 HTTP 的端点测试起真服务(随机端口)。
+
+覆盖面:
+- 会话 → 前端 Task 契约的映射(标题/状态/事件/模型);
+- 悬空工具调用 → failed(中断,可断点续跑)的状态推导;
+- 坏会话(旧格式记录)→ 跳过,不拖死列表(查看器降级策略);
+- timeline 载荷(--timeline 数据面);
+- 501:执行类端点统一拒绝 + 指路文案;
+- 插件 = 内置工具 + 技能(真实扫描),扩展代码不执行。
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import threading
+import urllib.error
+import urllib.request
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
+
+from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
+from sigma.agent.types import ToolResult
+from sigma.providers.messages import (
+    AssistantMessage,
+    TextBlock,
+    ToolCallBlock,
+    ToolResultMessage,
+    Usage,
+    UserMessage,
+)
+from sigma.sessions.store import JsonlStore
+from sigma.sessions.tree import SessionTree
+
+_TS = "2026-10-01T10:00:00.000"
+
+
+def _load_server_module() -> ModuleType:
+    """按文件路径加载桥接模块(路径含连字符,不能 import)。"""
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "sigma-frontend" / "server" / "workbench_server.py"
+    )
+    spec = importlib.util.spec_from_file_location("sigma_workbench_server", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+SERVER = _load_server_module()
+
+
+def _assistant(
+    *, model: str = "test-model", content: list[Any] | None = None
+) -> LlmMessageWrapper:
+    return LlmMessageWrapper(
+        timestamp=_TS,
+        message=AssistantMessage(
+            content=content if content is not None else [TextBlock(text="完成")],
+            model=model,
+            usage=Usage(prompt_tokens=100, completion_tokens=10, cached_tokens=90),
+            stop_reason="stop",
+            timestamp=_TS,
+        ),
+    )
+
+
+def _write_session(root: Path, session_id: str, messages: list[Any]) -> None:
+    tree = SessionTree(store=JsonlStore(root, session_id))
+    for message in messages:  # tree.append 单参(与 SessionContext 的 *messages 不同)
+        tree.append(message)
+
+
+@pytest.fixture()
+def sessions_root(tmp_path: Path) -> Path:
+    return tmp_path / "sessions"
+
+
+# ---------------------------------------------------------------------------
+# 会话 → Task 映射
+# ---------------------------------------------------------------------------
+
+
+def test_task_mapping_from_real_session(sessions_root: Path) -> None:
+    """干净的问答会话 → completed;标题取首行;模型取最后一轮。"""
+    _write_session(
+        sessions_root,
+        "s-good",
+        [
+            LlmMessageWrapper(
+                timestamp=_TS,
+                message=UserMessage(content="修一下 off-by-one\n第二行", timestamp=_TS),
+            ),
+            _assistant(),
+        ],
+    )
+    tasks = SERVER._list_task_payloads(sessions_root)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task["id"] == "s-good"
+    assert task["title"] == "修一下 off-by-one"
+    assert task["status"] == "completed"
+    assert task["model"] == "test-model"
+    assert task["projectId"] == SERVER.PROJECT_ID
+    kinds = [event["kind"] for event in task["events"]]
+    assert kinds == ["message", "message"]
+    assert task["events"][0]["text"].startswith("用户:")
+
+
+def test_dangling_tool_call_derives_failed(sessions_root: Path) -> None:
+    """assistant 声明了工具调用但没有结果 = 中断 → failed(可断点续跑)。"""
+    _write_session(
+        sessions_root,
+        "s-dangling",
+        [
+            LlmMessageWrapper(
+                timestamp=_TS,
+                message=UserMessage(content="读文件", timestamp=_TS),
+            ),
+            _assistant(
+                content=[ToolCallBlock(id="call-1", name="read", arguments={"path": "a.py"})]
+            ),
+        ],
+    )
+    (tasks,) = [SERVER._list_task_payloads(sessions_root)]
+    assert tasks[0]["status"] == "failed"
+
+
+def test_answered_tool_calls_derive_completed(sessions_root: Path) -> None:
+    """工具调用 + 结果配平 + 收尾文本 = completed(工具批次不误判中断)。"""
+    call = ToolCallBlock(id="call-1", name="grep", arguments={"pattern": "x"})
+    result = ToolResultAgentMessage.from_result(
+        call, ToolResult(content=[TextBlock(text="命中")]), timestamp=_TS
+    )
+    _write_session(
+        sessions_root,
+        "s-tools",
+        [
+            LlmMessageWrapper(timestamp=_TS, message=UserMessage(content="找 x", timestamp=_TS)),
+            _assistant(content=[call]),
+            result,
+            _assistant(),
+        ],
+    )
+    (tasks,) = [SERVER._list_task_payloads(sessions_root)]
+    assert tasks[0]["status"] == "completed"
+    # 事件里有 tool_call,错误结果不产生 ✗ note。
+    kinds = [event["kind"] for event in tasks[0]["events"]]
+    assert "tool_call" in kinds
+    assert kinds.count("note") == 0
+
+
+def test_tool_error_becomes_note_event(sessions_root: Path) -> None:
+    call = ToolCallBlock(id="call-1", name="bash", arguments={})
+    result = ToolResultAgentMessage.from_result(
+        call, ToolResult(content=[TextBlock(text="boom")], is_error=True), timestamp=_TS
+    )
+    _write_session(sessions_root, "s-err", [result])
+    (tasks,) = [SERVER._list_task_payloads(sessions_root)]
+    notes = [event for event in tasks[0]["events"] if event["kind"] == "note"]
+    assert len(notes) == 1 and "✗ bash" in notes[0]["text"]
+
+
+def test_broken_session_skipped_not_fatal(sessions_root: Path) -> None:
+    """旧格式记录(整数 timestamp)让整树解析炸 → 该会话跳过,其余照常。"""
+    _write_session(
+        sessions_root,
+        "s-good",
+        [
+            LlmMessageWrapper(timestamp=_TS, message=UserMessage(content="好的会话", timestamp=_TS)),
+            _assistant(),
+        ],
+    )
+    broken = sessions_root / "s-old.jsonl"
+    record = {
+        "id": "n1",
+        "parentId": None,
+        "message": {
+            "role": "tool_result",
+            "tool_call_id": "a",
+            "tool_name": "read",
+            "content": [],
+            "details": {},
+            "is_error": False,
+            "timestamp": 123,  # v1.4 前的整数时间戳 → pydantic 拒收
+        },
+    }
+    broken.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+    tasks = SERVER._list_task_payloads(sessions_root)
+    ids = [task["id"] for task in tasks]
+    assert ids == ["s-good"]
+
+
+def test_missing_session_returns_null(sessions_root: Path) -> None:
+    assert SERVER._task_payload_for_id(sessions_root, "nope") is None
+
+
+# ---------------------------------------------------------------------------
+# timeline / 插件 / 项目
+# ---------------------------------------------------------------------------
+
+
+def test_timeline_payload_without_trace(sessions_root: Path) -> None:
+    _write_session(
+        sessions_root,
+        "s-tl",
+        [
+            LlmMessageWrapper(timestamp=_TS, message=UserMessage(content="hi", timestamp=_TS)),
+            _assistant(),
+        ],
+    )
+    payload = SERVER._timeline_payload(sessions_root, "s-tl")
+    assert payload is not None
+    assert payload["hasTrace"] is False
+    assert payload["totalPrompt"] == 100
+    assert payload["totalCached"] == 90
+    assert payload["cacheRate"] == 0.9
+    assert payload["rounds"][0]["model"] == "test-model"
+    assert SERVER._timeline_payload(sessions_root, "nope") is None
+
+
+def test_plugins_payload_builtin_and_skills(tmp_path: Path) -> None:
+    """插件 = 真实内置工具 + 真实技能扫描;扩展工具不列出(装载即执行)。"""
+    skill_dir = tmp_path / "extensions" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "demo.md").write_text(
+        "---\nname: demo\ndescription: 演示技能\n---\n正文\n", encoding="utf-8"
+    )
+    (tmp_path / "extensions" / "evil.py").write_text("raise SystemExit(1)", encoding="utf-8")
+
+    plugins = SERVER._plugins_payload(tmp_path)
+    names = {plugin["name"] for plugin in plugins}
+    assert "bash" in names and "read" in names  # 内置工具,来自 default_registry
+    assert "demo" in names  # 技能,来自真实扫描
+    assert all(plugin["id"].split(":")[0] in ("tool", "skill") for plugin in plugins)
+    builtin = {plugin["name"] for plugin in plugins if plugin["builtin"]}
+    assert builtin >= {"bash", "read"}
+
+
+def test_project_payload_reads_branch(tmp_path: Path) -> None:
+    (tmp_path / ".git" / "HEAD").parent.mkdir(parents=True)
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    project = SERVER._project_payload(tmp_path)
+    assert project["branch"] == "main"
+    assert project["repoPath"] == str(tmp_path)
+
+
+def test_memory_payload(tmp_path: Path) -> None:
+    memory_dir = tmp_path / ".sigma" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "alpha.md").write_text("# Alpha 记忆\n内容\n", encoding="utf-8")
+    entries = SERVER._memory_payload(tmp_path)
+    assert entries == [{"slug": "alpha", "title": "Alpha 记忆"}]
+
+
+# ---------------------------------------------------------------------------
+# HTTP 层:真起服务,打真实请求
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def http_server(tmp_path: Path):
+    sessions_root = tmp_path / "sessions"
+    _write_session(
+        sessions_root,
+        "s-http",
+        [
+            LlmMessageWrapper(timestamp=_TS, message=UserMessage(content="你好", timestamp=_TS)),
+            _assistant(),
+        ],
+    )
+    server = SERVER.make_server(
+        host="127.0.0.1",
+        port=0,  # 随机端口,避免与开发实例互踩
+        sessions_root=sessions_root,
+        workspace=tmp_path,
+        dist_dir=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    yield base
+    server.shutdown()
+    server.server_close()
+
+
+def _get(base: str, path: str) -> tuple[int, Any]:
+    try:
+        with urllib.request.urlopen(f"{base}{path}", timeout=10) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def _post(base: str, path: str) -> tuple[int, Any]:
+    request = urllib.request.Request(
+        f"{base}{path}", data=b"{}", headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def test_http_get_endpoints(http_server: str) -> None:
+    code, ping = _get(http_server, "/api/v1/system/ping")
+    assert code == 200 and ping["ok"] is True and ping["mode"] == "http"
+    code, tasks = _get(http_server, "/api/v1/tasks")
+    assert code == 200 and [task["id"] for task in tasks] == ["s-http"]
+    code, timeline = _get(http_server, "/api/v1/tasks/s-http/timeline")
+    assert code == 200 and timeline["totalPrompt"] == 100
+    code, missing = _get(http_server, "/api/v1/tasks/nope")
+    assert code == 200 and missing is None  # 契约:getTask → Task | null
+
+
+def test_http_write_verbs_are_501_with_guidance(http_server: str) -> None:
+    code, body = _post(http_server, "/api/v1/tasks")
+    assert code == 501
+    assert "待接入" in body["detail"] and "M2" in body["detail"]

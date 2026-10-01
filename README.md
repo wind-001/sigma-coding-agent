@@ -312,6 +312,7 @@ examples/       真 API 演示（smoke / agent_demo / web_research）
 extensions/     运行时加载的扩展样例（P4）
 docs/           架构方案、调研笔记、计划、决策记录
 scripts/        门槛注入实验（历史证据，内嵌路径为 P6 前旧路径）、demo 工作区生成
+src/sigma-frontend/  工作台前端（React，只读桥接服务直连真实会话/时间线/技能；执行链路待 σ-server 拍板，UI 已标待接入）
 ```
 
 ## 文档

@@ -1,0 +1,730 @@
+/* ============================================================
+   MainArea 主区域布局
+   ============================================================ */
+
+.main {
+  flex: 1;
+  position: relative;
+  background: var(--bg-main);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.main__center {
+  margin: auto;
+  width: min(860px, 90%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: 17vh;
+}
+
+/* ============================================================
+   TitleBar 标题栏(右上角图标排 + 窗口控制按钮)
+   ============================================================ */
+
+.titlebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 56px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  z-index: 10;
+}
+
+.titlebar__group {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.titlebar__group--window {
+  gap: 6px;
+  margin-left: 14px;
+}
+
+.titlebar__btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6f747e;
+}
+
+.titlebar__btn:hover {
+  background: var(--bg-hover);
+}
+
+.titlebar__btn--close:hover {
+  background: #ff5f57;
+  color: #ffffff;
+}
+
+/* ============================================================
+   Hero 大 "7" 轮廓水印 + 问候语
+   ============================================================ */
+
+.hero {
+  position: relative;
+  width: 100%;
+  height: 274px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  margin-bottom: 60px;
+}
+
+.hero__watermark {
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 484px;
+  height: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+.hero__greeting {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: 38px;
+  font-weight: 600;
+  color: #24262c;
+  letter-spacing: 1px;
+  padding-bottom: 0;
+}
+
+/* ============================================================
+   Dropdown 通用下拉
+   ============================================================ */
+
+.dropdown {
+  position: relative;
+}
+
+.dropdown__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: #33363c;
+  white-space: nowrap;
+}
+
+.dropdown__trigger:hover {
+  background: var(--bg-hover);
+}
+
+.dropdown__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(17, 20, 26, 0.1);
+  padding: 4px;
+  min-width: 150px;
+  z-index: 50;
+}
+
+.dropdown__menu--left {
+  left: 0;
+}
+
+.dropdown__menu--right {
+  right: 0;
+}
+
+.dropdown__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: #33363c;
+  white-space: nowrap;
+}
+
+.dropdown__item:hover {
+  background: var(--bg-hover);
+}
+
+/* ============================================================
+   Composer 任务输入卡
+   ============================================================ */
+
+.composer {
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.composer__header {
+  background: #f7f8fa;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.composer__select-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: #33363c;
+}
+
+.composer__select-value--sm {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.composer__trigger-accent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-orange);
+}
+
+.composer__body {
+  padding: 8px 16px 0;
+}
+
+.composer__textarea {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+.composer__textarea::placeholder {
+  color: #b3b8c2;
+}
+
+.composer__footer {
+  padding: 10px 12px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.composer__icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #565b63;
+}
+
+.composer__icon-btn:hover {
+  background: var(--bg-hover);
+}
+
+.composer__spacer {
+  flex: 1;
+}
+
+.composer__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid #c6cad2;
+  flex-shrink: 0;
+}
+
+.composer__send {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #131313;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.composer__send:hover {
+  background: #2c2c2c;
+}
+
+/* ============================================================
+   QuickActions 快捷操作 chips
+   ============================================================ */
+
+.quick-actions {
+  margin-top: 28px;
+  display: flex;
+  gap: 16px;
+}
+
+.quick-action {
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #565b63;
+}
+
+.quick-action:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 10px rgba(17, 20, 26, 0.06);
+}
+
+.quick-action__label {
+  color: #3f434b;
+}
+
+/* ============================================================
+   TaskDetail 任务详情页(详情态标题栏加渐隐底,避免滚动穿帮)
+   ============================================================ */
+
+.main--task .titlebar {
+  background: linear-gradient(to bottom, var(--bg-main) 60%, rgba(253, 253, 254, 0));
+}
+
+.task-detail {
+  flex: 1;
+  overflow-y: auto;
+  padding: 68px 48px 56px;
+}
+
+.task-detail__inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.task-detail__topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 26px;
+}
+
+.task-detail__back {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #565b63;
+}
+
+.task-detail__back:hover {
+  background: var(--bg-hover);
+}
+
+.task-detail__crumb {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.task-detail__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.task-detail__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.task-detail__meta {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.task-detail__meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-detail__desc-card {
+  margin-top: 22px;
+  padding: 14px 16px;
+  background: #f7f8fa;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.task-detail__desc {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.8;
+  color: #3f434b;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-detail__section-title {
+  margin: 28px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #565b63;
+}
+
+.task-detail__actions {
+  margin-top: 26px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-detail__btn {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #3f434b;
+}
+
+.task-detail__btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.task-detail__btn--primary {
+  background: #131313;
+  border-color: #131313;
+  color: #ffffff;
+}
+
+.task-detail__btn--primary:hover {
+  background: #2c2c2c;
+  border-color: #2c2c2c;
+}
+
+.task-detail__btn--danger {
+  margin-left: auto;
+  border-color: transparent;
+  background: rgba(229, 72, 77, 0.06);
+  color: var(--danger);
+}
+
+.task-detail__btn--danger:hover {
+  background: rgba(229, 72, 77, 0.12);
+  border-color: transparent;
+}
+
+.task-detail__demo-note {
+  margin: 22px 0 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #fff7e6;
+  border: 1px solid rgba(255, 143, 31, 0.22);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #9a6a1b;
+}
+
+/* ============================================================
+   StatusBadge 状态徽章(底色/文字色由内联样式按 STATUS_META 注入)
+   ============================================================ */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.status-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+/* ============================================================
+   Timeline 任务动态时间线(6px 圆点 + 连线 + 文本 + 绝对时间)
+   ============================================================ */
+
+.timeline {
+  margin-top: 8px;
+}
+
+.timeline__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timeline__item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 7px 0;
+}
+
+.timeline__item:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 2.5px;
+  top: 23px;
+  bottom: -15px;
+  width: 1px;
+  background: var(--border);
+}
+
+.timeline__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 8px;
+}
+
+.timeline__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: #3f434b;
+}
+
+.timeline__time {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.timeline__empty {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   TaskDetail 会话输入(draft 会话首条消息)
+   ============================================================ */
+
+.task-detail__compose {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-bottom: 22px;
+  transition: border-color 120ms ease;
+}
+
+.task-detail__compose:focus-within {
+  border-color: var(--border-strong);
+}
+
+.task-detail__compose-input {
+  display: block;
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  padding: 12px 14px 4px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.task-detail__compose-input::placeholder {
+  color: #b3b8c2;
+}
+
+.task-detail__compose-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px 10px 14px;
+}
+
+.task-detail__compose-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.task-detail__compose-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   工作台(只读模式)追加:执行待接入标记 + 运行时间线
+   ============================================================ */
+
+.composer__pending {
+  padding: 8px 16px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.composer__send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.task-detail__actions--readonly {
+  display: block;
+}
+
+.task-detail__pending-note {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  background: var(--bg-sidebar);
+  border-radius: 10px;
+}
+
+.wb-metrics {
+  margin-bottom: 20px;
+}
+
+.wb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.wb-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.wb-chip__label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.wb-chip__value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-rounds {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.wb-round {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-round:last-child {
+  border-bottom: none;
+}
+
+.wb-round:nth-child(odd) {
+  background: var(--bg-sidebar);
+}
+
+.wb-round__no {
+  color: var(--text-muted);
+  min-width: 28px;
+}
+
+.wb-round__model {
+  color: var(--text-secondary);
+  min-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-round__tokens,
+.wb-round__latency {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.wb-round__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.wb-tool {
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.wb-tool--ok {
+  background: rgba(34, 160, 107, 0.1);
+  color: #22a06b;
+}
+
+.wb-tool--bad {
+  background: rgba(229, 72, 77, 0.1);
+  color: var(--danger);
+}

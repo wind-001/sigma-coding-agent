@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
-dist/
+/dist/  # 只锚根目录:src/sigma-frontend/dist 是工作台构建产物,要入库
 .venv/
 venv/
 
