@@ -6,9 +6,8 @@ import {
   type Task,
   type TaskEvent,
   type TaskTimeline,
-  type WorkbenchBudget,
 } from '../../api'
-import { formatDateTime, formatRelative } from '../../lib/time'
+import { formatDateTime } from '../../lib/time'
 import { useAppActions, useAppState } from '../../store/appStore'
 
 /** 十六进制颜色 → rgba 字符串(用于状态徽章底色的透明度) */
@@ -18,27 +17,6 @@ function hexToRgba(hex: string, alpha: number): string {
   const g: number = parseInt(body.slice(2, 4), 16)
   const b: number = parseInt(body.slice(4, 6), 16)
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
-}
-
-/** 看板一枚指标卡:label + 大数字 + 说明。 */
-function BoardCard({
-  label,
-  value,
-  sub,
-  title,
-}: {
-  label: string
-  value: string
-  sub?: string
-  title?: string
-}): JSX.Element {
-  return (
-    <div className="wb-card" title={title}>
-      <span className="wb-card__label">{label}</span>
-      <span className="wb-card__value">{value}</span>
-      {sub !== undefined && sub !== '' ? <span className="wb-card__sub">{sub}</span> : null}
-    </div>
-  )
 }
 
 /** 气泡流里的工具调用 chip。 */
@@ -58,18 +36,18 @@ interface TaskDetailProps {
 }
 
 /**
- * 会话工作区(以 sigma 现有功能为核心):
- * - **看板行** = 上下文信息:运行指标(观测层 timeline)+ 常驻区预算构成(D4,表即常量);
- * - **气泡流** = 会话回放(用户右 / 助手左,工具调用 chip 行);
- * - **底部输入** = 提示词框,Enter 同步执行一轮(执行中禁用)。
+ * 会话工作区:**这里只出现对话**。
+ * - 气泡流(用户右 / 助手左,工具调用 chip 行)占满主区,自动滚底;
+ * - 顶部只有返回 + 标题 + 状态小徽章 + 会话 id;
+ * - 运行指标(轮数/token/缓存/耗时)以**小字**放在底部输入框提示行的右端——
+ *   不再占独立看板(星辰 2026-10-01:图二信息小字放图三位置)。
  *
- * 数据源 = 真实 sigma(会话 JSONL / build_timeline / resident_caps),与 CLI 同源。
+ * 数据源 = 真实 sigma(会话 JSONL / build_timeline),与 CLI 同源。
  */
 export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const state = useAppState()
   const actions = useAppActions()
   const [timeline, setTimeline] = useState<TaskTimeline | null>(null)
-  const [budget, setBudget] = useState<WorkbenchBudget | null>(null)
   const [composeText, setComposeText] = useState<string>('')
   const [sending, setSending] = useState<boolean>(false)
   const composeReady: boolean = composeText.trim().length > 0 && !sending
@@ -78,9 +56,8 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const isRunning: boolean = task.status === 'running'
   const canCompose: boolean = task.status !== 'archived' && !(sending || isRunning)
 
-  // 运行时间线 + 常驻预算(看板数据源;可选方法,mock 未实现时静默跳过)。
-  // ⚠ 必须以 `apiClient.xxx?.()` 形式调用:取出来再调(`const f = apiClient.f; f()`)
-  // 会丢 this——HttpSigmaClient 的方法依赖 this.request,实测炸出白屏。
+  // 运行时间线(底部小字指标的数据源;可选方法,mock 未实现时静默跳过)。
+  // ⚠ 必须以 `apiClient.xxx?.()` 形式调用:取出来再调会丢 this(实测白屏)。
   useEffect((): (() => void) => {
     let cancelled = false
     if (apiClient.getTaskTimeline !== undefined) {
@@ -93,18 +70,11 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           if (!cancelled) setTimeline(null)
         })
     }
-    if (apiClient.getBudget !== undefined && budget === null) {
-      apiClient
-        .getBudget()
-        .then((info: WorkbenchBudget): void => {
-          if (!cancelled) setBudget(info)
-        })
-        .catch((): void => undefined)
-    }
     return (): void => {
       cancelled = true
     }
-  }, [task.id, budget])
+    // 依赖 updatedAt:每轮执行完(载荷替换)自动重取,底部小字指标跟着翻新。
+  }, [task.id, task.updatedAt])
 
   // 新回放到达(轮次变化)时滚到底部。
   useEffect((): void => {
@@ -117,7 +87,6 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const project = state.projects.find((p): boolean => p.id === task.projectId)
   const projectName: string = project?.name ?? '未知工作区'
   const statusMeta = STATUS_META[task.status]
-  const engineLabel: string = [task.model, task.effort].filter((part) => part !== '').join(' · ')
 
   const handleSendCompose = (): void => {
     if (!composeReady) return
@@ -133,14 +102,21 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
     })()
   }
 
-  const cachePercent: string =
-    timeline !== null && timeline.cacheRate !== null
-      ? `${Math.round(timeline.cacheRate * 100)}%`
-      : '—'
-  const wallLabel: string =
-    timeline !== null && timeline.wallSeconds !== null
-      ? `${timeline.wallSeconds.toFixed(1)}s${timeline.wallApprox ? ' ≈' : ''}`
-      : '—'
+  // 底部小字指标(图二信息 → 图三位置):有 timeline 才显示,没有不占位。
+  const metrics: string | null =
+    timeline === null
+      ? null
+      : [
+          `轮数 ${timeline.rounds.length}`,
+          `token ${timeline.totalPrompt}/${timeline.totalCompletion}`,
+          timeline.cacheRate !== null ? `缓存 ${Math.round(timeline.cacheRate * 100)}%` : null,
+          `工具错误 ${timeline.toolErrors}`,
+          timeline.wallSeconds !== null
+            ? `耗时 ${timeline.wallSeconds.toFixed(1)}s${timeline.wallApprox ? '≈' : ''}`
+            : null,
+        ]
+          .filter((part): part is string => part !== null)
+          .join(' · ')
 
   return (
     <div className="task-detail">
@@ -154,80 +130,23 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           >
             <ArrowLeft size={18} />
           </button>
-          <span className="task-detail__crumb">
-            {projectName} / {task.title}
+          <span className="task-detail__crumb">{projectName} / {task.title}</span>
+          <span
+            className="status-badge"
+            style={{
+              backgroundColor: hexToRgba(statusMeta.color, 0.12),
+              color: statusMeta.color,
+            }}
+          >
+            <span className="status-badge__dot" style={{ backgroundColor: statusMeta.color }} />
+            <span className="status-badge__text">{statusMeta.label}</span>
           </span>
           <span className="task-detail__meta-id" title={task.id}>
             {task.id}
           </span>
         </div>
 
-        {/* ============ 看板:上下文信息(运行指标 + 常驻预算) ============ */}
-        <div className="wb-board">
-          <div className="wb-card">
-            <span className="wb-card__label">状态</span>
-            <span
-              className="status-badge"
-              style={{
-                backgroundColor: hexToRgba(statusMeta.color, 0.12),
-                color: statusMeta.color,
-              }}
-            >
-              <span
-                className="status-badge__dot"
-                style={{ backgroundColor: statusMeta.color }}
-              />
-              <span className="status-badge__text">{statusMeta.label}</span>
-            </span>
-            <span className="wb-card__sub">{engineLabel !== '' ? engineLabel : '模型未知'}</span>
-          </div>
-          <BoardCard
-            label="轮数"
-            value={timeline !== null ? String(timeline.rounds.length) : '—'}
-            sub={`工具错误 ${timeline?.toolErrors ?? '—'} · 截断 ${timeline?.truncated ?? '—'}`}
-            title="LLM 调用轮次(与 AgentLoop 的 round 同口径)"
-          />
-          <BoardCard
-            label="token(入/出)"
-            value={
-              timeline !== null ? `${timeline.totalPrompt} / ${timeline.totalCompletion}` : '—'
-            }
-            sub={`缓存命中 ${cachePercent}`}
-            title="prompt / completion(provider 返回的真实用量);缓存命中 = cached/prompt"
-          />
-          <BoardCard
-            label="耗时"
-            value={wallLabel}
-            sub={`更新于 ${formatRelative(task.updatedAt)} · ${formatDateTime(task.createdAt)}`}
-            title="端到端墙钟(≈ = 由消息时间戳差近似)"
-          />
-          <div className="wb-card wb-card--budget" title="常驻区预算 D4 v3(表即常量):系统提示词+工具 schema+AGENTS.md+技能索引+记忆索引+repo map,逐字节稳定是 prompt cache 的前提">
-            <span className="wb-card__label">
-              上下文构成 · 常驻区预算 {budget?.residentBudgetTokens ?? 5750} tok
-            </span>
-            {budget !== null ? (
-              <div className="wb-budget">
-                {Object.entries(budget.caps).map(([name, cap]) => {
-                  const measured = budget.measured[name]
-                  const percent: number = Math.min(100, Math.round((measured ?? 0) / cap * 100))
-                  return (
-                    <div key={name} className="wb-budget__row" title={`${name}:实测 ${measured ?? '—'} / cap ${cap}`}>
-                      <span className="wb-budget__name">{name}</span>
-                      <span className="wb-budget__bar">
-                        <span className="wb-budget__fill" style={{ width: `${percent}%` }} />
-                      </span>
-                      <span className="wb-budget__num">{measured ?? '—'}/{cap}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <span className="wb-card__sub">预算表加载中…</span>
-            )}
-          </div>
-        </div>
-
-        {/* ============ 气泡流 ============ */}
+        {/* ============ 气泡流(主区只有对话) ============ */}
         <div className="wb-thread" ref={threadRef}>
           {task.events.length === 0 ? (
             <p className="wb-thread__empty">
@@ -282,7 +201,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           ) : null}
         </div>
 
-        {/* ============ 底部输入 ============ */}
+        {/* ============ 底部输入(指标以小字在提示行右端) ============ */}
         <div className="wb-composer">
           <textarea
             className="wb-composer__input"
@@ -309,6 +228,11 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               工具调用自动放行(L1 路径沙箱 + L2 影子快照在岗)· 审批确认 / 打断待接入 σ-server
               M2 · 数据与 CLI 同一份(~/.sigma/sessions)
             </span>
+            {metrics !== null ? (
+              <span className="wb-composer__metrics" title="本会话运行指标(观测层 timeline)">
+                {metrics}
+              </span>
+            ) : null}
             <button
               type="button"
               className="wb-composer__send"
