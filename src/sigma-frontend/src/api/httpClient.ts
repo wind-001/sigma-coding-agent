@@ -26,7 +26,18 @@ import {
 export class HttpSigmaClient implements SigmaApiClient {
   readonly mode = 'http' as const
 
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string) {
+    // 构造期把全部原型方法绑到实例:调用点存在「取下来再调」的形态
+    // (轮询定时器、条件守卫),常规方法那样取会丢 this——实测报
+    // "Cannot read properties of undefined (reading 'request')" 且 effect
+    // 同步抛错直接卸载整棵 React 树(白屏)。在源头消灭这一整类问题。
+    for (const name of Object.getOwnPropertyNames(HttpSigmaClient.prototype)) {
+      const value = (this as unknown as Record<string, unknown>)[name]
+      if (typeof value === 'function' && name !== 'constructor') {
+        ;(this as unknown as Record<string, unknown>)[name] = value.bind(this)
+      }
+    }
+  }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}/api/v1${path}`, {

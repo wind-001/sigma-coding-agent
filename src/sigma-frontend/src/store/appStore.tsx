@@ -1,7 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
 import { apiClient, STATUS_META, type Automation, type ModelInfo, type Plugin, type Project, type Task, type TaskStatus } from '../api'
 
-export type SidebarView = 'projects' | 'groups'
 export type StatusFilter = 'all' | 'active' | 'completed'
 export type OverlayKind = 'automations' | 'plugins' | 'help' | 'fs-picker' | null
 
@@ -16,7 +15,6 @@ export interface AppState {
   activeProjectId: string
   selectedTaskId: string | null
   view: 'home' | 'task'
-  sidebarView: SidebarView
   statusFilter: StatusFilter
   draft: string
   composerAccess: string
@@ -39,7 +37,6 @@ const initialState: AppState = {
   activeProjectId: 'proj-sigma',
   selectedTaskId: null,
   view: 'home',
-  sidebarView: 'projects',
   statusFilter: 'all',
   draft: '',
   composerAccess: 'full',
@@ -121,7 +118,6 @@ export interface AppActions {
   removeWorkspace(projectId: string): Promise<void>
   /** 重新拉取全部列表(导入工作区/项目变更后) */
   refreshAll(): Promise<void>
-  setSidebarView(view: SidebarView): void
   setStatusFilter(filter: StatusFilter): void
   setActiveProjectId(projectId: string): void
   setComposerOpt(patch: { access?: string; model?: string; effort?: string }): void
@@ -303,48 +299,51 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         await runOrToast((): Promise<string> => send(taskId, text))
       },
       async queueMessage(taskId: string, text: string): Promise<void> {
-        const queuer = apiClient.queueTask
-        if (queuer === undefined) {
+        // 可选方法先收窄到局部常量再进异步闭包(TS 跨闭包 narrow 不成立);
+        // 提取调用安全:原型方法已在 HttpSigmaClient 构造器绑定。
+        const queueTask = apiClient.queueTask
+        if (queueTask === undefined) {
           throw new Error('当前后端不支持排队(桥接服务过旧或处于 mock 模式)')
         }
         await runOrToast(async (): Promise<string> => {
-          await queuer(taskId, text.trim())
+          await queueTask(taskId, text.trim())
           return '已排队:当前任务完成后自动执行(点「立即」可打断注入)'
         })
       },
       async steerTask(taskId: string, text: string): Promise<void> {
-        const steerer = apiClient.steerTask
-        if (steerer === undefined) {
+        const steerTask = apiClient.steerTask
+        if (steerTask === undefined) {
           throw new Error('当前后端不支持打断注入(桥接服务过旧或处于 mock 模式)')
         }
         await runOrToast(async (): Promise<string> => {
-          await steerer(taskId, text.trim())
+          await steerTask(taskId, text.trim())
           return '已注入:下一轮模型调用前生效'
         })
       },
       async removeQueued(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void> {
-        const remover = apiClient.removeQueued
-        if (remover === undefined) return
+        const removeQueued = apiClient.removeQueued
+        if (removeQueued === undefined) return
         await runOrToast(async (): Promise<string> => {
-          await remover(taskId, kind, index)
+          await removeQueued(taskId, kind, index)
           return '已移除排队项'
         })
       },
       async decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void> {
-        const decider = apiClient.decideApproval
-        if (decider === undefined) return
+        const decideApproval = apiClient.decideApproval
+        if (decideApproval === undefined) return
         await runOrToast(async (): Promise<string> => {
-          await decider(taskId, requestId, decision)
+          await decideApproval(taskId, requestId, decision)
           return decision === 'approve' ? '已批准' : '已拒绝'
         })
       },
       async importWorkspace(repoPath: string, name?: string): Promise<void> {
-        const importer = apiClient.createProject
-        if (importer === undefined) return
+        const createProject = apiClient.createProject
+        if (createProject === undefined) return
         await runOrToast(async (): Promise<string> => {
-          const created = await importer({ repoPath: repoPath.trim(), name: name ?? '' })
-          if (apiClient.activateProject !== undefined) {
-            await apiClient.activateProject(created.id)
+          const created = await createProject({ repoPath: repoPath.trim(), name: name ?? '' })
+          const activateProject = apiClient.activateProject
+          if (activateProject !== undefined) {
+            await activateProject(created.id)
           }
           await actionsRef.current?.refreshAll()
           return `工作区「${created.name}」已导入并切换`
@@ -352,23 +351,23 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       },
       /** 切换激活的工作区(侧栏过滤、新任务目标随之切换)。 */
       async switchProject(projectId: string): Promise<void> {
-        const activator = apiClient.activateProject
-        if (activator === undefined) {
+        const activateProject = apiClient.activateProject
+        if (activateProject === undefined) {
           patch({ activeProjectId: projectId })
           return
         }
         await runOrToast(async (): Promise<string> => {
-          await activator(projectId)
+          await activateProject(projectId)
           await actionsRef.current?.refreshAll()
           const name = stateRef.current.projects.find((p) => p.id === projectId)?.name ?? ''
           return `已切换到「${name}」`
         })
       },
       async removeWorkspace(projectId: string): Promise<void> {
-        const remover = apiClient.removeProject
-        if (remover === undefined) return
+        const removeProject = apiClient.removeProject
+        if (removeProject === undefined) return
         await runOrToast(async (): Promise<string> => {
-          await remover(projectId)
+          await removeProject(projectId)
           await actionsRef.current?.refreshAll()
           return '已移除工作区(其会话回放归入主工作区)'
         })
@@ -414,9 +413,6 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             },
           })
         }
-      },
-      setSidebarView(view: SidebarView): void {
-        patch({ sidebarView: view })
       },
       setStatusFilter(filter: StatusFilter): void {
         patch({ statusFilter: filter })

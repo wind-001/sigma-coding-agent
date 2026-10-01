@@ -4,7 +4,6 @@ import {
   CircleHelp,
   CirclePlus,
   Folder,
-  Hash,
   LayoutGrid,
   Search,
   type LucideIcon,
@@ -128,20 +127,6 @@ export default function CommandPalette(): JSX.Element {
         title: '帮助与快捷键',
         icon: CircleHelp,
         run: runAndClose(() => actions.setOverlay('help')),
-      },
-      {
-        kind: 'command',
-        key: 'cmd-view-groups',
-        title: '切换到分组视图',
-        icon: Hash,
-        run: runAndClose(() => actions.setSidebarView('groups')),
-      },
-      {
-        kind: 'command',
-        key: 'cmd-view-projects',
-        title: '切换到项目视图',
-        icon: Folder,
-        run: runAndClose(() => actions.setSidebarView('projects')),
       },
     ]
     const matchedCommands = commands.filter((c) => c.title.toLowerCase().includes(q))

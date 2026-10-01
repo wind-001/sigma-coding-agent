@@ -102,11 +102,13 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   }, [task.id, task.updatedAt])
 
   useEffect((): void | (() => void) => {
-    const poller = apiClient.getTaskQueues
-    if (!isRunning || poller === undefined) {
+    if (!isRunning || apiClient.getTaskQueues === undefined) {
       setQueues(null)
       return undefined
     }
+    // 收窄到局部再调:守卫后跨闭包 narrow 不成立;提取安全(原型方法已在
+    // HttpSigmaClient 构造器绑定)。
+    const poller = apiClient.getTaskQueues
     let cancelled = false
     const poll = (): void => {
       poller(task.id)

@@ -8,8 +8,6 @@ import {
   CirclePlus,
   Folder,
   FolderOpen,
-  FolderPlus,
-  Hash,
   LayoutGrid,
   ListFilter,
   Pin,
@@ -27,7 +25,6 @@ import {
   STATUS_META,
   type Project,
   type Task,
-  type TaskStatus,
 } from '../../api'
 import { matchStatusFilter, useAppActions, useAppState, type StatusFilter } from '../../store/appStore'
 import { formatRelative } from '../../lib/time'
@@ -65,26 +62,13 @@ const STATUS_FILTER_OPTIONS: readonly StatusFilterOption[] = [
   { value: 'completed', label: '已完成' },
 ]
 
-interface GroupSectionMeta {
-  key: string
-  title: string
-  statuses: readonly TaskStatus[]
-}
-
-/** 分组视图的三个跨项目 section */
-const GROUP_SECTIONS: readonly GroupSectionMeta[] = [
-  { key: 'active', title: '进行中', statuses: ['draft', 'running', 'waiting_approval'] },
-  { key: 'completed', title: '已完成', statuses: ['completed'] },
-  { key: 'failed', title: '已失败', statuses: ['failed'] },
-]
-
 /* ============================================================
    子组件
    ============================================================ */
 
 interface SidebarTaskItemProps {
   task: Task
-  /** group = 项目组/状态组内条目(缩进 26);task = 「任务」区条目(缩进 4) */
+  /** group = 项目组内条目(缩进 26);task = 「任务」区条目(缩进 4) */
   variant: 'group' | 'task'
   selected: boolean
   onSelect: (taskId: string) => void
@@ -205,38 +189,6 @@ function ProjectSection({
   )
 }
 
-interface StatusSectionProps {
-  title: string
-  tasks: Task[]
-  selectedTaskId: string | null
-  onSelectTask: (taskId: string) => void
-  onDeleteTask: (taskId: string) => void
-}
-
-/** 分组视图 section:纯文字组头(样式同小节标题,略大),不可折叠 */
-function StatusSection({ title, tasks, selectedTaskId, onSelectTask, onDeleteTask }: StatusSectionProps): JSX.Element {
-  return (
-    <div className="sidebar__group">
-      <div className="sidebar__section-title sidebar__section-title--lg">
-        {title}
-        {tasks.length > 0 ? <span className="sidebar__count">{tasks.length}</span> : null}
-      </div>
-      <div className="sidebar__group-items">
-        {tasks.map((task) => (
-          <SidebarTaskItem
-            key={task.id}
-            task={task}
-            variant="group"
-            selected={selectedTaskId === task.id}
-            onSelect={onSelectTask}
-            onDelete={onDeleteTask}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
 /* ============================================================
    Sidebar 主体
    ============================================================ */
@@ -286,7 +238,7 @@ export default function Sidebar(): JSX.Element {
   }
 
   // 状态过滤 + **工作区过滤**(切换语义:列表只显示激活工作区的会话),
-  // 再按项目 / 状态分桶。
+  // 再按项目分桶。
   const visibleTasks: Task[] = state.tasks.filter(
     (task) => task.projectId === state.activeProjectId && matchStatusFilter(task, state.statusFilter),
   )
@@ -364,25 +316,6 @@ export default function Sidebar(): JSX.Element {
     if (visibleTasks.length === 0) {
       return <div className="sidebar__empty">暂无任务,按 Ctrl+N 新建</div>
     }
-    if (state.sidebarView === 'groups') {
-      return (
-        <>
-          {GROUP_SECTIONS.map((section) => {
-            const sectionTasks: Task[] = visibleTasks.filter((task) => section.statuses.includes(task.status))
-            return (
-              <StatusSection
-                key={section.key}
-                title={section.title}
-                tasks={sectionTasks}
-                selectedTaskId={state.selectedTaskId}
-                onSelectTask={handleSelectTask}
-                onDeleteTask={handleDeleteTask}
-              />
-            )
-          })}
-        </>
-      )
-    }
     return (
       <>
         <div className="sidebar__section-title">项目</div>
@@ -431,7 +364,7 @@ export default function Sidebar(): JSX.Element {
   return (
     <aside className="sidebar">
       <header className="sidebar__brand">
-        {/* 工作区切换器(图一语义:当前工作区 + 下拉切换/导入/移除) */}
+        {/* 工作区切换器(图一语义:当前工作区 + 下拉切换/移除;导入走下方「+」) */}
         <button
           type="button"
           ref={wsRef}
@@ -491,17 +424,6 @@ export default function Sidebar(): JSX.Element {
               </div>
             )
           })}
-          <button
-            type="button"
-            className="sidebar__ws-import"
-            onClick={(): void => {
-              setWsPanelOpen(false)
-              actions.setOverlay('fs-picker')
-            }}
-          >
-            <FolderPlus size={14} aria-hidden="true" />
-            选择目录导入…
-          </button>
         </div>
       ) : null}
 
@@ -529,21 +451,22 @@ export default function Sidebar(): JSX.Element {
       <div className="sidebar__switcher">
         <button
           type="button"
-          className={`sidebar__chip${state.sidebarView === 'groups' ? ' sidebar__chip--active' : ''}`}
-          aria-pressed={state.sidebarView === 'groups'}
-          onClick={() => actions.setSidebarView('groups')}
-        >
-          <Hash size={15} aria-hidden="true" />
-          <span>分组</span>
-        </button>
-        <button
-          type="button"
-          className={`sidebar__chip${state.sidebarView === 'projects' ? ' sidebar__chip--active' : ''}`}
-          aria-pressed={state.sidebarView === 'projects'}
-          onClick={() => actions.setSidebarView('projects')}
+          className="sidebar__chip sidebar__chip--active"
+          aria-pressed={true}
+          title="按项目浏览会话"
         >
           <Folder size={15} aria-hidden="true" />
           <span>项目</span>
+        </button>
+        {/* 导入工作区入口:「项目」右侧 + 号(取代原面板内文字按钮,星辰 2026-10-02) */}
+        <button
+          type="button"
+          className="sidebar__icon-btn"
+          aria-label="导入工作区目录"
+          title="导入工作区目录"
+          onClick={(): void => actions.setOverlay('fs-picker')}
+        >
+          <Plus size={16} aria-hidden="true" />
         </button>
         <button
           type="button"
