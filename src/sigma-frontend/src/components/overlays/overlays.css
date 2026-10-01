@@ -713,6 +713,11 @@
   background: var(--bg-hover);
 }
 
+/* file 模式的文件条目:次级色,与目录区分(点它=插入路径) */
+.fs-picker__entry--file {
+  color: var(--text-secondary);
+}
+
 .fs-picker__empty {
   display: flex;
   align-items: center;

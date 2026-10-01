@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type
 import { apiClient, STATUS_META, type Automation, type ModelInfo, type Plugin, type Project, type Task, type TaskStatus } from '../api'
 
 export type StatusFilter = 'all' | 'active' | 'completed'
-export type OverlayKind = 'automations' | 'plugins' | 'help' | 'fs-picker' | null
+export type OverlayKind = 'automations' | 'plugins' | 'help' | 'fs-picker' | 'fs-file' | null
 
 export interface AppState {
   ready: boolean
@@ -19,7 +19,6 @@ export interface AppState {
   draft: string
   composerAccess: string
   composerModel: string
-  composerEffort: string
   paletteOpen: boolean
   overlay: OverlayKind
   /** 递增触发 Composer 聚焦 */
@@ -40,8 +39,7 @@ const initialState: AppState = {
   statusFilter: 'all',
   draft: '',
   composerAccess: 'full',
-  composerModel: 'GLM-5.3-Flash',
-  composerEffort: '最高',
+  composerModel: '',
   paletteOpen: false,
   overlay: null,
   focusComposerSignal: 0,
@@ -90,6 +88,8 @@ export function matchStatusFilter(task: Task, filter: StatusFilter): boolean {
 
 export interface AppActions {
   setDraft(value: string): void
+  /** 在现有草稿末尾追加一段文本(引用文件路径用),空草稿直接作为开头。 */
+  appendToDraft(text: string): void
   newTaskDraft(): void
   goHome(): void
   selectTask(taskId: string): void
@@ -120,7 +120,7 @@ export interface AppActions {
   refreshAll(): Promise<void>
   setStatusFilter(filter: StatusFilter): void
   setActiveProjectId(projectId: string): void
-  setComposerOpt(patch: { access?: string; model?: string; effort?: string }): void
+  setComposerOpt(patch: { access?: string; model?: string }): void
   togglePalette(): void
   closePalette(): void
   setOverlay(overlay: OverlayKind): void
@@ -226,6 +226,10 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       setDraft(value: string): void {
         patch({ draft: value })
       },
+      appendToDraft(text: string): void {
+        const base = stateRef.current.draft
+        patch({ draft: base === '' ? text : `${base}\n${text}` })
+      },
       newTaskDraft(): void {
         patch({ view: 'home', selectedTaskId: null, draft: '', focusComposerSignal: stateRef.current.focusComposerSignal + 1 })
       },
@@ -250,7 +254,6 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             description: text,
             access: s.composerAccess,
             model: s.composerModel,
-            effort: s.composerEffort,
           })
           dispatch({ type: 'taskAdded', task: created })
           patch({ view: 'task', selectedTaskId: created.id, draft: '' })
@@ -284,7 +287,6 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             description: '',
             access: s.composerAccess,
             model: s.composerModel,
-            effort: s.composerEffort,
           })
           dispatch({ type: 'taskAdded', task })
           patch({ view: 'task', selectedTaskId: task.id })
@@ -393,6 +395,12 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             models,
           })
           dispatch({ type: 'patch', patch: { activeProjectId: workspace.activeId } })
+          // 模型下拉数据来自服务端注册表:当前选择不在列表里(首载/列表变化)
+          // 时落到第一项,避免选中值悬空。
+          const modelNames = models.map((m) => m.name)
+          if (!modelNames.includes(stateRef.current.composerModel)) {
+            patch({ composerModel: modelNames[0] ?? '' })
+          }
         } catch (error) {
           // 桥接服务没起(或 σ-server 未部署):空数据进场 + 常驻提示,
           // 界面保持可用(空态各视图都有说明),不能停在"加载中"。
@@ -421,18 +429,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         patch({ activeProjectId: projectId })
       },
       setComposerOpt(p): void {
-        const s = stateRef.current
         const next: Partial<AppState> = {}
         if (p.access !== undefined) next.composerAccess = p.access
         if (p.model !== undefined) next.composerModel = p.model
-        if (p.effort !== undefined) next.composerEffort = p.effort
-        if (p.model !== undefined) {
-          const model = s.models.find((m) => m.name === p.model)
-          const effort = next.composerEffort ?? s.composerEffort
-          if (model !== undefined && !model.efforts.includes(effort)) {
-            next.composerEffort = model.efforts[model.efforts.length - 1]
-          }
-        }
         patch(next)
       },
       togglePalette(): void {

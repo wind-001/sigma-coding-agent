@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronDown, Folder, Gauge, GitBranch, Plus, ShieldCheck } from 'lucide-react'
+import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, Folder, GitBranch, Plus, ShieldCheck } from 'lucide-react'
 import Dropdown from './Dropdown'
 import { useAppActions, useAppState } from '../../store/appStore'
 import { ACCESS_OPTIONS, type ModelInfo, type Project } from '../../api'
 
 /** 分支下拉为装饰性选项(分支不入全局状态) */
 const BRANCH_OPTIONS: readonly string[] = ['main', 'dev']
-/** 当前模型在模型列表中找不到时的兜底力度选项 */
-const FALLBACK_EFFORTS: readonly string[] = ['最低', '中', '高', '最高']
 /** activeProjectId 无对应项目时的仓库占位文案 */
 const REPO_PLACEHOLDER: string = '选择项目'
 
@@ -16,26 +14,43 @@ export default function Composer(): JSX.Element {
   const state = useAppState()
   const actions = useAppActions()
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const plusRef = useRef<HTMLDivElement | null>(null)
   /** 「完全访问」的严厉警告:必须勾选知情后才允许启用(星辰 2026-10-02)。 */
   const [showFullWarning, setShowFullWarning] = useState<boolean>(false)
   const [fullAck, setFullAck] = useState<boolean>(false)
+  /** + 号的「引用/导入」菜单 */
+  const [plusOpen, setPlusOpen] = useState<boolean>(false)
 
   const activeProject: Project | undefined = state.projects.find(
     (project: Project): boolean => project.id === state.activeProjectId,
   )
-  const currentModel: ModelInfo | undefined = state.models.find(
-    (model: ModelInfo): boolean => model.name === state.composerModel,
-  )
-  const effortOptions: readonly string[] = currentModel?.efforts ?? FALLBACK_EFFORTS
   const accessOption = ACCESS_OPTIONS.find((option): boolean => option.id === state.composerAccess)
   const repoLabel: string = activeProject?.name ?? REPO_PLACEHOLDER
   const accessLabel: string = accessOption?.label ?? state.composerAccess
+  // 模型显示值:服务端注册表是数据源,当前选择不在列表里时显示第一项。
+  const modelValue: string = state.models.some((m) => m.name === state.composerModel)
+    ? state.composerModel
+    : state.models[0]?.name ?? state.composerModel
 
   useEffect((): void => {
     if (state.focusComposerSignal > 0) {
       textareaRef.current?.focus()
     }
   }, [state.focusComposerSignal])
+
+  // 点击外部关闭 + 号菜单
+  useEffect((): (() => void) | undefined => {
+    if (!plusOpen) return undefined
+    const handleDocumentMouseDown = (event: MouseEvent): void => {
+      if (plusRef.current !== null && event.target instanceof Node && !plusRef.current.contains(event.target)) {
+        setPlusOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleDocumentMouseDown)
+    return (): void => {
+      document.removeEventListener('mousedown', handleDocumentMouseDown)
+    }
+  }, [plusOpen])
 
   const handleSend = (): void => {
     void actions.submitDraft()
@@ -53,9 +68,10 @@ export default function Composer(): JSX.Element {
   }
 
   const handleRepoSelect = (name: string): void => {
+    // 与侧栏切换器同一条路:服务端持久化 + 列表刷新,不再只是本地补丁。
     const project: Project | undefined = state.projects.find((p): boolean => p.name === name)
-    if (project !== undefined) {
-      actions.setActiveProjectId(project.id)
+    if (project !== undefined && project.id !== state.activeProjectId) {
+      void actions.switchProject(project.id)
     }
   }
 
@@ -112,9 +128,47 @@ export default function Composer(): JSX.Element {
       </div>
 
       <div className="composer__footer">
-        <button type="button" className="composer__icon-btn" aria-label="添加">
-          <Plus size={18} />
-        </button>
+        {/* + 号 = 引用/导入菜单(引用文件路径插入输入框;导入工作区) */}
+        <div className="composer__plus" ref={plusRef}>
+          <button
+            type="button"
+            className={`composer__icon-btn${plusOpen ? ' composer__icon-btn--active' : ''}`}
+            aria-label="添加"
+            aria-expanded={plusOpen}
+            title="引用文件或导入工作区"
+            onClick={(): void => setPlusOpen((prev) => !prev)}
+          >
+            <Plus size={18} />
+          </button>
+          {plusOpen ? (
+            <div className="composer__plus-menu" role="menu">
+              <button
+                type="button"
+                className="composer__plus-item"
+                role="menuitem"
+                onClick={(): void => {
+                  setPlusOpen(false)
+                  actions.setOverlay('fs-file')
+                }}
+              >
+                <FilePlus2 size={15} />
+                <span>引用文件或目录…</span>
+              </button>
+              <button
+                type="button"
+                className="composer__plus-item"
+                role="menuitem"
+                onClick={(): void => {
+                  setPlusOpen(false)
+                  actions.setOverlay('fs-picker')
+                }}
+              >
+                <FolderPlus size={15} />
+                <span>导入工作区…</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
         <Dropdown
           trigger={
             <span className="composer__trigger-accent">
@@ -133,28 +187,15 @@ export default function Composer(): JSX.Element {
         <Dropdown
           trigger={
             <>
-              <span className="composer__select-value--sm">{state.composerModel}</span>
+              <span className="composer__select-value--sm">{modelValue}</span>
               <ChevronDown size={14} color="#9aa0aa" />
             </>
           }
           items={state.models.map((model: ModelInfo): string => model.name)}
-          value={state.composerModel}
+          value={modelValue}
           onSelect={(name: string): void => actions.setComposerOpt({ model: name })}
           align="right"
-        />
-        <Dropdown
-          trigger={
-            <>
-              <Gauge size={15} color="#565b63" />
-              <span className="composer__select-value--sm">{state.composerEffort}</span>
-              <ChevronDown size={14} color="#9aa0aa" />
-            </>
-          }
-          items={effortOptions}
-          value={state.composerEffort}
-          onSelect={(effort: string): void => actions.setComposerOpt({ effort })}
-          align="right"
-          menuWidth={96}
+          menuWidth={220}
         />
         <button
           type="button"

@@ -1,5 +1,4 @@
 import {
-  DEFAULT_MODELS,
   type Automation,
   type CreateTaskInput,
   type ModelInfo,
@@ -128,8 +127,9 @@ export class HttpSigmaClient implements SigmaApiClient {
     })
   }
 
-  async listModels(): Promise<ModelInfo[]> {
-    return [...DEFAULT_MODELS]
+  listModels(): Promise<ModelInfo[]> {
+    // 真实注册表 preset(服务端与 CLI --preset 同源)——不是前端硬编码名单。
+    return this.request<ModelInfo[]>('/models')
   }
 
   getTaskTimeline(taskId: string): Promise<TaskTimeline | null> {
@@ -205,8 +205,11 @@ export class HttpSigmaClient implements SigmaApiClient {
     })
   }
 
-  browseFs(path?: string): Promise<FsListing> {
-    const query = path !== undefined && path !== '' ? `?path=${encodeURIComponent(path)}` : ''
-    return this.request<FsListing>(`/fs${query}`)
+  browseFs(path?: string, opts?: { files?: boolean }): Promise<FsListing> {
+    const params = new URLSearchParams()
+    if (path !== undefined && path !== '') params.set('path', path)
+    if (opts?.files === true) params.set('files', '1')
+    const query = params.toString()
+    return this.request<FsListing>(`/fs${query !== '' ? `?${query}` : ''}`)
   }
 }

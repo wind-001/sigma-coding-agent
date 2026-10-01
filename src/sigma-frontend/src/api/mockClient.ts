@@ -179,7 +179,7 @@ export class MockSigmaClient implements SigmaApiClient {
       status: 'draft',
       access: input.access,
       model: input.model,
-      effort: input.effort,
+      effort: input.effort ?? '',
       createdAt: at,
       updatedAt: at,
       events: [],

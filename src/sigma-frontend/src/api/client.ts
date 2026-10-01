@@ -74,7 +74,8 @@ export interface CreateTaskInput {
   description: string
   access: string
   model: string
-  effort: string
+  /** 执行档位:sigma 暂无 reasoning effort 管线,前端已不传(服务端按空串落记录) */
+  effort?: string
 }
 
 export interface TaskFilter {
@@ -274,6 +275,6 @@ export interface SigmaApiClient {
   activateProject?(projectId: string): Promise<void>
   /** 移除导入的工作区(主工作区不可移;可选方法,mock 不实现)。 */
   removeProject?(projectId: string): Promise<void>
-  /** 目录浏览(选择工作区目录;可选方法,mock 不实现)。 */
-  browseFs?(path?: string): Promise<FsListing>
+  /** 目录浏览(选择工作区目录 / 引用文件;opts.files=1 追加文件条目;mock 不实现)。 */
+  browseFs?(path?: string, opts?: { files?: boolean }): Promise<FsListing>
 }

@@ -449,3 +449,70 @@ def test_post_message_unknown_task_404(http_server: tuple[str, Path], execution_
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         urllib.request.urlopen(request, timeout=10)
     assert excinfo.value.code == 404
+
+
+# ---------------------------------------------------------------------------
+# 三处功能实化:模型选择(注册表 preset)/ 目录浏览列文件 / 模型解析链
+# ---------------------------------------------------------------------------
+
+
+def test_models_endpoint_lists_registry_presets(http_server: tuple[str, Path]) -> None:
+    """/models = 真实注册表 preset(与 CLI --preset 同一套词汇),不再是占位行。"""
+    from sigma.cli.main import DEFAULT_PRESET
+    from sigma.providers.registry import builtin_providers
+
+    base, _root = http_server
+    code, models = _get(base, "/api/v1/models")
+    assert code == 200
+    names = [m["name"] for m in models]
+    assert sorted(names) == builtin_providers().names()  # 同一套词汇,不增不删
+    assert names[0] == DEFAULT_PRESET  # 默认 preset 排第一(前端首载落它)
+    assert all(m["efforts"] == [] for m in models)
+
+
+def test_fs_listing_with_files_flag(http_server: tuple[str, Path]) -> None:
+    """/fs 默认只列子目录;files=1 追加文件条目(isDir=False,目录在前)。"""
+    base, sessions_root = http_server
+    root = sessions_root.parent
+    target = root / "browse-me"
+    (target / "sub").mkdir(parents=True)
+    (target / "a-dir-nested").mkdir()
+    (target / "z-file.txt").write_text("x", encoding="utf-8")
+    (target / ".hidden").write_text("x", encoding="utf-8")
+
+    code, dirs_only = _get(base, f"/api/v1/fs?path={urllib.request.quote(str(target))}")
+    assert code == 200
+    assert [e["name"] for e in dirs_only["entries"]] == ["a-dir-nested", "sub"]
+
+    code, with_files = _get(
+        base, f"/api/v1/fs?path={urllib.request.quote(str(target))}&files=1"
+    )
+    assert code == 200
+    names = [e["name"] for e in with_files["entries"]]
+    assert names == ["a-dir-nested", "sub", "z-file.txt"]
+    assert with_files["entries"][-1]["isDir"] is False
+
+
+def test_execution_params_model_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """模型选择解析链:显式选择整体接管 preset;未注册名回落 CLI 同链;
+    env 覆盖只在无显式选择时生效。"""
+    from sigma.providers.registry import builtin_providers
+
+    for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(SERVER, "resolve_api_key", lambda: ("test-key", "test"))
+
+    base_url, _key, model, preset = SERVER._execution_params("zhipu")
+    assert preset == "zhipu"
+    assert base_url == builtin_providers().resolve("zhipu").base_url
+    assert model == "glm-4-flash"
+
+    _url, _key, model, preset = SERVER._execution_params("no-such-preset")
+    assert preset == "deepseek"  # DEFAULT_PRESET
+    assert model == "deepseek-chat"
+
+    monkeypatch.setenv("SIGMA_MODEL", "custom-model-x")
+    _url, _key, model, preset = SERVER._execution_params("")
+    assert preset == "deepseek" and model == "custom-model-x"  # env 覆盖生效
+    _url, _key, model, _preset = SERVER._execution_params("zhipu")
+    assert model == "glm-4-flash"  # 显式选择压过 env

@@ -241,6 +241,44 @@
   background: var(--bg-hover);
 }
 
+.composer__icon-btn--active {
+  background: var(--bg-active);
+}
+
+/* + 号引用/导入菜单(向上弹出) */
+.composer__plus {
+  position: relative;
+}
+
+.composer__plus-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(15, 18, 25, 0.12);
+  z-index: 40;
+}
+
+.composer__plus-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.composer__plus-item:hover {
+  background: var(--bg-hover);
+}
+
 .composer__spacer {
   flex: 1;
 }

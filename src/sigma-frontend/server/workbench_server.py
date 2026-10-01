@@ -220,8 +220,10 @@ def _remove_project(primary: Path, project_id: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _fs_listing(raw: str) -> dict[str, Any]:
-    """目录浏览(选择工作区用):只列**子目录**,不读任何文件内容。"""
+def _fs_listing(raw: str, include_files: bool = False) -> dict[str, Any]:
+    """目录浏览:默认只列**子目录**(选工作区用);``include_files`` 追加
+    文件条目(引用文件路径用)。两类都不读任何文件内容。
+    目录在前文件在后,同组按名排序;隐藏项(``.``/``$`` 前缀)两版都跳过。"""
     if raw.strip() in ("", "drives", "/"):
         drives = [
             f"{letter}:\\"
@@ -238,9 +240,14 @@ def _fs_listing(raw: str) -> dict[str, Any]:
         return {"path": raw, "parent": None, "entries": [], "error": "目录不存在"}
     entries: list[dict[str, Any]] = []
     try:
-        for child in sorted(path.iterdir(), key=lambda c: c.name.lower()):
-            if child.is_dir() and not child.name.startswith((".", "$")):
+        children = sorted(path.iterdir(), key=lambda c: c.name.lower())
+        for child in children:
+            if child.name.startswith((".", "$")):
+                continue
+            if child.is_dir():
                 entries.append({"name": child.name, "path": str(child), "isDir": True})
+            elif include_files and child.is_file():
+                entries.append({"name": child.name, "path": str(child), "isDir": False})
     except (PermissionError, OSError) as exc:
         return {"path": str(path), "parent": None, "entries": [], "error": f"无法读取:{exc}"}
     parent = str(path.parent) if path.parent != path else None
@@ -448,12 +455,14 @@ def _default_preset() -> str:
     return DEFAULT_PRESET
 
 
-def _execution_params() -> tuple[str, str, str]:
-    """解析执行三要素 ``(base_url, api_key, model)``。
+def _execution_params(model_hint: str = "") -> tuple[str, str, str, str]:
+    """解析执行四要素 ``(base_url, api_key, model, preset)``。
 
-    与 CLI 同一条解析链(env SIGMA_BASE_URL / SIGMA_MODEL / SIGMA_PRESET
-    > 厂商预设默认值;密钥:命令行 > 环境变量 > 用户级 .env > 项目 .env)。
-    没配 key 抛 ``LookupError``,由端点转成 400 的指路文案。
+    预设选择链:任务里显式选的模型名(工作台下拉,与 CLI ``--preset`` 同
+    一套注册表词汇)优先——点击选择是明确意图,整体接管 preset/base_url/
+    model;没选或名字未注册 → 与 CLI 同链(env SIGMA_BASE_URL / SIGMA_MODEL
+    / SIGMA_PRESET > 厂商预设默认值;密钥:命令行 > 环境变量 > 用户级 .env
+    > 项目 .env)。没配 key 抛 ``LookupError``,由端点转成 400 的指路文案。
     """
     api_key, _source = resolve_api_key()
     if not api_key:
@@ -461,18 +470,22 @@ def _execution_params() -> tuple[str, str, str]:
             "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env(推荐)"
             "——与 sigma CLI 用的是同一份配置。"
         )
+    registry = builtin_providers()
+    hint = model_hint.strip()
+    if hint != "" and hint in registry:
+        spec = registry.resolve(hint)
+        return spec.base_url, api_key, spec.default_model, hint
     preset = os.environ.get("SIGMA_PRESET", _default_preset())
-    spec = builtin_providers().resolve(preset)
+    spec = registry.resolve(preset)
     base_url = os.environ.get("SIGMA_BASE_URL") or spec.base_url
     model = os.environ.get("SIGMA_MODEL") or spec.default_model
-    return base_url, api_key, model
+    return base_url, api_key, model, preset
 
 
-def _make_provider(base_url: str, api_key: str) -> BaseProvider:
+def _make_provider(base_url: str, api_key: str, preset: str) -> BaseProvider:
     """按预设的**线协议**分派 provider 实现类(与 cli._make_provider 同判据)。"""
     if _PROVIDER_FACTORY is not None:
         return _PROVIDER_FACTORY()
-    preset = os.environ.get("SIGMA_PRESET", _default_preset())
     spec = builtin_providers().resolve(preset)
     if spec.protocol == "anthropic":
         return AnthropicProvider(base_url=base_url, api_key=api_key, provider_name=preset)
@@ -493,8 +506,11 @@ def _get_or_create_session(
         session = _SESSIONS.get(task_id)
     if session is not None:
         return session
-    base_url, api_key, model = _execution_params()
-    provider = _make_provider(base_url, api_key)
+    # 模型选择:任务记录里显式选的 preset 优先(下拉与 CLI --preset 同词汇);
+    # 历史/磁盘会话无记录 → 与 CLI 同链(env / 默认预设)。
+    model_hint = str((_TASKS.get(task_id) or {}).get("model") or "")
+    base_url, api_key, model, preset = _execution_params(model_hint)
+    provider = _make_provider(base_url, api_key, preset)
     path = session_path(sessions_root, task_id)
     if path.is_file():
         tree = SessionTree.from_store(JsonlStore(sessions_root, task_id))
@@ -1198,9 +1214,15 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if parts == ["workspace"]:
             self._send_json(200, {"activeId": _active_project_id(self.workspace)})
             return
-        # /fs?path=:目录浏览(选择工作区目录用,只列子目录)
+        # /fs?path=&files=1:目录浏览(选择工作区目录 / 引用文件,files=1 追加文件条目)
         if parts == ["fs"]:
-            self._send_json(200, _fs_listing(self._query.get("path", [""])[0]))
+            self._send_json(
+                200,
+                _fs_listing(
+                    self._query.get("path", [""])[0],
+                    include_files=self._query.get("files", ["0"])[0] == "1",
+                ),
+            )
             return
         # /tasks(草稿+磁盘合并;过滤参数前端本地做——单项目、量级小)
         if parts == ["tasks"]:
@@ -1243,7 +1265,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self._send_json(200, _plugins_payload(self.workspace))
             return
         if parts == ["models"]:
-            self._send_json(200, [{"id": "current", "name": "当前配置模型", "efforts": ["—"]}])
+            # 真实注册表 preset(与 CLI --preset 同一套词汇);执行链按任务
+            # 记录里的选择分派 base_url/协议/默认模型——不是摆设。
+            # 默认 preset 排第一:前端首载落在它上,与"什么都不选"的执行链一致。
+            default = _default_preset()
+            names = builtin_providers().names()
+            ordered = [default] + [n for n in names if n != default] if default in names else names
+            self._send_json(
+                200,
+                [{"id": name, "name": name, "efforts": []} for name in ordered],
+            )
             return
         # /memory:契约之外的附加数据面(工作台"记忆"区)。
         if parts == ["memory"]:

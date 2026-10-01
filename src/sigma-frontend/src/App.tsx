@@ -40,7 +40,8 @@ function Shell(): JSX.Element {
       {state.paletteOpen ? <CommandPalette /> : null}
       {state.overlay === 'automations' ? <AutomationsPanel /> : null}
       {state.overlay === 'plugins' ? <PluginsPanel /> : null}
-      {state.overlay === 'fs-picker' ? <FsPicker /> : null}
+      {state.overlay === 'fs-picker' ? <FsPicker mode="dir" /> : null}
+      {state.overlay === 'fs-file' ? <FsPicker mode="file" /> : null}
       {state.overlay === 'help' ? <HelpModal /> : null}
       <Toast />
     </div>
