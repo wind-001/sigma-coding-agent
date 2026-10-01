@@ -143,6 +143,7 @@ def print_help() -> None:
     print("  /switch <序号|id>   切换到某个会话，历史与快照都接上")
     print("  /new                开一个新会话")
     print("  /allowlist          列出/移除'总是允许'的动作(remove <序号>)")
+    print("  /reload [文件名]    重载 extensions 下的工具扩展(改完当轮生效)")
     print("  /help               这份清单")
     print("  exit / quit         退出（Ctrl+C 也一样）")
 
@@ -305,6 +306,37 @@ async def _cmd_help(
     print_help()
 
 
+async def _cmd_reload(
+    manager: SessionManager, index_map: dict[int, str], argument: str
+) -> None:
+    """``/reload [文件名]``：热重载扩展工具（详规 P3-扩展热重载 §4）。
+
+    裸敲 = 重载**全部**已装载来源；带参数 = 只重载那一个（文件名或
+    路径串都认——``registry.reload_source`` 的 source 就是文件路径）。
+    重建常驻区是**显式违约点**：回执里要说明缓存失效了，不能只报成功。
+    失败的报告逐条打出来（旧注册项保留）——命令失败但会话继续的纪律
+    由 ``run_repl`` 的 dispatch 防护兜底，这里不需要自己 try。
+    """
+    session = manager.current
+    reports = session.reload_tools(argument or None)
+    if not reports:
+        print("没有已装载的扩展（<工作区>/extensions/*.py）。")
+        return
+    for report in reports:
+        name = Path(report.source).name
+        if not report.ok:
+            print(f"[reload] {name}: 失败——{report.failed_reason}")
+            continue
+        parts = []
+        if report.added:
+            parts.append(f"+{len(report.added)}（{'、'.join(report.added)}）")
+        if report.removed:
+            parts.append(f"-{len(report.removed)}（{'、'.join(report.removed)}）")
+        detail = "，".join(parts) if parts else "无变化"
+        print(f"[reload] {name}: {detail}")
+    print("常驻区已重建：prompt 缓存从下一轮重新计（这是你敲 /reload 时同意的）。")
+
+
 #: 命令表：别名 → (执行体, 参数名)。
 #:
 #: **别名写进同一张表**（而不是在分派处写一堆 ``if name in {"list", "ls"}``）：
@@ -326,6 +358,7 @@ COMMANDS: dict[str, tuple[CommandHandler, str]] = {
     "resume": (_cmd_switch, "序号|id"),
     "new": (_cmd_new, ""),
     "allowlist": (_cmd_allowlist, "[remove <序号>]"),
+    "reload": (_cmd_reload, "[文件名]"),
     "stop": (_cmd_stop, ""),
     "help": (_cmd_help, ""),
     "h": (_cmd_help, ""),

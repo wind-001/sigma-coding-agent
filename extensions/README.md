@@ -1,23 +1,66 @@
-# extensions —— 扩展样例
+# extensions —— 扩展
 
-> 状态：P4 起填充。此处只定义约定，尚无实现。
+扩展是运行时加载的 Python 模块，与内置工具**走同一条注册表接口**。
+因此「用扩展替换内置工具」是免费的（`--no-builtin-tools` + 只加载扩展）。
 
-扩展是运行时加载的 Python 模块，与内置工具**走同一套注册表接口**。
-因此「用扩展替换内置工具」是免费的，`--no-builtin-tools` + 只加载扩展可直接演示。
+## 工具扩展（P3-扩展热重载落地，2026-10-01）
+
+**约定（零框架）**：`extensions/<name>.py` 在模块级定义
+`TOOLS: list[BaseTool]`——实例即注册项，`source="extensions/<name>.py"`。
+没有 `TOOLS` 导出或导出空列表 = 该扩展已移除（旧注册项被清理）。
+
+```python
+# extensions/greet.py
+from pydantic import BaseModel, Field
+from sigma.tools.base import BaseTool
+
+class GreetParams(BaseModel):
+    who: str = Field(description="跟谁打招呼")
+
+class GreetTool(BaseTool):
+    name = "greet"
+    description = "打招呼"
+    read_only = True
+
+    @property
+    def params(self) -> type[BaseModel]:
+        return GreetParams
+
+    async def run(self, args: BaseModel, ctx) -> object:
+        ...
+
+TOOLS = [GreetTool()]
+```
+
+- **启动**：`InteractiveSession` 自动装载（`--no-extensions` 整层关）；
+  坏文件打警告继续，横幅可见。
+- **热重载**：REPL 里敲 `/reload`（或 `/reload <文件名>`），当轮生效。
+  重建常驻区是**显式违约点**——prompt 缓存失效一次，回执里写明。
+- **失败保留旧表**：导入异常 / TOOLS 形状不对 / 与内置或其他扩展重名
+  → 本次装载被拒绝，注册表分毫未动（G-HR-2/5）。
+
+## ⚠ 安全边界（写清楚，不假装）
+
+**扩展代码以你的用户权限执行，与 `bash` 工具同一边界——它不是沙箱。**
+装载 = 执行模块级代码；热重载 = 再执行一次。只装载你读过、
+能对其负责的文件。这是设计选择不是能力缺失：理由与"不做容器隔离"
+同源，见 `docs/decisions/D6-不做容器隔离.md` 与 D3。
 
 ## 边界（P4 实现时严格遵守）
 
 扩展能做的事：
 
-- 注册工具
+- 注册工具（本轮落地）
 - 注册钩子（`before_tool_call` / `after_tool_call` / `transform_context` 等）
+  ——钩子表热重载**不做**：D3 是范围上限不是承诺清单，等第一个真实
+  钩子扩展出现再说
 - 注册 slash 命令
 
 扩展**不能**做的事（刻意的收窄，理由见 `docs/decisions/D3-扩展层形态.md`）：
 
 - 任意改写 harness 自身代码
-- 静默覆盖内置工具（重名直接报 `DuplicateToolError`，要替换必须显式
-  `--no-builtin-tools`）
+- 静默覆盖内置工具（重名直接拒绝并保留旧表，报 `DuplicateToolError`
+  理由；要替换必须显式 `--no-builtin-tools`）
 
 ## 热重载的硬约束
 

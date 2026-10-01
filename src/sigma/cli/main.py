@@ -210,6 +210,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--no-extensions",
+        action="store_true",
+        help=(
+            "不装载 <工作区>/extensions 下的工具扩展（*.py，模块级 TOOLS 列表）。"
+            "默认开启；/reload 可在会话中热重载。扩展代码以你的用户权限执行，"
+            "与 bash 同一边界——只装载你审过的文件"
+        ),
+    )
+    parser.add_argument(
         "--no-approval",
         action="store_true",
         help=(
@@ -833,6 +842,7 @@ async def _run_once(
     enable_trace: bool = True,
     enable_memory: bool = True,
     enable_repo_map: bool = True,
+    enable_extensions: bool = True,
 ) -> TurnResult:
     """一次性模式。渲染器与交互模式**同一个**（``TerminalRenderer``）。
 
@@ -863,6 +873,7 @@ async def _run_once(
             enable_trace=enable_trace,
             enable_memory=enable_memory,
             enable_repo_map=enable_repo_map,
+            enable_extensions=enable_extensions,
         )
     finally:
         # ``aclose`` 是可选能力（``BaseProvider`` 上没有它），按"有没有"调用——
@@ -918,11 +929,12 @@ class SessionManager:
         approval: ApprovalHook | None = None,
         ask: Any = None,
         checkpoint_watermark_bytes: int | None = None,
-        enable_trace: bool = True,
-        enable_memory: bool = True,
-        enable_repo_map: bool = True,
-        make_provider: Callable[[], BaseProvider] | None = None,
-    ) -> None:
+    enable_trace: bool = True,
+    enable_memory: bool = True,
+    enable_repo_map: bool = True,
+    enable_extensions: bool = True,
+    make_provider: Callable[[], BaseProvider] | None = None,
+) -> None:
         self._args = args
         self._workspace = workspace
         self._base_url = base_url
@@ -945,6 +957,8 @@ class SessionManager:
         self._enable_memory = enable_memory
         #: repo map(P1 收尾,默认开):--no-repo-map 整层关(连目录遍历都不做)。
         self._enable_repo_map = enable_repo_map
+        #: 扩展装载(热重载,默认开):--no-extensions 整层关。
+        self._enable_extensions = enable_extensions
         self._binding = binding
         #: provider 的**造法**可注入：测试要离线跑（``FakeProvider``），
         #: 而默认路径要真造 ``OpenAICompatProvider``。注入的是"造法"不是
@@ -997,6 +1011,7 @@ class SessionManager:
             enable_trace=self._enable_trace,
             enable_memory=self._enable_memory,
             enable_repo_map=self._enable_repo_map,
+            enable_extensions=self._enable_extensions,
         )
 
     # -- 查询 ---------------------------------------------------------------
@@ -1141,6 +1156,7 @@ async def _run_interactive(
     enable_trace: bool = True,
     enable_memory: bool = True,
     enable_repo_map: bool = True,
+    enable_extensions: bool = True,
 ) -> int:
     """交互模式。会话对象跨轮复用，历史才不会丢（门槛 G35）。
 
@@ -1166,6 +1182,7 @@ async def _run_interactive(
         enable_trace=enable_trace,
         enable_memory=enable_memory,
         enable_repo_map=enable_repo_map,
+        enable_extensions=enable_extensions,
     )
     if broker is not None:
         _start_stdin_reader(broker)
@@ -1291,6 +1308,16 @@ def main(argv: list[str] | None = None) -> int:
         firecrawl_api_key=firecrawl_key,
         skills=skill_scan.skills,
     )
+    # 扩展装载（D3 / 详规 P3-扩展热重载 §4）：壳侧这次装载喂横幅
+    # （失败文件必须可见，与技能"问题清单进横幅"同判据）；
+    # InteractiveSession 内部还会再装一次——同 source 是幂等替换，
+    # 与技能"宁可多读一个目录，不在 sdk 与 shell 之间传状态"同一取舍。
+    # 系统提示词**不含扩展工具行**（它们是运行时注册的），提示词字节不变。
+    extension_reports = (
+        registry.load_extensions(workspace / "extensions")
+        if not args.no_extensions
+        else []
+    )
     system_prompt = build_system_prompt(
         web_search=web_search_on,
         web_fetch=web_fetch_on,
@@ -1402,6 +1429,19 @@ def main(argv: list[str] | None = None) -> int:
         repo_map_text = build_repo_map(workspace)
         file_count = sum(1 for l in repo_map_text.splitlines() if l.startswith("- "))
         lines.append(f"  repo map  {file_count} 个文件（--no-repo-map 关闭）")
+    # 扩展横幅行（热重载）：数量 + 失败文件都要打——坏扩展静默消失，
+    # 症状是"我加了工具它怎么不用"，与技能问题清单是同一种失败。
+    if args.no_extensions:
+        lines.append("  扩展    未开启（--no-extensions）")
+    elif extension_reports:
+        loaded = [r for r in extension_reports if r.ok]
+        tool_count = sum(len(r.added) for r in loaded)
+        lines.append(
+            f"  扩展    {len(loaded)} 个文件 / {tool_count} 个工具（/reload 重载）"
+        )
+        for report in extension_reports:
+            if not report.ok:
+                lines.append(f"          ⚠ {Path(report.source).name}: {report.failed_reason}")
     if binding.resumed:
         lines.append(
             f"  会话    已续接 {binding.session_id}"
@@ -1497,6 +1537,7 @@ def main(argv: list[str] | None = None) -> int:
                     enable_trace=not args.no_obs,
                     enable_memory=not args.no_memory,
         enable_repo_map=not args.no_repo_map,
+                    enable_extensions=not args.no_extensions,
                 )
             )
             if args.trace:
@@ -1524,6 +1565,7 @@ def main(argv: list[str] | None = None) -> int:
                 enable_trace=not args.no_obs,
                 enable_memory=not args.no_memory,
         enable_repo_map=not args.no_repo_map,
+                enable_extensions=not args.no_extensions,
             )
         )
     except KeyboardInterrupt:

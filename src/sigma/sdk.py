@@ -60,7 +60,7 @@ from sigma.hooks.base import (
     HookManager,
 )
 from sigma.runtime.event_loop import AgentLoop
-from sigma.tools.registry import ToolRegistry
+from sigma.tools.registry import ReloadReport, ToolRegistry
 from sigma.skills.scanner import (
     SKILLS_DIRNAME,
     SkillMeta,
@@ -316,6 +316,7 @@ class InteractiveSession:
         enable_trace: bool = True,
         enable_memory: bool = True,
         enable_repo_map: bool = True,
+        enable_extensions: bool = True,
     ) -> None:
         """``sub_agent_rounds``：子 agent 的轮数预算**三档**（low/medium/high）。
 
@@ -520,6 +521,18 @@ class InteractiveSession:
         # **会话接续的落点就在这里**：不传就是纯内存的新会话，
         # 传了就是接着那个会话往下走。本层不自己去读磁盘（谁决定策略谁传参）。
         #
+        # 扩展工具装载（D3 / 详规 P3-扩展热重载 §4）：<workspace>/extensions/*.py，
+        # 模块级 ``TOOLS: list[BaseTool]`` 即注册项，source=文件路径。
+        # 失败文件打报告继续（与技能发现"问题必须可见"同判据），报告经
+        # :attr:`extension_reports` 暴露给横幅与测试。排在 task/team 注册
+        # **之后**：扩展与 harness 关键工具重名时，得到的是一条失败报告
+        # 而不是构造期崩溃——坏扩展不该拖死会话。CLI 在打横幅前会装载过
+        # 一次（可见性），这里再装一次：同 source 是**幂等替换**，不重名。
+        self._extension_reports: list[ReloadReport] = (
+            list(self._registry.load_extensions(workspace_root / "extensions"))
+            if enable_extensions
+            else []
+        )
         # 断点续跑的前置修复（P4-批次5 Q3 拍板）：接续的树若停在
         # "assistant 带 tool_calls 但结果缺失"（中断所致），先补齐合成结果。
         # 无悬空时零写入零开销（repair 对健康会话是纯读扫描）。
@@ -542,7 +555,10 @@ class InteractiveSession:
         # 已发生的消息上。调用方传入自己的 manager 时也必须挂上持久化钩子
         # （它是正确性要求，不是可选能力）；钩子的其余消费者同理自行注册。
         self._hooks = HookManager()
-        self._hooks.register(SessionPersistHook(self._context))
+        # 持久化钩子持引用（热重载 rebind 用，G-HR-3）：reload_tools 重建
+        # context 后必须把它接到新 context 上——接线必须可被断言。
+        self._persist_hook = SessionPersistHook(self._context)
+        self._hooks.register(self._persist_hook)
         # 观测层（P5-批次1，Q2 拍板默认开）：trace 与会话文件同目录、
         # 同名不同后缀，落点由"有没有 store"决定——纯内存树没有落点，
         # 评测与子 agent 的静默是同款承诺（零钩子 = 行为不变），不是遗漏。
@@ -659,6 +675,10 @@ class InteractiveSession:
                 enable_memory=False,
                 # repo map 同款:子会话不付地图钱(主会话已带,切片自会引用)。
                 enable_repo_map=False,
+                # 扩展不重复装载:子 registry 是主 registry 的克隆,扩展工具
+                # 已经在里面(source 登记也随定义复制);详规 §3"evals/子 agent
+                # 不受影响"指的就是子会话不做自己的装载,更没有 /reload。
+                enable_extensions=False,
                 # 取消传播：主会话被取消时子任务同步停（signal 从派发时的
                 # ToolContext 里来——那是主 loop 的取消令牌）。
                 signal=ctx.signal,
@@ -709,6 +729,27 @@ class InteractiveSession:
 
     def pop_followup(self) -> str:
         return self._followups.pop(0)
+
+    def reload_tools(self, source: str | None = None) -> list[ReloadReport]:
+        """热重载扩展工具并重建常驻区（详规 §2/§3；SDK 公开方法，评测 B3 臂用）。
+
+        ``source=None`` 重载**全部**已装载来源；给来源串只重载那一个
+        （未知来源 ``KeyError``）。没有任何已装载来源时返回 ``[]`` 且
+        **不重建**——常驻区不可能变，重建是纯冗余。
+
+        重建是 D4 的**显式违约点**：用户敲 /reload 就是"我知道缓存要失效"。
+        树、历史与压缩视图经 :meth:`SessionContext.rebuild_with_tools` 原样
+        移交；persist 钩子 rebind 到新 context；trace 钩子不动（路径来自
+        store，换路径会丢会话连续性）。全部报告失败时 schema 未变，
+        重建等价于原样再冻结（幂等，无副作用）。
+        """
+        sources = [source] if source is not None else self._registry.extension_sources()
+        if not sources:
+            return []
+        reports = [self._registry.reload_source(s) for s in sources]
+        self._context = self._context.rebuild_with_tools(self._registry.schemas())
+        self._persist_hook.rebind(self._context)
+        return reports
 
     async def send(self, task: str) -> TurnResult:
         """发一条任务，跑完整轮。
@@ -839,6 +880,18 @@ class InteractiveSession:
         return self._skill_scan
 
     @property
+    def extension_reports(self) -> list[ReloadReport]:
+        """启动时装载扩展的报告（成功与失败都在）。横幅与 G-HR-4 的断言面——
+        坏扩展静默消失的症状是"我加了工具它怎么不用"。"""
+        return list(self._extension_reports)
+
+    @property
+    def persist_hook(self) -> SessionPersistHook:
+        """持久化钩子实例。热重载的 rebind 接线必须可被从外部断言（G-HR-3），
+        与 :attr:`checkpoint`"可用性必须能被问出来"同一条判据。"""
+        return self._persist_hook
+
+    @property
     def session_id(self) -> str:
         """本会话的 id。``--continue`` 的横幅要把它打出来——
         **用户得知道自己在续哪个会话**，否则"续上了吗"只能靠猜。"""
@@ -925,6 +978,7 @@ async def run_task(
     enable_trace: bool = True,
     enable_memory: bool = True,
     enable_repo_map: bool = True,
+    enable_extensions: bool = True,
 ) -> TurnResult:
     """跑一个任务，返回结果。**一次性会话**（发一条、跑完、结束）。
 
@@ -977,5 +1031,6 @@ async def run_task(
         enable_trace=enable_trace,
         enable_memory=enable_memory,
         enable_repo_map=enable_repo_map,
+        enable_extensions=enable_extensions,
     )
     return await session.send(task)

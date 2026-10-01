@@ -41,6 +41,22 @@ class SessionPersistHook(BaseHook):
     def __init__(self, context: SessionContext) -> None:
         self._context = context
 
+    @property
+    def context(self) -> SessionContext:
+        """钩子当前绑定的 context。热重载 rebind 的接线必须**可被从外部断言**
+        （G-HR-3）——私有属性一改名测试就失效，与 ``resident_text()`` 同判据。"""
+        return self._context
+
+    def rebind(self, context: SessionContext) -> None:
+        """把本钩子接到（热重载重建后的）新 context 上。
+
+        新旧 context **共享同一棵树**，所以不 rebind 持久化也"能写"——
+        但钩子持有的必须是**当前在用的**那个 context：持有旧引用，
+        将来任何经 context 的读取（压缩视图 / 指纹）读到的都是被废弃的实例，
+        而症状离根因极远。接线纪律：不留旧引用。
+        """
+        self._context = context
+
     def events(self) -> tuple[type[HookEvent], ...]:
         return (AssistantProduced, ToolEnd, MessageInjected)
 

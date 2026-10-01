@@ -1,8 +1,24 @@
 # sigma 架构方案
 
-> 版本：v1.9 ｜ 2026-09-29
+> 版本：v1.10 ｜ 2026-10-01
 > 参照对象：Pi Agent Harness（架构与设计理念见 `pi-harness研究笔记.md`）
 > 定位：自研 coding agent harness，目标是**可自证的设计**，不是功能数量
+>
+> **v1.10 变更**（2026-10-01，P3-扩展热重载落地，路线图最后一项未实现功能清零）：
+> - **工具级热重载落地**（D3 范围=工具注册表；钩子表热重载**不做**——D3 是范围
+>   上限不是承诺清单，等第一个真实钩子扩展出现）。`extensions/*.py` 模块级
+>   `TOOLS: list[BaseTool]` 即注册项（零框架）；`reload_source` 五步原子替换，
+>   三个失败场景（导入异常保旧表 / 空 TOOLS 清旧项 / 重名拒绝）各配注入；
+>   会话内 `/reload` 走 `SessionContext.rebuild_with_tools` **显式违约点**——
+>   树与压缩视图随迁、persist 钩子 rebind、trace 保原路径（详规 §3）。
+> - **新教训（补进 4.4 节的认知）**：uuid 模块名只防 `sys.modules` 陈旧，
+>   **防不了 `__pycache__` 陈旧**——SourceFileLoader 的失效判据是 mtime+size，
+>   同秒内改文件且改完尺寸恰好相同，解释器就拿旧字节码。这是
+>   "改了代码但行为没变"的**第二条通道**，注入实验当场抓到（基线 4 例红）。
+>   扩展导入改为读源码直接 `compile`，不走 loader 的字节码缓存。
+> - 门槛 G-HR-1..5 + 注入 `scripts/gate_injection_hot_reload.py` **9/9 证伪**；
+>   952 passed、mypy --strict 96 文件零错误、契约 2/2。
+> - 详规：`docs/plans/P3-扩展热重载-详规.md`；扩展约定与安全边界：`extensions/README.md`。
 >
 > **v1.9 变更**（2026-09-29，P6-批次A，星辰拍板"旧约束可打破，重构目录结构"）：
 > - **五包布局 → 单顶层包 `sigma`（src/ 布局）+ 15 个功能域子包**（§3.1 已更新为现行树）：

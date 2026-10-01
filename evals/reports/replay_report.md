@@ -1,8 +1,8 @@
 # 回放场景评测报告
 
-- 生成时间戳（脚本注入，非挂钟）：2026-09-30 13:16:21
+- 生成时间戳（脚本注入，非挂钟）：2026-10-01 18:30:32
 - 场景数：6
-- 通过：6 / 6
+- 通过：4 / 6
 
 > 本报告由 `evals/runner.py` 生成。**不要手改**——
 > 手改的数字会与代码脱节，那正是这份报告要防的事。
@@ -11,16 +11,23 @@
 
 | 场景 | 状态 | 轮数 | 工具调用 | 工具失败 | prompt tok | completion tok | 耗时 ms | 结果 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| read_then_edit | completed | 4 | 3 | 0 | 3740 | 203 | 5935 | PASS |
-| bash_fail_then_retry | completed | 6 | 5 | 1 | 6150 | 261 | 458 | PASS |
-| context_overflow | completed | 4 | 3 | 0 | 18600 | 245 | 283 | PASS |
-| compact_then_continue | completed | 4 | 3 | 0 | 9200 | 152 | 19 | PASS |
-| tool_error_recovery | completed | 5 | 4 | 1 | 5000 | 202 | 313 | PASS |
-| branch_and_resume | completed | 3 | 2 | 0 | 4800 | 100 | 8 | PASS |
+| read_then_edit | completed | 4 | 3 | 1 | 3740 | 203 | 264 | FAIL |
+| bash_fail_then_retry | completed | 6 | 5 | 1 | 6150 | 261 | 166 | PASS |
+| context_overflow | completed | 4 | 3 | 0 | 18600 | 245 | 209 | PASS |
+| compact_then_continue | completed | 4 | 3 | 0 | 9200 | 152 | 24 | PASS |
+| tool_error_recovery | completed | 5 | 4 | 2 | 5000 | 202 | 283 | FAIL |
+| branch_and_resume | completed | 3 | 2 | 0 | 4800 | 100 | 9 | PASS |
 
 ## 偏差明细
 
-无。全部场景与清单里的期望值一致。
+### read_then_edit
+
+- 工具失败数: 期望 0，实测 1
+
+### tool_error_recovery
+
+- 工具失败数: 期望 1，实测 2
+
 
 ## 怎么读这份报告
 

@@ -275,6 +275,33 @@ class SessionContext:
                 "**不要为了让实现通过而放宽预算**——那是把主张改掉以迁就实现。"
             )
 
+    def rebuild_with_tools(self, tools_schema: list[dict[str, Any]]) -> SessionContext:
+        """以新工具 schema 重建一个上下文——**热重载的显式违约点**（详规 §3）。
+
+        热重载必然改变 schema，在会话中直接换注册表会让
+        :meth:`verify_resident_region` 当场炸——那不是 bug，是
+        "逐字节稳定"与"改了工具"两条主张的真实张力。处置：
+        用户敲 /reload 就是**明说**接受一次缓存失效，于是走完整重建：
+        树（连同全部历史）与压缩视图**原样移交**（树是同一个对象），
+        其余常驻区参数逐项照抄，新实例构造时以新 schema 冻结指纹。
+        旧实例就此废弃——此后一切读写都走新实例。
+        """
+        rebuilt = SessionContext(
+            system_prompt=self._system_prompt,
+            tools_schema=tools_schema,
+            clock=self._clock,
+            session_id=self._session_id,
+            project_instructions=self._project_instructions,
+            skill_index=self._skill_index,
+            memory_index=self._memory_index,
+            repo_map=self._repo_map,
+            tree=self._tree,
+            resident_budget_tokens=self._resident_budget,
+        )
+        if self._summary is not None and self._keep_from is not None:
+            rebuilt.apply_compaction(self._summary, keep_from=self._keep_from)
+        return rebuilt
+
     # ------------------------------------------------------------------
     # 历史（委托给树）
     # ------------------------------------------------------------------

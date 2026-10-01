@@ -4,14 +4,16 @@
 
 [![ci](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.12-blue)
-![tests](https://img.shields.io/badge/tests-937%20passed-brightgreen)
-![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-123-brightgreen)
+![tests](https://img.shields.io/badge/tests-952-brightgreen)
+![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-132-brightgreen)
 
 > **现状**（数字绑**本次提交**；换代码 / 换环境必须重跑，见[计数纪律](#计数纪律)）：
 > P0–P2 ✅ · **P3 安全边界与审批（L1 写路径 / L2 影子 checkpoint / L3 审批层）✅** ·
-> **P4 技能系统 · todo · sub_agent · 影子库优化 ✅** · **P5-批次1 观测层（trace + `--timeline`）✅**
-> ——**937 单测全绿 · 三道门禁全绿（mypy strict 96 files / 契约 2 kept）· 20 份注入脚本 123 条实验 · 回放 6/6**。
-> 未完成的部分不藏：正式集 30 条落 28（`reproduce` 0/20，方向待拍板）、压缩质量验收门、扩展层热重载、
+> **P4 技能系统 · todo · sub_agent · 影子库优化 · 扩展热重载 ✅** · **P5-批次1 观测层（trace + `--timeline`）✅**
+> ——**952 单测 · 三道门禁全绿（mypy strict 96 files / 契约 2 kept）· 21 份注入脚本 132 条实验 · 回放 4/6**。
+> （单测 2 例与回放 2 例的红是**同一条已登记环境债**：本机 PATH 的 `python3` 解析到商店占位
+> stub——换环境必须重跑，见[技术债登记](docs/技术债登记.md)。）
+> 未完成的部分不藏：正式集 30 条落 28（`reproduce` 0/20，方向待拍板）、压缩质量验收门、
 > 技能命中率未实测、7.6 八项主张只有 5 项有对照数据（见[进度与未完成](#进度与未完成)）。
 
 ---
@@ -146,7 +148,7 @@ sigma --no-checkpoint -p "任务"                 # 关掉快照（危险：破�
 ### 6. 跑测试（不需要任何 API key）
 
 ```bash
-pytest -q                 # 937 个单测
+pytest -q                 # 952 个单测
 mypy src                  # strict（P6 起包根是 src/）
 lint-imports              # 两条契约：分层 + 禁引评测/扩展
 python evals/runner.py    # 回放六个场景，报告落 evals/reports/
@@ -241,7 +243,7 @@ flowchart LR
 
 **三道门禁**（CI 里就是这三条）：`lint-imports` · `mypy src`（strict）· `pytest`。
 
-**每条门槛都配一次注入实验**：`scripts/gate_injection_*.py` 共 **20 份脚本、123 条实验**
+**每条门槛都配一次注入实验**：`scripts/gate_injection_*.py` 共 **21 份脚本、132 条实验**
 （条数是机械数出来的——按 AST 数每个脚本实际注册/调用的实验条数，不是抄文档）。
 一条实验 = **破坏 → 断言变红 → 还原 → 断言变绿**；脚本自己报 `N/N 被成功证伪` 才算过。
 
@@ -262,7 +264,8 @@ flowchart LR
 | p2_compaction / p5 | 压缩视图与 P5 其余 | 2 + 2 |
 | batch18 | **跨会话记忆（G879–G886）** | 7 |
 | team_v3 | **团队协作 v3：装配级角色面 / 幂等收尾 / 失败兜底 / D 组门禁（心跳真跑、异常路径、空转不退、表漂移）** | 11 |
-| | **合计** | **123** |
+| hot_reload | **扩展热重载（G-HR-1..5：当轮生效 / 三失败场景 / 重建丢视图·忘 rebind / 启动与开关）** | 9 |
+| | **合计** | **132** |
 
 **一条门槛长什么样**（以 G68 为例——"回滚要删掉事后新建的文件"）：
 
@@ -277,7 +280,8 @@ reset = self._git("reset", "--hard", "--quiet", ref)
 跑注入实验：`python scripts/gate_injection_batch13.py` → **9/9 被成功证伪**（安全边界）、
 `scripts/gate_injection_batch14.py` → **5/5**（技能系统）、`batch16` → **8/8**（观测层）、
 `batch17` → **4/4**（自证波1）、`batch18` → **7/7**（跨会话记忆）、
-`team_v3` → **11/11**（团队协作 v3 + Review 批次的 D 组门禁）。
+`team_v3` → **11/11**（团队协作 v3 + Review 批次的 D 组门禁）、
+`hot_reload` → **9/9**（扩展热重载）。
 **本文件不宣称"123 条全部已被复验"**——每条的可证伪性以各脚本自报的 `N/N` 作数；
 要逐条复验，按上表跑对应脚本即可（它们改真实源码、`finally` 还原）。
 
@@ -302,7 +306,7 @@ src/sigma/      唯一顶层包（src 布局，P6 起按功能域分子包）
   prompts/      系统提示词资产（全部文案，同源纪律）
   config/       .env/密钥、常驻区预算表
   sdk.py        唯一装配层
-tests/          937 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
+tests/          952 个单测（不需要 API key）；fixtures/transcripts/ 是六个回放场景
 evals/          评测运行器 + 报告（adversarial 20+10 条已落地；synthetic 12/30；reproduce 0/20）
 examples/       真 API 演示（smoke / agent_demo / web_research）
 extensions/     运行时加载的扩展样例（P4）
@@ -335,7 +339,7 @@ scripts/        门槛注入实验（历史证据，内嵌路径为 P6 前旧路
 | P4-批次7/8：影子库工作区级共享 · 懒基线 · 空批次跳过 · 水位治理 | ✅ |
 | **P5-批次1：观测层（trace 采集 + `--timeline` 查看器）** | ✅ |
 | **P5-批次2 波1：自证三行（缓存命中 / 回滚统计 / 对抗集拦截）+ steering·技能 token** | ✅ |
-| P4 扩展系统（运行时热重载、按名解析契约） | ⬜ |
+| **P4 扩展系统（运行时热重载、按名解析契约，`/reload` 当轮生效）** | ✅ |
 | P5 收尾：正式集 30 条 + 消融矩阵波 2/3（8 项主张全部有对照数据） | ⬜ |
 
 **明确未验收的**（写出来，不假装）：

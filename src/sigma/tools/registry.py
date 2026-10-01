@@ -11,10 +11,70 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+import uuid
 from collections.abc import Collection
+from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from sigma.tools.base import BaseTool, ToolDefinition
+
+
+@dataclass(frozen=True)
+class ReloadReport:
+    """一次扩展装载 / 热重载的结果（详规 P3-扩展热重载 §2 第 5 步）。
+
+    frozen dataclass 的载体判定（AGENTS.md 三问）：不生成工具 schema、
+    不落盘序列化、不校验外部输入——三问皆否，不进 pydantic。
+    字段用 tuple 不用 list：报告是**结果记录**，消费方不该改它。
+
+    ``failed_reason`` 非空 = 本次装载被拒绝、**注册表保持原样**；
+    为空 = 装载生效（``added``/``removed`` 说明动了什么）。
+    重名拒绝以报告返回而不是抛 ``DuplicateToolError``：两个消费者
+    （启动装载要"警告继续"、/reload 要"回显报告"）要的都是**值**，
+    不是异常——与 team 工具把 ``ValueError`` 转 ``is_error`` 同一条哲学。
+    理由串仍以 ``DuplicateToolError:`` 起头，保留判据的词汇。
+    """
+
+    source: str
+    added: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
+    failed_reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed_reason
+
+
+def _import_fresh(path: Path) -> ModuleType:
+    """按路径新鲜导入一个模块：**每次生成新的 module 对象、新的代码对象**。
+
+    架构 4.4 的代码契约，两条防陈旧缺一不可：
+
+    1. uuid 模块名 + 注册 ``sys.modules``——**不用 ``importlib.reload``**：
+       它保留同一个 module 对象，其它模块以 ``from x import y`` 形式持有的
+       旧引用不会被更新，那是"改了代码但行为没变"的头号来源；
+    2. **读源码直接 ``compile``，不走 loader**——``SourceFileLoader`` 会读写
+       ``__pycache__``，而它的失效判据是 mtime+size：同一秒内改文件且
+       改完尺寸恰好相同（比如只改一个词），解释器就会拿**旧字节码**，
+       热重载静默落空。扩展文件都很小，每次重新编译的成本可忽略。
+    """
+    name = f"sigma_ext_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法为 {path} 构建 import spec")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        code = compile(path.read_bytes(), str(path), "exec")
+        exec(code, module.__dict__)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
 
 
 class DuplicateToolError(ValueError):
@@ -36,6 +96,12 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._definitions: dict[str, ToolDefinition] = {}
+        # 扩展来源的登记（详规 §2）：source 串 → 文件路径 / 最近一次导入的模块。
+        # 路径供 reload_source 定位；模块供 sys.modules 卫生（换新的一代时移除旧的）。
+        # **随实例走，不随 clone 走**：克隆只复制"谁注册了什么"这份账，
+        # 扩展路径登记由装载方（会话 / CLI）自己重新装载获得。
+        self._extension_paths: dict[str, Path] = {}
+        self._extension_modules: dict[str, ModuleType] = {}
 
     def register(self, tool: BaseTool, *, source: str = "builtin") -> None:
         """注册一个工具。
@@ -147,3 +213,125 @@ class ToolRegistry:
                 continue
             cloned.register(definition.tool, source=definition.source)
         return cloned
+
+    # ------------------------------------------------------------------
+    # 扩展装载与热重载（D3 / 详规 P3-扩展热重载 §2：五步，失败不进半更新）
+    # ------------------------------------------------------------------
+
+    def load_extensions(self, directory: Path) -> list[ReloadReport]:
+        """装载 ``directory`` 下全部 ``*.py`` 扩展，逐个返回报告。
+
+        文件按名字序处理（确定性：两个扩展互相重名时，**稳定的那个**赢）。
+        单个文件失败只影响自己的报告——调用方（启动路径）要"警告继续"，
+        不能让一个坏扩展拖死整个会话。目录不存在返回空表：没有扩展是常态，
+        不是错误。同一目录装载两次是**幂等替换**（source=文件路径，同源
+        互相替换）——CLI 与 InteractiveSession 各装一次不冲突；
+        但**以不同路径串指同一文件**会被当成两个来源而撞重名，
+        所以两边必须用同一个 workspace 值（CLI 流程本就共享同一对象）。
+        """
+        if not directory.is_dir():
+            return []
+        return [self._install_extension(path) for path in sorted(directory.glob("*.py"))]
+
+    def extension_sources(self) -> list[str]:
+        """已装载的扩展来源（source 串，字典序）。/reload 与测试用。"""
+        return sorted(self._extension_paths)
+
+    def reload_source(self, source: str) -> ReloadReport:
+        """热重载一个扩展来源：改完 ``extensions/<name>.py`` 后当轮生效。
+
+        未知来源抛 ``KeyError``——``/reload foo`` 拼错文件名是调用方的
+        输入错误，报"有哪些可选"比静默无操作诚实（与 :meth:`get` 同判据）。
+        """
+        path = self._extension_paths.get(source)
+        if path is None:
+            known = ", ".join(self.extension_sources()) or "(无)"
+            raise KeyError(f"未知的扩展来源 {source!r}。已装载：{known}")
+        return self._install_extension(path)
+
+    def _install_extension(self, path: Path) -> ReloadReport:
+        """五步装载（详规 §2）：任何失败都**保留旧表**，不进半更新状态。"""
+        source = str(path)
+        old_names = sorted(
+            name for name, d in self._definitions.items() if d.source == source
+        )
+        # 1. 新鲜导入：导入异常 → 报告失败，注册表分毫未动（场景 1）。
+        try:
+            module = _import_fresh(path)
+        except BaseException as exc:  # 扩展代码什么都可能抛，全接
+            return ReloadReport(
+                source=source,
+                failed_reason=f"导入失败（{type(exc).__name__}）: {exc}",
+            )
+        previous = self._extension_modules.get(source)
+        if previous is not None:
+            sys.modules.pop(previous.__name__, None)
+        self._extension_modules[source] = module
+        # 2. TOOLS 校验：缺失 / 空 = "扩展已移除"，清理该 source 的旧注册项
+        #    （场景 2——文件还在但不再导出工具，是合法的移除方式）；
+        #    形状不对（不是列表 / 元素不是 BaseTool）= 坏扩展，保留旧表。
+        tools: object = getattr(module, "TOOLS", None)
+        if tools is None or (isinstance(tools, list) and not tools):
+            for name in old_names:
+                del self._definitions[name]
+            return ReloadReport(source=source, removed=tuple(old_names))
+        if not isinstance(tools, list):
+            return ReloadReport(
+                source=source,
+                failed_reason=(
+                    f"TOOLS 必须是 BaseTool 实例列表，得到 {type(tools).__name__}"
+                ),
+            )
+        # 3. 先构造全部 ToolDefinition：schema 生成抛异常 → 报告失败，旧表原样
+        #    （先算后写，写阶段才可能"半更新"）。
+        new_definitions: list[ToolDefinition] = []
+        try:
+            for tool in tools:
+                if not isinstance(tool, BaseTool) or not tool.name:
+                    return ReloadReport(
+                        source=source,
+                        failed_reason="TOOLS 里有不是 BaseTool（或缺 name）的元素",
+                    )
+                new_definitions.append(
+                    ToolDefinition(
+                        name=tool.name,
+                        description=tool.description,
+                        params_schema=tool.json_schema(),
+                        tool=tool,
+                        read_only=tool.read_only,
+                        needs_approval=tool.needs_approval,
+                        source=source,
+                    )
+                )
+        except Exception as exc:
+            return ReloadReport(
+                source=source,
+                failed_reason=f"schema 生成失败（{type(exc).__name__}）: {exc}",
+            )
+        # 场景 3 的重名检查：与内置**或与其他扩展**（或与文件内自己）重名
+        # → 拒绝本次、保留旧表。本 source 的旧项不算重名——那是被替换者。
+        incoming = [definition.name for definition in new_definitions]
+        intra = {name for name in incoming if incoming.count(name) > 1}
+        external = (set(self._definitions) - set(old_names)) & set(incoming)
+        if intra or external:
+            clash = sorted(intra | external)[0]
+            return ReloadReport(
+                source=source,
+                failed_reason=(
+                    f"DuplicateToolError: 工具名 {clash!r} 已被注册。"
+                    "不允许静默覆盖（架构 4.4 节）：替换内置工具必须显式"
+                    " --no-builtin-tools；扩展之间重名时后装载者拒绝。"
+                ),
+            )
+        # 4. 原子替换：到这里全部校验已过，下面的写不可能失败。
+        for name in old_names:
+            del self._definitions[name]
+        for definition in new_definitions:
+            self._definitions[definition.name] = definition
+        self._extension_paths[source] = path
+        # 5. 报告。
+        return ReloadReport(
+            source=source,
+            added=tuple(sorted(incoming)),
+            removed=tuple(old_names),
+        )
