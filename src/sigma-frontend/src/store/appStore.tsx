@@ -3,7 +3,7 @@ import { apiClient, STATUS_META, type Automation, type ModelInfo, type Plugin, t
 
 export type SidebarView = 'projects' | 'groups'
 export type StatusFilter = 'all' | 'active' | 'completed'
-export type OverlayKind = 'automations' | 'plugins' | 'help' | null
+export type OverlayKind = 'automations' | 'plugins' | 'help' | 'fs-picker' | null
 
 export interface AppState {
   ready: boolean
@@ -12,7 +12,7 @@ export interface AppState {
   automations: Automation[]
   plugins: Plugin[]
   models: ModelInfo[]
-  /** 输入卡当前目标项目 */
+  /** 当前激活的工作区(切换语义):侧栏过滤、新任务目标、composer 显示共用这一个源 */
   activeProjectId: string
   selectedTaskId: string | null
   view: 'home' | 'task'
@@ -113,8 +113,12 @@ export interface AppActions {
   removeQueued(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void>
   /** 审批决策(变更前确认环) */
   decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
-  /** 导入工作区(绝对路径) */
+  /** 导入工作区(选择目录) */
   importWorkspace(repoPath: string, name?: string): Promise<void>
+  /** 切换激活的工作区 */
+  switchProject(projectId: string): Promise<void>
+  /** 移除导入的工作区(主工作区不可移) */
+  removeWorkspace(projectId: string): Promise<void>
   /** 重新拉取全部列表(导入工作区/项目变更后) */
   refreshAll(): Promise<void>
   setSidebarView(view: SidebarView): void
@@ -339,20 +343,57 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         if (importer === undefined) return
         await runOrToast(async (): Promise<string> => {
           const created = await importer({ repoPath: repoPath.trim(), name: name ?? '' })
+          if (apiClient.activateProject !== undefined) {
+            await apiClient.activateProject(created.id)
+          }
           await actionsRef.current?.refreshAll()
-          return `工作区「${created.name}」已导入`
+          return `工作区「${created.name}」已导入并切换`
+        })
+      },
+      /** 切换激活的工作区(侧栏过滤、新任务目标随之切换)。 */
+      async switchProject(projectId: string): Promise<void> {
+        const activator = apiClient.activateProject
+        if (activator === undefined) {
+          patch({ activeProjectId: projectId })
+          return
+        }
+        await runOrToast(async (): Promise<string> => {
+          await activator(projectId)
+          await actionsRef.current?.refreshAll()
+          const name = stateRef.current.projects.find((p) => p.id === projectId)?.name ?? ''
+          return `已切换到「${name}」`
+        })
+      },
+      async removeWorkspace(projectId: string): Promise<void> {
+        const remover = apiClient.removeProject
+        if (remover === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          await remover(projectId)
+          await actionsRef.current?.refreshAll()
+          return '已移除工作区(其会话回放归入主工作区)'
         })
       },
       async refreshAll(): Promise<void> {
         try {
-          const [projects, tasks, automations, plugins, models] = await Promise.all([
+          const [projects, tasks, automations, plugins, models, workspace] = await Promise.all([
             apiClient.listProjects(),
             apiClient.listTasks(),
             apiClient.listAutomations(),
             apiClient.listPlugins(),
             apiClient.listModels(),
+            apiClient.getWorkspace !== undefined
+              ? apiClient.getWorkspace()
+              : Promise.resolve({ activeId: 'proj-sigma' }),
           ])
-          dispatch({ type: 'loaded', projects, tasks, automations, plugins, models })
+          dispatch({
+            type: 'loaded',
+            projects,
+            tasks,
+            automations,
+            plugins,
+            models,
+          })
+          dispatch({ type: 'patch', patch: { activeProjectId: workspace.activeId } })
         } catch (error) {
           // 桥接服务没起(或 σ-server 未部署):空数据进场 + 常驻提示,
           // 界面保持可用(空态各视图都有说明),不能停在"加载中"。

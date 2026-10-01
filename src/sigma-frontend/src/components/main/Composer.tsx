@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, ChevronDown, Folder, Gauge, GitBranch, Plus, ShieldCheck } from 'lucide-react'
 import Dropdown from './Dropdown'
 import { useAppActions, useAppState } from '../../store/appStore'
@@ -16,6 +16,9 @@ export default function Composer(): JSX.Element {
   const state = useAppState()
   const actions = useAppActions()
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  /** 「完全访问」的严厉警告:必须勾选知情后才允许启用(星辰 2026-10-02)。 */
+  const [showFullWarning, setShowFullWarning] = useState<boolean>(false)
+  const [fullAck, setFullAck] = useState<boolean>(false)
 
   const activeProject: Project | undefined = state.projects.find(
     (project: Project): boolean => project.id === state.activeProjectId,
@@ -58,9 +61,14 @@ export default function Composer(): JSX.Element {
 
   const handleAccessSelect = (label: string): void => {
     const option = ACCESS_OPTIONS.find((o): boolean => o.label === label)
-    if (option !== undefined) {
-      actions.setComposerOpt({ access: option.id })
+    if (option === undefined) return
+    if (option.id === 'full' && state.composerAccess !== 'full') {
+      // 启用完全访问前必须过风险知情确认
+      setFullAck(false)
+      setShowFullWarning(true)
+      return
     }
+    actions.setComposerOpt({ access: option.id })
   }
 
   return (
@@ -158,6 +166,55 @@ export default function Composer(): JSX.Element {
           <ArrowUp size={17} />
         </button>
       </div>
+
+      {/* 完全访问的严厉警告(必须勾选知情才可启用) */}
+      {showFullWarning ? <div className="wb-warn-mask" onClick={(): void => setShowFullWarning(false)} /> : null}
+      {showFullWarning ? (
+        <div className="wb-warn" role="alertdialog" aria-modal="true" aria-label="启用完全访问的风险告知">
+          <h3 className="wb-warn__title">⚠ 启用「完全访问」前必读</h3>
+          <ul className="wb-warn__list">
+            <li>sigma <b>不是沙箱</b>:工具以你的用户权限执行<b>任意命令</b>;</li>
+            <li>可以删除或覆盖<b>工作区之外</b>的任何文件,也可以把数据发送到网络;</li>
+            <li>L1 路径沙箱只拦"写路径越出工作区",L2 快照只覆盖工作区内文件——
+                <b>都挡不住上面两条</b>;</li>
+            <li>字符串审批拦不住 python -c、base64、先写脚本再执行。</li>
+          </ul>
+          <p className="wb-warn__note">
+            模型理解错你的意图时,以上行为可能<b>无意发生</b>。请只在受控目录中使用,
+            且不要让它接触不信任的脚本。
+          </p>
+          <label className="wb-warn__ack">
+            <input
+              type="checkbox"
+              checked={fullAck}
+              onChange={(event: React.ChangeEvent<HTMLInputElement>): void =>
+                setFullAck(event.target.checked)
+              }
+            />
+            <span>我已理解并接受上述风险</span>
+          </label>
+          <div className="wb-warn__actions">
+            <button
+              type="button"
+              className="wb-warn__btn wb-warn__btn--cancel"
+              onClick={(): void => setShowFullWarning(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="wb-warn__btn wb-warn__btn--enable"
+              disabled={!fullAck}
+              onClick={(): void => {
+                actions.setComposerOpt({ access: 'full' })
+                setShowFullWarning(false)
+              }}
+            >
+              启用完全访问
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

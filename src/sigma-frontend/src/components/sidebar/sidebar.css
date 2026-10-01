@@ -502,3 +502,116 @@
 .sidebar__item-row:hover .sidebar__item-time {
   opacity: 0;
 }
+
+/* ---- 工作区切换器 ---- */
+.sidebar__ws {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 9px;
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+  max-width: 150px;
+  position: relative;
+}
+
+.sidebar__ws:hover,
+.sidebar__ws--open {
+  background: #e8eaee;
+}
+
+.sidebar__ws-icon {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.sidebar__ws-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__ws-panel {
+  position: absolute;
+  top: 44px;
+  left: 10px;
+  z-index: 60;
+  width: 230px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  padding: 6px;
+}
+
+.sidebar__ws-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 8px 6px;
+}
+
+.sidebar__ws-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar__ws-item {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.sidebar__ws-item:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar__ws-item--active {
+  font-weight: 600;
+}
+
+.sidebar__ws-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__ws-remove {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.sidebar__ws-remove:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+
+.sidebar__ws-import {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.sidebar__ws-import:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}

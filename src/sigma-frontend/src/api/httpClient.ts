@@ -13,6 +13,8 @@ import {
   type TaskTimeline,
   type TaskDeltas,
   type TaskQueues,
+  type FsListing,
+  type WorkspaceState,
 } from './client'
 
 /**
@@ -172,5 +174,28 @@ export class HttpSigmaClient implements SigmaApiClient {
       method: 'POST',
       body: JSON.stringify({ decision }),
     })
+  }
+
+  getWorkspace(): Promise<WorkspaceState> {
+    return this.request<WorkspaceState>('/workspace')
+  }
+
+  async activateProject(projectId: string): Promise<void> {
+    await this.request<unknown>('/workspace/activate', {
+      method: 'POST',
+      body: JSON.stringify({ id: projectId }),
+    })
+  }
+
+  async removeProject(projectId: string): Promise<void> {
+    await this.request<unknown>('/projects/remove', {
+      method: 'POST',
+      body: JSON.stringify({ id: projectId }),
+    })
+  }
+
+  browseFs(path?: string): Promise<FsListing> {
+    const query = path !== undefined && path !== '' ? `?path=${encodeURIComponent(path)}` : ''
+    return this.request<FsListing>(`/fs${query}`)
   }
 }

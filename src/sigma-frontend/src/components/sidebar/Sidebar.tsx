@@ -4,6 +4,7 @@ import {
   ArrowRight,
   CalendarClock,
   Check,
+  ChevronDown,
   CirclePlus,
   Folder,
   FolderOpen,
@@ -18,6 +19,7 @@ import {
   Smartphone,
   Trash2,
   User,
+  X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -35,7 +37,7 @@ import './sidebar.css'
    静态配置
    ============================================================ */
 
-type NavId = 'new-task' | 'search' | 'import-ws' | 'automations' | 'plugins'
+type NavId = 'new-task' | 'search' | 'automations' | 'plugins'
 
 interface NavItemMeta {
   id: NavId
@@ -48,7 +50,6 @@ interface NavItemMeta {
 const NAV_ITEMS: readonly NavItemMeta[] = [
   { id: 'new-task', label: '新建任务', icon: CirclePlus, shortcut: 'Ctrl+N', title: '新建任务(Ctrl+N)' },
   { id: 'search', label: '搜索', icon: Search, shortcut: 'Ctrl+K', title: '搜索(Ctrl+K)' },
-  { id: 'import-ws', label: '导入工作区', icon: FolderPlus, title: '导入工作区(输入绝对路径)' },
   { id: 'automations', label: '自动化', icon: CalendarClock, title: '自动化' },
   { id: 'plugins', label: '插件市场', icon: LayoutGrid, title: '插件市场' },
 ]
@@ -245,8 +246,10 @@ export default function Sidebar(): JSX.Element {
   const actions = useAppActions()
   const [collapsedIds, setCollapsedIds] = useState<string[]>([])
   const [filterOpen, setFilterOpen] = useState<boolean>(false)
+  const [wsPanelOpen, setWsPanelOpen] = useState<boolean>(false)
   const [toast, setToast] = useState<string | null>(null)
   const filterRef = useRef<HTMLDivElement | null>(null)
+  const wsRef = useRef<HTMLButtonElement | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect((): (() => void) => {
@@ -255,23 +258,25 @@ export default function Sidebar(): JSX.Element {
     }
   }, [])
 
-  // 点击外部关闭筛选下拉
+  // 点击外部关闭筛选下拉与工作区面板
   useEffect((): (() => void) | undefined => {
-    if (!filterOpen) {
+    if (!filterOpen && !wsPanelOpen) {
       return undefined
     }
     const handleDocumentMouseDown = (event: MouseEvent): void => {
-      const node = filterRef.current
       const target = event.target
-      if (node !== null && target instanceof Node && !node.contains(target)) {
+      if (filterRef.current !== null && target instanceof Node && !filterRef.current.contains(target)) {
         setFilterOpen(false)
+      }
+      if (wsRef.current !== null && target instanceof Node && !wsRef.current.contains(target)) {
+        setWsPanelOpen(false)
       }
     }
     document.addEventListener('mousedown', handleDocumentMouseDown)
     return (): void => {
       document.removeEventListener('mousedown', handleDocumentMouseDown)
     }
-  }, [filterOpen])
+  }, [filterOpen, wsPanelOpen])
 
   /** 本地 toast:复用全局 .toast 样式(store 未暴露 showToast,只能就地提示) */
   const showToast = (message: string): void => {
@@ -280,8 +285,15 @@ export default function Sidebar(): JSX.Element {
     toastTimer.current = setTimeout(() => setToast(null), 2600)
   }
 
-  // 状态过滤后的任务(store 顺序),再按项目 / 状态分桶
-  const visibleTasks: Task[] = state.tasks.filter((task) => matchStatusFilter(task, state.statusFilter))
+  // 状态过滤 + **工作区过滤**(切换语义:列表只显示激活工作区的会话),
+  // 再按项目 / 状态分桶。
+  const visibleTasks: Task[] = state.tasks.filter(
+    (task) => task.projectId === state.activeProjectId && matchStatusFilter(task, state.statusFilter),
+  )
+  const activeProject: Project | undefined = state.projects.find(
+    (project: Project): boolean => project.id === state.activeProjectId,
+  )
+  const activeProjectName: string = activeProject?.name ?? '工作区'
   const tasksByProject = new Map<string, Task[]>()
   for (const task of visibleTasks) {
     const bucket = tasksByProject.get(task.projectId)
@@ -306,12 +318,6 @@ export default function Sidebar(): JSX.Element {
       actions.newTaskDraft()
     } else if (id === 'search') {
       actions.togglePalette()
-    } else if (id === 'import-ws') {
-      // 浏览器没有目录选择器:用绝对路径导入(桥接端校验目录存在)。
-      const repoPath = window.prompt('输入工作区的绝对路径(如 D:\\projects\\demo):')
-      if (repoPath !== null && repoPath.trim() !== '') {
-        void actions.importWorkspace(repoPath.trim())
-      }
     } else if (id === 'automations') {
       actions.setOverlay('automations')
     } else {
@@ -380,7 +386,9 @@ export default function Sidebar(): JSX.Element {
     return (
       <>
         <div className="sidebar__section-title">项目</div>
-        {state.projects.map((project) => {
+        {state.projects
+          .filter((project: Project): boolean => project.id === state.activeProjectId)
+          .map((project) => {
           const projectTasks: Task[] = tasksByProject.get(project.id) ?? []
           // 收件箱项目:纯文字 section「任务」,无文件夹图标,条目缩进同截图
           if (project.id === INBOX_PROJECT_ID) {
@@ -423,7 +431,19 @@ export default function Sidebar(): JSX.Element {
   return (
     <aside className="sidebar">
       <header className="sidebar__brand">
-        <div className="sidebar__logo">Z</div>
+        {/* 工作区切换器(图一语义:当前工作区 + 下拉切换/导入/移除) */}
+        <button
+          type="button"
+          ref={wsRef}
+          className={`sidebar__ws${wsPanelOpen ? ' sidebar__ws--open' : ''}`}
+          aria-expanded={wsPanelOpen}
+          title="切换工作区"
+          onClick={(): void => setWsPanelOpen((prev) => !prev)}
+        >
+          <Folder size={16} className="sidebar__ws-icon" aria-hidden="true" />
+          <span className="sidebar__ws-name">{activeProjectName}</span>
+          <ChevronDown size={14} aria-hidden="true" />
+        </button>
         <div className="sidebar__history">
           <button type="button" className="sidebar__history-btn" aria-label="后退" title="后退">
             <ArrowLeft size={18} aria-hidden="true" />
@@ -433,6 +453,57 @@ export default function Sidebar(): JSX.Element {
           </button>
         </div>
       </header>
+
+      {wsPanelOpen ? (
+        <div className="sidebar__ws-panel" role="menu">
+          <div className="sidebar__ws-title">工作区</div>
+          {state.projects.map((project) => {
+            const active: boolean = project.id === state.activeProjectId
+            return (
+              <div key={project.id} className="sidebar__ws-row">
+                <button
+                  type="button"
+                  className={`sidebar__ws-item${active ? ' sidebar__ws-item--active' : ''}`}
+                  onClick={(): void => {
+                    setWsPanelOpen(false)
+                    if (!active) void actions.switchProject(project.id)
+                  }}
+                  title={project.repoPath}
+                >
+                  {active ? <Check size={14} aria-hidden="true" /> : <Folder size={14} aria-hidden="true" />}
+                  <span className="sidebar__ws-item-name">{project.name}</span>
+                </button>
+                {project.id !== 'proj-sigma' ? (
+                  <button
+                    type="button"
+                    className="sidebar__ws-remove"
+                    aria-label={`移除工作区 ${project.name}`}
+                    title="移除(其会话回放归入主工作区)"
+                    onClick={(): void => {
+                      if (window.confirm(`移除工作区「${project.name}」?其会话回放将归入主工作区。`)) {
+                        void actions.removeWorkspace(project.id)
+                      }
+                    }}
+                  >
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
+            )
+          })}
+          <button
+            type="button"
+            className="sidebar__ws-import"
+            onClick={(): void => {
+              setWsPanelOpen(false)
+              actions.setOverlay('fs-picker')
+            }}
+          >
+            <FolderPlus size={14} aria-hidden="true" />
+            选择目录导入…
+          </button>
+        </div>
+      ) : null}
 
       <nav className="sidebar__nav">
         {NAV_ITEMS.map((nav) => {

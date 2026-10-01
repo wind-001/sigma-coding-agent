@@ -179,6 +179,74 @@ def _all_projects(primary: Path) -> list[dict[str, Any]]:
     return projects
 
 
+def _active_project_id(primary: Path) -> str:
+    """当前激活的工作区(切换语义):注册表记录,回退主工作区。"""
+    reg = _registry_read()
+    active = str(reg.get("active") or PROJECT_ID)
+    known = {p.get("id") for p in _all_projects(primary)}
+    return active if active in known else PROJECT_ID
+
+
+def _activate_project(primary: Path, project_id: str) -> bool:
+    if _project_by_id(primary, project_id) is None:
+        return False
+    reg = _registry_read()
+    reg["active"] = project_id
+    _registry_write(reg)
+    return True
+
+
+def _remove_project(primary: Path, project_id: str) -> tuple[bool, str]:
+    """移除导入的工作区(主工作区不可移):其会话索引一并清除,
+    这些会话回落主工作区(回放仍可用)。"""
+    if project_id == PROJECT_ID:
+        return False, "主工作区不可移除"
+    reg = _registry_read()
+    projects: list[dict[str, Any]] = [
+        p for p in reg.get("projects", []) if p.get("id") != project_id
+    ]
+    if len(projects) == len(reg.get("projects", [])):
+        return False, "工作区不存在"
+    reg["projects"] = projects
+    sessions: dict[str, str] = {
+        sid: pid
+        for sid, pid in reg.get("sessions", {}).items()
+        if pid != project_id
+    }
+    reg["sessions"] = sessions
+    if reg.get("active") == project_id:
+        reg["active"] = PROJECT_ID
+    _registry_write(reg)
+    return True, ""
+
+
+def _fs_listing(raw: str) -> dict[str, Any]:
+    """目录浏览(选择工作区用):只列**子目录**,不读任何文件内容。"""
+    if raw.strip() in ("", "drives", "/"):
+        drives = [
+            f"{letter}:\\"
+            for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ"
+            if Path(f"{letter}:\\").exists()
+        ]
+        return {
+            "path": "",
+            "parent": None,
+            "entries": [{"name": d, "path": d, "isDir": True} for d in drives],
+        }
+    path = Path(raw)
+    if not path.is_dir():
+        return {"path": raw, "parent": None, "entries": [], "error": "目录不存在"}
+    entries: list[dict[str, Any]] = []
+    try:
+        for child in sorted(path.iterdir(), key=lambda c: c.name.lower()):
+            if child.is_dir() and not child.name.startswith((".", "$")):
+                entries.append({"name": child.name, "path": str(child), "isDir": True})
+    except (PermissionError, OSError) as exc:
+        return {"path": str(path), "parent": None, "entries": [], "error": f"无法读取:{exc}"}
+    parent = str(path.parent) if path.parent != path else None
+    return {"path": str(path), "parent": parent, "entries": entries}
+
+
 def _register_project(primary: Path, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """导入工作区:校验目录存在,去重后写入注册表。"""
     repo = str(body.get("repoPath") or "").strip().strip('"')
@@ -1126,6 +1194,14 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if parts == ["projects"]:
             self._send_json(200, _all_projects(self.workspace))
             return
+        # /workspace:当前激活的工作区(切换语义)
+        if parts == ["workspace"]:
+            self._send_json(200, {"activeId": _active_project_id(self.workspace)})
+            return
+        # /fs?path=:目录浏览(选择工作区目录用,只列子目录)
+        if parts == ["fs"]:
+            self._send_json(200, _fs_listing(self._query.get("path", [""])[0]))
+            return
         # /tasks(草稿+磁盘合并;过滤参数前端本地做——单项目、量级小)
         if parts == ["tasks"]:
             self._send_json(200, _all_task_payloads(self.workspace, root))
@@ -1181,6 +1257,17 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         # 导入工作区(项目管理)。
         if parts == ["api", "v1", "projects"]:
             self._send_json(*_register_project(self.workspace, self._read_json_body()))
+            return
+        # 切换/移除工作区。
+        if parts == ["api", "v1", "workspace", "activate"]:
+            body = self._read_json_body()
+            ok = _activate_project(self.workspace, str(body.get("id") or ""))
+            self._send_json(200 if ok else 404, {"ok": ok})
+            return
+        if parts == ["api", "v1", "projects", "remove"]:
+            body = self._read_json_body()
+            ok, detail = _remove_project(self.workspace, str(body.get("id") or ""))
+            self._send_json(200 if ok else 400, {"ok": ok, "detail": detail})
             return
         # 创建草稿任务(Composer / 侧栏「新建会话」)。
         if parts == ["api", "v1", "tasks"]:

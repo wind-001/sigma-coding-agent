@@ -216,6 +216,19 @@ export interface TaskQueues {
   approvals: { id: string; tool: string; summary: string }[]
 }
 
+/** 目录浏览(选择工作区用):只列子目录,不读文件内容。 */
+export interface FsListing {
+  path: string
+  parent: string | null
+  entries: { name: string; path: string; isDir: boolean }[]
+  error?: string
+}
+
+/** 当前激活的工作区(切换语义)。 */
+export interface WorkspaceState {
+  activeId: string
+}
+
 export interface SigmaApiClient {
   readonly mode: 'mock' | 'http'
   ping(): Promise<PingInfo>
@@ -255,4 +268,12 @@ export interface SigmaApiClient {
   removeQueued?(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void>
   /** 审批决策(变更前确认环)。 */
   decideApproval?(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
+  /** 当前激活的工作区(可选方法,mock 不实现)。 */
+  getWorkspace?(): Promise<WorkspaceState>
+  /** 切换激活的工作区(可选方法,mock 不实现)。 */
+  activateProject?(projectId: string): Promise<void>
+  /** 移除导入的工作区(主工作区不可移;可选方法,mock 不实现)。 */
+  removeProject?(projectId: string): Promise<void>
+  /** 目录浏览(选择工作区目录;可选方法,mock 不实现)。 */
+  browseFs?(path?: string): Promise<FsListing>
 }
