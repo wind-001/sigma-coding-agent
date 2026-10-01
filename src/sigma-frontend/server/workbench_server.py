@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 from sigma import __version__
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
+from sigma.config.resident_caps import CAPS, MEASURED, RESIDENT_BUDGET_TOKENS, caps_sum
 from sigma.config.settings import resolve_api_key
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
@@ -350,7 +351,8 @@ def _assistant_text(content: list[Any]) -> str:
 def _events_from_history(history: list[Any]) -> list[dict[str, str]]:
     """把会话树压成前端 ``TaskEvent[]``(只读回放,截断在展示层语义内)。
 
-    kind 映射:用户/助手消息 → ``message``;assistant 声明的工具调用 → ``tool_call``;
+    kind 映射:用户/助手消息 → ``message``(+ ``role`` 供气泡分边);
+    assistant 声明的工具调用 → ``tool_call``;
     工具结果错误 → ``note``(✗ 前缀);取**最后** EVENTS_LIMIT 条——
     新会话看全,老会话看尾巴,与"工作台是回放不是审计导出"的定位一致。
     """
@@ -362,7 +364,8 @@ def _events_from_history(history: list[Any]) -> list[dict[str, str]]:
                 {
                     "id": f"e{len(events)}",
                     "kind": "message",
-                    "text": _clip(f"用户:{message.message.content}", 220),
+                    "role": "user",
+                    "text": _clip(str(message.message.content), 4000),
                     "at": at,
                 }
             )
@@ -375,7 +378,8 @@ def _events_from_history(history: list[Any]) -> list[dict[str, str]]:
                     {
                         "id": f"e{len(events)}",
                         "kind": "message",
-                        "text": _clip(f"助手:{text}", 300),
+                        "role": "assistant",
+                        "text": text,
                         "at": at,
                     }
                 )
@@ -386,7 +390,9 @@ def _events_from_history(history: list[Any]) -> list[dict[str, str]]:
                         {
                             "id": f"e{len(events)}",
                             "kind": "tool_call",
-                            "text": _clip(f"调用 {block.name}({args})", 220),
+                            "role": "tool",
+                            "tool": block.name,
+                            "text": _clip(f"{block.name}({args})", 220),
                             "at": at,
                         }
                     )
@@ -627,7 +633,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         )
 
     def _static(self, rel: str) -> None:
-        """SPA 静态资源;未命中路径回退 index.html(vite 构建的单页)。"""
+        """SPA 静态资源;未命中路径回退 index.html(vite 构建的单页)。
+
+        两个防"重建后白屏"的细节(实测踩出来的):
+        1. **带文件后缀且不存在的路径直接 404**,绝不回退——vite 的
+           ``index-<hash>.js`` 每次构建换名,浏览器缓存的旧 index.html 会
+           指向已删除的 hash;把 HTML 当 JS 返回(200 + text/html)的后果是
+           模块解析炸掉、整页白屏,比 404 难排查得多。
+        2. **index.html 发 no-cache**,hash 资源发 immutable——旧页面刷新后
+           必拿新 index.html,新 index.html 必指向在场的资源。
+        """
         dist = self.dist_dir
         if dist is None or not dist.is_dir():
             self._send_json(
@@ -636,8 +651,15 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 "或用 npm run dev 走 vite(5173)直连本服务。"},
             )
             return
-        candidate = (dist / rel.lstrip("/")).resolve()
+        clean = rel.lstrip("/")
+        candidate = (dist / clean).resolve()
+        is_asset = "/assets/" in f"/{clean}" or (
+            Path(clean).suffix != "" and clean != "index.html"
+        )
         if not candidate.is_file() or not candidate.is_relative_to(dist.resolve()):
+            if is_asset:
+                self._send_json(404, {"detail": f"资源不存在(前端已重新构建?):{clean}"})
+                return
             candidate = dist / "index.html"
         content_type = {
             ".html": "text/html; charset=utf-8",
@@ -651,6 +673,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # hash 资源内容不可变,可永久缓存;入口页必须每次回源拿新 hash 引用。
+        cache = "no-cache" if candidate.name == "index.html" else "public, max-age=31536000, immutable"
+        self.send_header("Cache-Control", cache)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -709,6 +734,18 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             return
         if parts == ["models"]:
             self._send_json(200, [{"id": "current", "name": "当前配置模型", "efforts": ["—"]}])
+            return
+        # /budget:常驻区预算表(D4 v3,"表即常量")——工作台"上下文构成"看板的数据源。
+        if parts == ["budget"]:
+            self._send_json(
+                200,
+                {
+                    "residentBudgetTokens": RESIDENT_BUDGET_TOKENS,
+                    "capsSum": caps_sum(),
+                    "caps": CAPS,
+                    "measured": MEASURED,
+                },
+            )
             return
         # /memory:契约之外的附加数据面(工作台"记忆"区)。
         if parts == ["memory"]:

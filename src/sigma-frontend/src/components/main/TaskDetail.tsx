@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
-import { ArrowLeft, Folder } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowLeft, Send } from 'lucide-react'
 import {
   apiClient,
   STATUS_META,
   type Task,
   type TaskEvent,
-  type TaskEventKind,
   type TaskTimeline,
+  type WorkbenchBudget,
 } from '../../api'
 import { formatDateTime, formatRelative } from '../../lib/time'
 import { useAppActions, useAppState } from '../../store/appStore'
@@ -20,30 +20,35 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-/** 时间线圆点颜色:status 事件跟随当前任务状态色,其余按事件类型取固定色 */
-function eventDotColor(kind: TaskEventKind, statusColor: string): string {
-  switch (kind) {
-    case 'created':
-    case 'note':
-      return '#9aa0aa'
-    case 'message':
-      return '#3b82f6'
-    case 'tool_call':
-      return '#8b5cf6'
-    case 'approval':
-      return '#ff8f1f'
-    case 'status':
-      return statusColor
-  }
+/** 看板一枚指标卡:label + 大数字 + 说明。 */
+function BoardCard({
+  label,
+  value,
+  sub,
+  title,
+}: {
+  label: string
+  value: string
+  sub?: string
+  title?: string
+}): JSX.Element {
+  return (
+    <div className="wb-card" title={title}>
+      <span className="wb-card__label">{label}</span>
+      <span className="wb-card__value">{value}</span>
+      {sub !== undefined && sub !== '' ? <span className="wb-card__sub">{sub}</span> : null}
+    </div>
+  )
 }
 
-/** 运行时间线里一枚指标 chip(label + value)。 */
-function MetricChip({ label, value, title }: { label: string; value: string; title?: string }): JSX.Element {
+/** 气泡流里的工具调用 chip。 */
+function ToolChip({ event }: { event: TaskEvent }): JSX.Element {
   return (
-    <span className="wb-chip" title={title}>
-      <span className="wb-chip__label">{label}</span>
-      <span className="wb-chip__value">{value}</span>
-    </span>
+    <div className="wb-toolrow" title={event.at}>
+      <span className="wb-toolrow__dot" />
+      <span className="wb-toolrow__name">{event.tool ?? 'tool'}</span>
+      <span className="wb-toolrow__args">{event.text}</span>
+    </div>
   )
 }
 
@@ -53,39 +58,61 @@ interface TaskDetailProps {
 }
 
 /**
- * 会话详情页(只读工作台):标题 / 状态徽章 / 元信息 / 描述 /
- * 运行时间线(观测层指标) / 动态回放。
+ * 会话工作区(以 sigma 现有功能为核心):
+ * - **看板行** = 上下文信息:运行指标(观测层 timeline)+ 常驻区预算构成(D4,表即常量);
+ * - **气泡流** = 会话回放(用户右 / 助手左,工具调用 chip 行);
+ * - **底部输入** = 提示词框,Enter 同步执行一轮(执行中禁用)。
  *
- * 数据源 = 真实 sigma 会话 JSONL(经只读桥接服务);执行控制
- * (开始/推进/打断/审批)是 σ-server M2 的范围——如实标"待接入",
- * 不渲染点了必然失败的假按钮。
+ * 数据源 = 真实 sigma(会话 JSONL / build_timeline / resident_caps),与 CLI 同源。
  */
 export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const state = useAppState()
   const actions = useAppActions()
   const [timeline, setTimeline] = useState<TaskTimeline | null>(null)
+  const [budget, setBudget] = useState<WorkbenchBudget | null>(null)
   const [composeText, setComposeText] = useState<string>('')
   const [sending, setSending] = useState<boolean>(false)
   const composeReady: boolean = composeText.trim().length > 0 && !sending
+  const threadRef = useRef<HTMLDivElement | null>(null)
 
-  // 运行时间线:可选方法(mock 未实现时跳过);失败静默(时间线是增强,不是事实源)。
+  const isRunning: boolean = task.status === 'running'
+  const canCompose: boolean = task.status !== 'archived' && !(sending || isRunning)
+
+  // 运行时间线 + 常驻预算(看板数据源;可选方法,mock 未实现时静默跳过)。
+  // ⚠ 必须以 `apiClient.xxx?.()` 形式调用:取出来再调(`const f = apiClient.f; f()`)
+  // 会丢 this——HttpSigmaClient 的方法依赖 this.request,实测炸出白屏。
   useEffect((): (() => void) => {
     let cancelled = false
-    const loader = apiClient.getTaskTimeline
-    if (loader === undefined) {
-      return (): void => undefined
+    if (apiClient.getTaskTimeline !== undefined) {
+      apiClient
+        .getTaskTimeline(task.id)
+        .then((report: TaskTimeline | null): void => {
+          if (!cancelled) setTimeline(report)
+        })
+        .catch((): void => {
+          if (!cancelled) setTimeline(null)
+        })
     }
-    loader(task.id)
-      .then((report: TaskTimeline | null): void => {
-        if (!cancelled) setTimeline(report)
-      })
-      .catch((): void => {
-        if (!cancelled) setTimeline(null)
-      })
+    if (apiClient.getBudget !== undefined && budget === null) {
+      apiClient
+        .getBudget()
+        .then((info: WorkbenchBudget): void => {
+          if (!cancelled) setBudget(info)
+        })
+        .catch((): void => undefined)
+    }
     return (): void => {
       cancelled = true
     }
-  }, [task.id])
+  }, [task.id, budget])
+
+  // 新回放到达(轮次变化)时滚到底部。
+  useEffect((): void => {
+    const node = threadRef.current
+    if (node !== null) {
+      node.scrollTop = node.scrollHeight
+    }
+  }, [task.events.length, task.status])
 
   const project = state.projects.find((p): boolean => p.id === task.projectId)
   const projectName: string = project?.name ?? '未知工作区'
@@ -93,7 +120,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const engineLabel: string = [task.model, task.effort].filter((part) => part !== '').join(' · ')
 
   const handleSendCompose = (): void => {
-    if (!composeReady || sending) return
+    if (!composeReady) return
     const text = composeText
     setSending(true)
     void (async (): Promise<void> => {
@@ -105,6 +132,15 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
       }
     })()
   }
+
+  const cachePercent: string =
+    timeline !== null && timeline.cacheRate !== null
+      ? `${Math.round(timeline.cacheRate * 100)}%`
+      : '—'
+  const wallLabel: string =
+    timeline !== null && timeline.wallSeconds !== null
+      ? `${timeline.wallSeconds.toFixed(1)}s${timeline.wallApprox ? ' ≈' : ''}`
+      : '—'
 
   return (
     <div className="task-detail">
@@ -118,183 +154,171 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           >
             <ArrowLeft size={18} />
           </button>
-          <span className="task-detail__crumb">{projectName} / 会话</span>
-        </div>
-
-        <div className="task-detail__title-row">
-          <h1 className="task-detail__title">{task.title}</h1>
-          <span
-            className="status-badge"
-            style={{ backgroundColor: hexToRgba(statusMeta.color, 0.12), color: statusMeta.color }}
-          >
-            <span className="status-badge__dot" style={{ backgroundColor: statusMeta.color }} />
-            <span className="status-badge__text">{statusMeta.label}</span>
+          <span className="task-detail__crumb">
+            {projectName} / {task.title}
+          </span>
+          <span className="task-detail__meta-id" title={task.id}>
+            {task.id}
           </span>
         </div>
 
-        <div className="task-detail__meta">
-          <span className="task-detail__meta-item">
-            <Folder size={14} />
-            {projectName}
-          </span>
-          <span className="task-detail__meta-item">会话 id {task.id}</span>
-          <span className="task-detail__meta-item">创建于 {formatDateTime(task.createdAt)}</span>
-          <span className="task-detail__meta-item">更新于 {formatRelative(task.updatedAt)}</span>
-          {engineLabel !== '' ? (
-            <span className="task-detail__meta-item">{engineLabel}</span>
+        {/* ============ 看板:上下文信息(运行指标 + 常驻预算) ============ */}
+        <div className="wb-board">
+          <div className="wb-card">
+            <span className="wb-card__label">状态</span>
+            <span
+              className="status-badge"
+              style={{
+                backgroundColor: hexToRgba(statusMeta.color, 0.12),
+                color: statusMeta.color,
+              }}
+            >
+              <span
+                className="status-badge__dot"
+                style={{ backgroundColor: statusMeta.color }}
+              />
+              <span className="status-badge__text">{statusMeta.label}</span>
+            </span>
+            <span className="wb-card__sub">{engineLabel !== '' ? engineLabel : '模型未知'}</span>
+          </div>
+          <BoardCard
+            label="轮数"
+            value={timeline !== null ? String(timeline.rounds.length) : '—'}
+            sub={`工具错误 ${timeline?.toolErrors ?? '—'} · 截断 ${timeline?.truncated ?? '—'}`}
+            title="LLM 调用轮次(与 AgentLoop 的 round 同口径)"
+          />
+          <BoardCard
+            label="token(入/出)"
+            value={
+              timeline !== null ? `${timeline.totalPrompt} / ${timeline.totalCompletion}` : '—'
+            }
+            sub={`缓存命中 ${cachePercent}`}
+            title="prompt / completion(provider 返回的真实用量);缓存命中 = cached/prompt"
+          />
+          <BoardCard
+            label="耗时"
+            value={wallLabel}
+            sub={`更新于 ${formatRelative(task.updatedAt)} · ${formatDateTime(task.createdAt)}`}
+            title="端到端墙钟(≈ = 由消息时间戳差近似)"
+          />
+          <div className="wb-card wb-card--budget" title="常驻区预算 D4 v3(表即常量):系统提示词+工具 schema+AGENTS.md+技能索引+记忆索引+repo map,逐字节稳定是 prompt cache 的前提">
+            <span className="wb-card__label">
+              上下文构成 · 常驻区预算 {budget?.residentBudgetTokens ?? 5750} tok
+            </span>
+            {budget !== null ? (
+              <div className="wb-budget">
+                {Object.entries(budget.caps).map(([name, cap]) => {
+                  const measured = budget.measured[name]
+                  const percent: number = Math.min(100, Math.round((measured ?? 0) / cap * 100))
+                  return (
+                    <div key={name} className="wb-budget__row" title={`${name}:实测 ${measured ?? '—'} / cap ${cap}`}>
+                      <span className="wb-budget__name">{name}</span>
+                      <span className="wb-budget__bar">
+                        <span className="wb-budget__fill" style={{ width: `${percent}%` }} />
+                      </span>
+                      <span className="wb-budget__num">{measured ?? '—'}/{cap}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <span className="wb-card__sub">预算表加载中…</span>
+            )}
+          </div>
+        </div>
+
+        {/* ============ 气泡流 ============ */}
+        <div className="wb-thread" ref={threadRef}>
+          {task.events.length === 0 ? (
+            <p className="wb-thread__empty">
+              {task.status === 'draft'
+                ? '在下方输入第一条消息,会话开始执行'
+                : '暂无回放'}
+            </p>
+          ) : (
+            task.events.map((event: TaskEvent): JSX.Element => {
+              if (event.kind === 'tool_call') {
+                return <ToolChip key={event.id} event={event} />
+              }
+              if (event.kind === 'note') {
+                return (
+                  <div key={event.id} className="wb-bubble wb-bubble--error">
+                    {event.text}
+                  </div>
+                )
+              }
+              if (event.role === 'user') {
+                return (
+                  <div key={event.id} className="wb-row wb-row--user">
+                    <div className="wb-bubble wb-bubble--user" title={formatDateTime(event.at)}>
+                      {event.text}
+                    </div>
+                  </div>
+                )
+              }
+              if (event.role === 'assistant') {
+                return (
+                  <div key={event.id} className="wb-row wb-row--assistant">
+                    <div className="wb-bubble wb-bubble--assistant" title={formatDateTime(event.at)}>
+                      {event.text}
+                    </div>
+                  </div>
+                )
+              }
+              return (
+                <div key={event.id} className="wb-toolrow">
+                  <span className="wb-toolrow__args">{event.text}</span>
+                </div>
+              )
+            })
+          )}
+          {isRunning || sending ? (
+            <div className="wb-typing">
+              <span className="wb-typing__dot" />
+              <span className="wb-typing__dot" />
+              <span className="wb-typing__dot" />
+              正在执行(sigma 同步一轮,完成后回放自动更新)
+            </div>
           ) : null}
         </div>
 
-        {task.description !== '' ? (
-          <div className="task-detail__desc-card">
-            <p className="task-detail__desc">{task.description}</p>
-          </div>
-        ) : null}
-
-        {task.status !== 'running' && task.status !== 'archived' ? (
-          <div className="task-detail__compose">
-            <textarea
-              className="task-detail__compose-input"
-              value={composeText}
-              rows={2}
-              placeholder={
-                task.status === 'draft'
-                  ? '发送首条消息,会话开始执行(Enter 发送,Shift+Enter 换行)'
-                  : '继续这条会话,Enter 发送(同步执行一轮,完成后回放自动更新)'
+        {/* ============ 底部输入 ============ */}
+        <div className="wb-composer">
+          <textarea
+            className="wb-composer__input"
+            value={composeText}
+            rows={2}
+            disabled={!canCompose}
+            placeholder={
+              canCompose
+                ? '输入提示词,Enter 发送(同步执行一轮,Shift+Enter 换行)'
+                : '正在执行,请等当前轮完成…'
+            }
+            onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void =>
+              setComposeText(event.target.value)
+            }
+            onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                handleSendCompose()
               }
-              onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void =>
-                setComposeText(event.target.value)
-              }
-              onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault()
-                  handleSendCompose()
-                }
-              }}
-            />
-            <div className="task-detail__compose-foot">
-              <span className="task-detail__compose-hint">
-                {sending
-                  ? '正在执行(同步一轮),完成后自动更新…'
-                  : '工具调用自动放行(L1 路径沙箱 + L2 影子快照在岗);审批确认 / 打断待接入 σ-server M2'}
-              </span>
-              <button
-                type="button"
-                className="task-detail__btn task-detail__btn--primary task-detail__compose-send"
-                disabled={!composeReady}
-                onClick={handleSendCompose}
-              >
-                发送
-              </button>
-            </div>
+            }}
+          />
+          <div className="wb-composer__foot">
+            <span className="wb-composer__hint">
+              工具调用自动放行(L1 路径沙箱 + L2 影子快照在岗)· 审批确认 / 打断待接入 σ-server
+              M2 · 数据与 CLI 同一份(~/.sigma/sessions)
+            </span>
+            <button
+              type="button"
+              className="wb-composer__send"
+              disabled={!canCompose}
+              onClick={handleSendCompose}
+              aria-label="发送"
+            >
+              <Send size={15} />
+            </button>
           </div>
-        ) : null}
-
-        {timeline !== null ? (
-          <div className="wb-metrics">
-            <h2 className="task-detail__section-title">运行时间线</h2>
-            <div className="wb-chips">
-              <MetricChip
-                label="轮数"
-                value={String(timeline.rounds.length)}
-                title="LLM 调用轮次(与 AgentLoop 的 round 同口径)"
-              />
-              <MetricChip
-                label="token"
-                value={`${timeline.totalPrompt} / ${timeline.totalCompletion}`}
-                title="prompt / completion 合计(provider 返回的真实用量)"
-              />
-              <MetricChip
-                label="缓存命中"
-                value={timeline.cacheRate !== null ? `${Math.round(timeline.cacheRate * 100)}%` : '—'}
-                title="cached / prompt(7.5 口径);无用量数据时不可用"
-              />
-              <MetricChip
-                label="工具错误"
-                value={String(timeline.toolErrors)}
-                title="执行失败的工具调用数(错误回给模型纠错)"
-              />
-              {timeline.truncated > 0 ? (
-                <MetricChip label="截断" value={String(timeline.truncated)} title="触发输出截断的调用数" />
-              ) : null}
-              {timeline.injected > 0 ? (
-                <MetricChip label="注入" value={String(timeline.injected)} title="steering / 信箱注入次数" />
-              ) : null}
-              {timeline.approvals.length > 0 ? (
-                <MetricChip
-                  label="审批"
-                  value={`${timeline.approvals.filter((a) => a.allowed).length}/${timeline.approvals.length}`}
-                  title="审批放行/总数"
-                />
-              ) : null}
-              <MetricChip
-                label="耗时"
-                value={timeline.wallSeconds !== null ? `${timeline.wallSeconds.toFixed(1)}s` : '—'}
-                title={timeline.wallApprox ? '由消息时间戳差近似(≈)' : '端到端墙钟'}
-              />
-              <MetricChip
-                label="trace"
-                value={timeline.hasTrace ? '在场' : '无(近似)'}
-                title="有无逐事件 trace 文件(P5-批次1 观测层)"
-              />
-            </div>
-            {timeline.rounds.length > 0 ? (
-              <ul className="wb-rounds">
-                {timeline.rounds.map((round) => (
-                  <li key={round.index} className="wb-round">
-                    <span className="wb-round__no">#{round.index}</span>
-                    <span className="wb-round__model">{round.model || '—'}</span>
-                    <span className="wb-round__tokens">
-                      {round.promptTokens}+{round.completionTokens}
-                      {round.cachedTokens > 0 ? `(${round.cachedTokens} 缓存)` : ''}
-                    </span>
-                    <span className="wb-round__latency">
-                      {round.latencyMs !== null ? `${round.latencyMs}ms${round.latencyApprox ? '≈' : ''}` : '—'}
-                    </span>
-                    <span className="wb-round__tools">
-                      {round.tools.map((tool, i) => (
-                        <span
-                          key={`${round.index}-${i}`}
-                          className={tool.ok ? 'wb-tool wb-tool--ok' : 'wb-tool wb-tool--bad'}
-                          title={`${tool.name}${tool.durationMs !== null ? ` · ${tool.durationMs}ms` : ''}`}
-                        >
-                          {tool.name}
-                        </span>
-                      ))}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-        ) : null}
-
-        <h2 className="task-detail__section-title">动态回放</h2>
-        <div className="timeline">
-          {task.events.length === 0 ? (
-            <p className="timeline__empty">暂无动态</p>
-          ) : (
-            <ul className="timeline__list">
-              {task.events.map((event: TaskEvent): JSX.Element => (
-                <li key={`${event.at}-${event.id}`} className="timeline__item">
-                  <span
-                    className="timeline__dot"
-                    style={{ backgroundColor: eventDotColor(event.kind, statusMeta.color) }}
-                  />
-                  <span className="timeline__text">{event.text}</span>
-                  <span className="timeline__time">{formatDateTime(event.at)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="task-detail__actions task-detail__actions--readonly">
-          <p className="task-detail__pending-note">
-            执行环(MVP)已接:消息经 sigma 真实跑一轮——断点续跑 / 影子快照 / trace 与 CLI 同源。
-            待接入:审批交互确认、打断、流式增量、自动化(σ-server M2/M3,见
-            sigma-frontend/docs/sigma-backend-api-design.md)。数据源 = ~/.sigma/sessions,与 CLI 同一份。
-          </p>
         </div>
       </div>
     </div>

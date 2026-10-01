@@ -34,6 +34,10 @@ export interface TaskEvent {
   kind: TaskEventKind
   text: string
   at: string
+  /** message 类事件的角色(user/assistant)——气泡分边;其它 kind 无此字段 */
+  role?: string
+  /** message 类事件里的工具调用名(tool_call 事件) */
+  tool?: string
 }
 
 export interface Task {
@@ -177,6 +181,17 @@ export interface TaskTimeline {
   rounds: TimelineRound[]
 }
 
+/**
+ * 常驻区预算表(D4 v3,"表即常量")——上下文构成看板的数据源。
+ * caps = 各分区上限;measured = 同口径实测锚点(键为中文分区名)。
+ */
+export interface WorkbenchBudget {
+  residentBudgetTokens: number
+  capsSum: number
+  caps: Record<string, number>
+  measured: Record<string, number>
+}
+
 export interface SigmaApiClient {
   readonly mode: 'mock' | 'http'
   ping(): Promise<PingInfo>
@@ -204,4 +219,6 @@ export interface SigmaApiClient {
    * 可选方法:mock 不实现。
    */
   addTaskMessage?(taskId: string, text: string): Promise<Task>
+  /** 常驻区预算表(上下文看板;可选方法,mock 不实现)。 */
+  getBudget?(): Promise<WorkbenchBudget>
 }

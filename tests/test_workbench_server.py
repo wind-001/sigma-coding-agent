@@ -141,7 +141,8 @@ def test_task_mapping_from_real_session(sessions_root: Path) -> None:
     assert task["projectId"] == SERVER.PROJECT_ID
     kinds = [event["kind"] for event in task["events"]]
     assert kinds == ["message", "message"]
-    assert task["events"][0]["text"].startswith("用户:")
+    assert task["events"][0]["role"] == "user"
+    assert task["events"][0]["text"] == "修一下 off-by-one\n第二行"
 
 
 def test_dangling_tool_call_derives_failed(sessions_root: Path) -> None:
@@ -387,9 +388,9 @@ def test_execution_loop_create_and_run(http_server: tuple[str, Path], execution_
     code, final = _post(base, f"/api/v1/tasks/{created['id']}/messages", {"text": "你好"})
     assert code == 200
     assert final["status"] == "completed"
-    texts = [event["text"] for event in final["events"]]
-    assert any(t.startswith("用户:你好") for t in texts)
-    assert any("我是 sigma" in t for t in texts)
+    roles = [(event.get("role"), event["text"]) for event in final["events"] if event["kind"] == "message"]
+    assert any(role == "user" and "你好" in text for role, text in roles)
+    assert any(role == "assistant" and "我是 sigma" in text for role, text in roles)
     # 会话事实已落盘(与 CLI 同一份 JSONL);时间线拿到真实用量
     assert (sessions_root / f"{created['id']}.jsonl").is_file()
     code, timeline = _get(base, f"/api/v1/tasks/{created['id']}/timeline")

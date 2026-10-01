@@ -177,10 +177,10 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         showToast(error instanceof Error ? error.message : String(error))
       }
     }
-    /** 最小执行环:追加消息 → 同步跑一轮 → 载荷替换(乐观置 running)。 */
+    /** 最小执行环:追加消息 → 同步跑一轮 → 载荷替换(乐观置 running)。
+     * ⚠ 以 `apiClient.addTaskMessage(...)` 方法调用形式执行——取出来调会丢 this。 */
     const send = async (taskId: string, text: string): Promise<string> => {
-      const loader = apiClient.addTaskMessage
-      if (loader === undefined) {
+      if (apiClient.addTaskMessage === undefined) {
         throw new Error('当前后端不支持执行(桥接服务过旧或处于 mock 模式)')
       }
       const trimmed: string = text.trim()
@@ -190,7 +190,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         dispatch({ type: 'taskReplaced', task: { ...existing, status: 'running' } })
       }
       showToast('正在执行(执行完自动更新)…')
-      const final = await loader(taskId, trimmed)
+      const final = await apiClient.addTaskMessage(taskId, trimmed)
       dispatch({ type: 'taskReplaced', task: final })
       return final.status === 'completed' ? '本轮执行完成' : `本轮结束:${final.status}`
     }

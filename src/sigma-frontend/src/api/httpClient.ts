@@ -11,6 +11,7 @@ import {
   type TaskFilter,
   type TaskPatch,
   type TaskTimeline,
+  type WorkbenchBudget,
 } from './client'
 
 /**
@@ -126,5 +127,9 @@ export class HttpSigmaClient implements SigmaApiClient {
       method: 'POST',
       body: JSON.stringify({ text }),
     })
+  }
+
+  getBudget(): Promise<WorkbenchBudget> {
+    return this.request<WorkbenchBudget>('/budget')
   }
 }

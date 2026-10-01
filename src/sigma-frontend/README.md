@@ -28,8 +28,9 @@ cd src/sigma-frontend && npm ci && npm run dev   # http://localhost:5173
 | 前端功能 | 状态 | 数据来源 |
 | --- | --- | --- |
 | 会话列表(标题/状态/时间) | ✅ 真实 | `session_previews` + 整树解析;状态由 trace 末轮落点/悬空工具调用推导 |
-| 会话详情:动态回放 | ✅ 真实 | 会话 JSONL 逐条映射(message / tool_call / 错误 note) |
-| 会话详情:运行时间线 | ✅ 真实 | `build_timeline`(轮次/token/缓存命中率/工具错误/审批/耗时) |
+| **看板:运行指标** | ✅ 真实 | `build_timeline`(轮数/token/缓存命中率/工具错误/截断/耗时) |
+| **看板:上下文构成** | ✅ 真实 | 常驻区预算表(D4 v3,`resident_caps` 表即常量:7 分区 cap+实测,总额 5750) |
+| 会话详情:气泡流回放 | ✅ 真实 | 会话 JSONL 逐条映射(user/assistant 气泡、tool_call chip、错误行) |
 | **新建会话 + 发消息(真执行)** | ✅ 真实 | `POST /tasks` 建草稿;`POST /tasks/{id}/messages` **同步跑一轮**——`run_task` 驱动 InteractiveSession,落盘/断点续跑/影子快照/trace 与 CLI 同源 |
 | 续聊(已完成会话追加消息) | ✅ 真实 | 同上,`SessionTree.from_store` 续跑 |
 | 插件市场(清单) | ✅ 真实 | 内置工具(`default_registry`)+ 技能扫描 |
