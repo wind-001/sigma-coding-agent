@@ -7,6 +7,7 @@ import {
   CirclePlus,
   Folder,
   FolderOpen,
+  FolderPlus,
   Hash,
   LayoutGrid,
   ListFilter,
@@ -34,7 +35,7 @@ import './sidebar.css'
    静态配置
    ============================================================ */
 
-type NavId = 'new-task' | 'search' | 'automations' | 'plugins'
+type NavId = 'new-task' | 'search' | 'import-ws' | 'automations' | 'plugins'
 
 interface NavItemMeta {
   id: NavId
@@ -47,6 +48,7 @@ interface NavItemMeta {
 const NAV_ITEMS: readonly NavItemMeta[] = [
   { id: 'new-task', label: '新建任务', icon: CirclePlus, shortcut: 'Ctrl+N', title: '新建任务(Ctrl+N)' },
   { id: 'search', label: '搜索', icon: Search, shortcut: 'Ctrl+K', title: '搜索(Ctrl+K)' },
+  { id: 'import-ws', label: '导入工作区', icon: FolderPlus, title: '导入工作区(输入绝对路径)' },
   { id: 'automations', label: '自动化', icon: CalendarClock, title: '自动化' },
   { id: 'plugins', label: '插件市场', icon: LayoutGrid, title: '插件市场' },
 ]
@@ -304,6 +306,12 @@ export default function Sidebar(): JSX.Element {
       actions.newTaskDraft()
     } else if (id === 'search') {
       actions.togglePalette()
+    } else if (id === 'import-ws') {
+      // 浏览器没有目录选择器:用绝对路径导入(桥接端校验目录存在)。
+      const repoPath = window.prompt('输入工作区的绝对路径(如 D:\\projects\\demo):')
+      if (repoPath !== null && repoPath.trim() !== '') {
+        void actions.importWorkspace(repoPath.trim())
+      }
     } else if (id === 'automations') {
       actions.setOverlay('automations')
     } else {

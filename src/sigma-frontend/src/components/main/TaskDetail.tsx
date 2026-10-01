@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Send } from 'lucide-react'
+import { ArrowLeft, ArrowUp, Send, X } from 'lucide-react'
 import {
+  ACCESS_OPTIONS,
   apiClient,
   STATUS_META,
   type Task,
   type TaskEvent,
+  type TaskQueues,
   type TaskTimeline,
 } from '../../api'
 import { formatDateTime } from '../../lib/time'
@@ -19,13 +21,37 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-/** 气泡流里的工具调用 chip。 */
+/** 工具调用行(图二语义):工具名 + 结果状态 + 耗时,与正文/思考有区分度。 */
 function ToolChip({ event }: { event: TaskEvent }): JSX.Element {
+  const statusLabel =
+    event.status === 'ok' ? '已完成' : event.status === 'error' ? '失败' : '未完成'
+  const statusClass =
+    event.status === 'ok'
+      ? 'wb-toolrow__status--ok'
+      : event.status === 'error'
+        ? 'wb-toolrow__status--bad'
+        : 'wb-toolrow__status--pending'
+  const duration =
+    event.durationMs !== null && event.durationMs !== undefined
+      ? ` · ${(event.durationMs / 1000).toFixed(1)}s`
+      : ''
   return (
     <div className="wb-toolrow" title={event.at}>
       <span className="wb-toolrow__dot" />
       <span className="wb-toolrow__name">{event.tool ?? 'tool'}</span>
+      <span className={`wb-toolrow__status ${statusClass}`}>{statusLabel}</span>
       <span className="wb-toolrow__args">{event.text}</span>
+      <span className="wb-toolrow__dur">{duration}</span>
+    </div>
+  )
+}
+
+/** 思考行:模型思考增量,弱化展示(图二的"思考 · 持续了 N 秒"位)。 */
+function ThinkingRow({ event }: { event: TaskEvent }): JSX.Element {
+  return (
+    <div className="wb-thinking" title={event.text}>
+      <span className="wb-thinking__label">思考</span>
+      <span className="wb-thinking__text">{event.text}</span>
     </div>
   )
 }
@@ -36,27 +62,27 @@ interface TaskDetailProps {
 }
 
 /**
- * 会话工作区:**这里只出现对话**。
- * - 气泡流(用户右 / 助手左,工具调用 chip 行)占满主区,自动滚底;
- * - 顶部只有返回 + 标题 + 状态小徽章 + 会话 id;
- * - 运行指标(轮数/token/缓存/耗时)以**小字**放在底部输入框提示行的右端——
- *   不再占独立看板(星辰 2026-10-01:图二信息小字放图三位置)。
- *
- * 数据源 = 真实 sigma(会话 JSONL / build_timeline),与 CLI 同源。
+ * 会话工作区:这里只出现对话。
+ * - 气泡流(用户右 / 助手左 / 工具行带状态耗时 / 思考弱化行)占满主区;
+ * - 执行中:**排队输入**(默认 follow-up,完成后自动执行)+ 队列管理
+ *   (「立即」= 升级为 steering 打断注入,图一)+ **审批卡**(变更前确认,图三);
+ * - 运行指标以小字放输入框提示行右端。
+ * 数据源 = 真实 sigma(会话 JSONL / build_timeline / steer & follow-up 队列)。
  */
 export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const state = useAppState()
   const actions = useAppActions()
   const [timeline, setTimeline] = useState<TaskTimeline | null>(null)
+  const [queues, setQueues] = useState<TaskQueues | null>(null)
   const [composeText, setComposeText] = useState<string>('')
   const [sending, setSending] = useState<boolean>(false)
   const composeReady: boolean = composeText.trim().length > 0 && !sending
   const threadRef = useRef<HTMLDivElement | null>(null)
 
   const isRunning: boolean = task.status === 'running'
-  const canCompose: boolean = task.status !== 'archived' && !(sending || isRunning)
+  const canCompose: boolean = task.status !== 'archived' && !sending
 
-  // 运行时间线(底部小字指标的数据源;可选方法,mock 未实现时静默跳过)。
+  // 时间线(底部小字指标)+ 队列/审批快照(执行中管理)。
   // ⚠ 必须以 `apiClient.xxx?.()` 形式调用:取出来再调会丢 this(实测白屏)。
   useEffect((): (() => void) => {
     let cancelled = false
@@ -73,8 +99,29 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
     return (): void => {
       cancelled = true
     }
-    // 依赖 updatedAt:每轮执行完(载荷替换)自动重取,底部小字指标跟着翻新。
   }, [task.id, task.updatedAt])
+
+  useEffect((): void | (() => void) => {
+    const poller = apiClient.getTaskQueues
+    if (!isRunning || poller === undefined) {
+      setQueues(null)
+      return undefined
+    }
+    let cancelled = false
+    const poll = (): void => {
+      poller(task.id)
+        .then((info: TaskQueues): void => {
+          if (!cancelled) setQueues(info)
+        })
+        .catch((): void => undefined)
+    }
+    poll()
+    const timer = setInterval(poll, 1000)
+    return (): void => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [task.id, isRunning, task.updatedAt])
 
   // 新回放到达(轮次变化)时滚到底部。
   useEffect((): void => {
@@ -82,20 +129,27 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
     if (node !== null) {
       node.scrollTop = node.scrollHeight
     }
-  }, [task.events.length, task.status])
+  }, [task.events.length, task.status, queues?.followups.length, queues?.approvals.length])
 
   const project = state.projects.find((p): boolean => p.id === task.projectId)
   const projectName: string = project?.name ?? '未知工作区'
   const statusMeta = STATUS_META[task.status]
+  const accessLabel: string =
+    ACCESS_OPTIONS.find((option): boolean => option.id === task.access)?.label ?? ''
 
   const handleSendCompose = (): void => {
     if (!composeReady) return
     const text = composeText
+    setComposeText('')
+    if (isRunning) {
+      // 执行中:默认排队(图一),完成后自动执行;「立即」在队列行上。
+      void actions.queueMessage(task.id, text)
+      return
+    }
     setSending(true)
     void (async (): Promise<void> => {
       try {
         await actions.sendMessage(task.id, text)
-        setComposeText('')
       } finally {
         setSending(false)
       }
@@ -117,6 +171,24 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
         ]
           .filter((part): part is string => part !== null)
           .join(' · ')
+
+  const queuedItems: { kind: 'followup' | 'steering'; index: number; text: string }[] = [
+    ...(queues?.steering ?? []).map(
+      (text: string, index: number): { kind: 'followup' | 'steering'; index: number; text: string } => ({
+        kind: 'steering',
+        index,
+        text,
+      }),
+    ),
+    ...(queues?.followups ?? []).map(
+      (text: string, index: number): { kind: 'followup' | 'steering'; index: number; text: string } => ({
+        kind: 'followup',
+        index,
+        text,
+      }),
+    ),
+  ]
+  const pendingApprovals = queues?.approvals ?? []
 
   return (
     <div className="task-detail">
@@ -141,6 +213,9 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             <span className="status-badge__dot" style={{ backgroundColor: statusMeta.color }} />
             <span className="status-badge__text">{statusMeta.label}</span>
           </span>
+          {accessLabel !== '' ? (
+            <span className="task-detail__access">{accessLabel}</span>
+          ) : null}
           <span className="task-detail__meta-id" title={task.id}>
             {task.id}
           </span>
@@ -159,12 +234,8 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               if (event.kind === 'tool_call') {
                 return <ToolChip key={event.id} event={event} />
               }
-              if (event.kind === 'note') {
-                return (
-                  <div key={event.id} className="wb-bubble wb-bubble--error">
-                    {event.text}
-                  </div>
-                )
+              if (event.kind === 'thinking') {
+                return <ThinkingRow key={event.id} event={event} />
               }
               if (event.role === 'user') {
                 return (
@@ -201,16 +272,85 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           ) : null}
         </div>
 
-        {/* ============ 底部输入(指标以小字在提示行右端) ============ */}
+        {/* ============ 审批卡(变更前确认环,图三) ============ */}
+        {pendingApprovals.length > 0 ? (
+          <div className="wb-approvals">
+            {pendingApprovals.map((item) => (
+              <div key={item.id} className="wb-approval">
+                <div className="wb-approval__main">
+                  <span className="wb-approval__tool">{item.tool}</span>
+                  <span className="wb-approval__summary" title={item.summary}>{item.summary}</span>
+                </div>
+                <div className="wb-approval__actions">
+                  <button
+                    type="button"
+                    className="wb-approval__btn wb-approval__btn--deny"
+                    onClick={(): void => void actions.decideApproval(task.id, item.id, 'deny')}
+                  >
+                    拒绝
+                  </button>
+                  <button
+                    type="button"
+                    className="wb-approval__btn wb-approval__btn--approve"
+                    onClick={(): void => void actions.decideApproval(task.id, item.id, 'approve')}
+                  >
+                    批准
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {/* ============ 排队区(图一:默认排队,「立即」打断注入) ============ */}
+        {isRunning && queuedItems.length > 0 ? (
+          <div className="wb-queue">
+            {queuedItems.map((item) => (
+              <div key={`${item.kind}-${item.index}`} className="wb-queue__row">
+                {item.kind === 'steering' ? (
+                  <span className="wb-queue__tag">已注入</span>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="wb-queue__now"
+                      title="立即打断注入(下一轮模型调用前生效)"
+                      onClick={(): void => {
+                        void actions.steerTask(task.id, item.text)
+                        void actions.removeQueued(task.id, 'followup', item.index)
+                      }}
+                    >
+                      <ArrowUp size={13} />
+                      立即
+                    </button>
+                    <button
+                      type="button"
+                      className="wb-queue__del"
+                      aria-label="删除排队项"
+                      onClick={(): void => void actions.removeQueued(task.id, 'followup', item.index)}
+                    >
+                      <X size={13} />
+                    </button>
+                  </>
+                )}
+                <span className="wb-queue__text">{item.text}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {/* ============ 底部输入(指标小字在提示行右端) ============ */}
         <div className="wb-composer">
           <textarea
             className="wb-composer__input"
             value={composeText}
             rows={2}
-            disabled={!canCompose}
+            disabled={task.status === 'archived'}
             placeholder={
               canCompose
-                ? '输入提示词,Enter 发送(流式输出,Shift+Enter 换行)'
+                ? isRunning
+                  ? '继续输入以排队后续修改(Enter 排队,完成后自动执行)'
+                  : '输入提示词,Enter 发送(流式输出,Shift+Enter 换行)'
                 : '正在执行,请等当前轮完成…'
             }
             onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void =>
@@ -225,8 +365,8 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           />
           <div className="wb-composer__foot">
             <span className="wb-composer__hint">
-              工具调用自动放行(L1 路径沙箱 + L2 影子快照在岗)· 审批确认 / 打断待接入 σ-server
-              M2 · 数据与 CLI 同一份(~/.sigma/sessions)
+              工具调用受权限模式约束(默认完全访问)· 审批确认 / 打断 / 排队经真实 sigma
+              队列 · 数据与 CLI 同一份(~/.sigma/sessions)
             </span>
             {metrics !== null ? (
               <span className="wb-composer__metrics" title="本会话运行指标(观测层 timeline)">
@@ -236,9 +376,9 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             <button
               type="button"
               className="wb-composer__send"
-              disabled={!canCompose}
+              disabled={!composeReady && !isRunning}
               onClick={handleSendCompose}
-              aria-label="发送"
+              aria-label={isRunning ? '排队' : '发送'}
             >
               <Send size={15} />
             </button>

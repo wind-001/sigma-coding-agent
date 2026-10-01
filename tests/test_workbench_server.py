@@ -87,6 +87,9 @@ def _load_server_module() -> ModuleType:
 
 SERVER = _load_server_module()
 
+#: 测试用的主工作区(签名要求一个存在目录,不参与断言)
+SERVER_PRIMARY = Path(__file__).resolve().parent.parent
+
 
 def _assistant(
     *, model: str = "test-model", content: list[Any] | None = None
@@ -132,7 +135,7 @@ def test_task_mapping_from_real_session(sessions_root: Path) -> None:
             _assistant(),
         ],
     )
-    tasks = SERVER._list_task_payloads(sessions_root)
+    tasks = SERVER._list_task_payloads(SERVER_PRIMARY, sessions_root)
     assert len(tasks) == 1
     task = tasks[0]
     assert task["id"] == "s-good"
@@ -161,7 +164,7 @@ def test_dangling_tool_call_derives_failed(sessions_root: Path) -> None:
             ),
         ],
     )
-    (tasks,) = [SERVER._list_task_payloads(sessions_root)]
+    (tasks,) = [SERVER._list_task_payloads(SERVER_PRIMARY, sessions_root)]
     assert tasks[0]["status"] == "failed"
 
 
@@ -181,23 +184,25 @@ def test_answered_tool_calls_derive_completed(sessions_root: Path) -> None:
             _assistant(),
         ],
     )
-    (tasks,) = [SERVER._list_task_payloads(sessions_root)]
+    (tasks,) = [SERVER._list_task_payloads(SERVER_PRIMARY, sessions_root)]
     assert tasks[0]["status"] == "completed"
-    # 事件里有 tool_call,错误结果不产生 ✗ note。
-    kinds = [event["kind"] for event in tasks[0]["events"]]
-    assert "tool_call" in kinds
-    assert kinds.count("note") == 0
+    # 工具调用与结果配对:status=ok + durationMs(时间戳差 ≈ 口径)
+    tools = [event for event in tasks[0]["events"] if event["kind"] == "tool_call"]
+    assert len(tools) == 1 and tools[0]["status"] == "ok"
+    assert tools[0]["tool"] == "grep"
+    assert isinstance(tools[0]["durationMs"], int)
 
 
-def test_tool_error_becomes_note_event(sessions_root: Path) -> None:
+def test_tool_error_marked_in_tool_event(sessions_root: Path) -> None:
+    """失败的工具调用:chip 事件带 status=error(前端红叉),不再另发 note。"""
     call = ToolCallBlock(id="call-1", name="bash", arguments={})
     result = ToolResultAgentMessage.from_result(
         call, ToolResult(content=[TextBlock(text="boom")], is_error=True), timestamp=_TS
     )
     _write_session(sessions_root, "s-err", [result])
-    (tasks,) = [SERVER._list_task_payloads(sessions_root)]
-    notes = [event for event in tasks[0]["events"] if event["kind"] == "note"]
-    assert len(notes) == 1 and "✗ bash" in notes[0]["text"]
+    (tasks,) = [SERVER._list_task_payloads(SERVER_PRIMARY, sessions_root)]
+    tools = [event for event in tasks[0]["events"] if event["kind"] == "tool_call"]
+    assert len(tools) == 1 and tools[0]["status"] == "error"
 
 
 def test_broken_session_skipped_not_fatal(sessions_root: Path) -> None:
@@ -226,13 +231,13 @@ def test_broken_session_skipped_not_fatal(sessions_root: Path) -> None:
     }
     broken.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
 
-    tasks = SERVER._list_task_payloads(sessions_root)
+    tasks = SERVER._list_task_payloads(SERVER_PRIMARY, sessions_root)
     ids = [task["id"] for task in tasks]
     assert ids == ["s-good"]
 
 
 def test_missing_session_returns_null(sessions_root: Path) -> None:
-    assert SERVER._task_payload_for_id(sessions_root, "nope") is None
+    assert SERVER._task_payload_for_id(SERVER_PRIMARY, sessions_root, "nope") is None
 
 
 # ---------------------------------------------------------------------------
@@ -277,12 +282,20 @@ def test_plugins_payload_builtin_and_skills(tmp_path: Path) -> None:
     assert builtin >= {"bash", "read"}
 
 
-def test_project_payload_reads_branch(tmp_path: Path) -> None:
-    (tmp_path / ".git" / "HEAD").parent.mkdir(parents=True)
-    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-    project = SERVER._project_payload(tmp_path)
-    assert project["branch"] == "main"
-    assert project["repoPath"] == str(tmp_path)
+def test_projects_registry_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """导入工作区:注册表落盘、去重、主工作区恒在列、坏路径 400。"""
+    monkeypatch.setattr(SERVER, "_REGISTRY_PATH", tmp_path / "registry.json")
+    other = tmp_path / "other-ws"
+    other.mkdir()
+    code, created = SERVER._register_project(tmp_path, {"repoPath": str(other)})
+    assert code == 200 and created["name"] == "other-ws"
+    code2, again = SERVER._register_project(tmp_path, {"repoPath": str(other)})
+    assert code2 == 200 and again["id"] == created["id"]
+    code3, _detail = SERVER._register_project(tmp_path, {"repoPath": str(tmp_path / "nope")})
+    assert code3 == 400
+    projects = SERVER._all_projects(tmp_path)
+    ids = [project["id"] for project in projects]
+    assert ids.count(SERVER.PROJECT_ID) == 1 and created["id"] in ids
 
 
 def test_memory_payload(tmp_path: Path) -> None:

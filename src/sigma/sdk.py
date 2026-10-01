@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Literal
 
 from sigma.config import settings
 from sigma.prompts.system_prompt import (
@@ -729,6 +729,33 @@ class InteractiveSession:
 
     def pop_followup(self) -> str:
         return self._followups.pop(0)
+
+    def pending_steering(self) -> list[str]:
+        """Steering 队列当前文本(副本)。工作台/队列管理要能**看见**排队的
+        指导才能管理它——只读,不改变队列。"""
+        texts: list[str] = []
+        for message in self._steering:
+            if isinstance(message, LlmMessageWrapper):
+                content = message.message.content
+                texts.append(content if isinstance(content, str) else str(content))
+        return texts
+
+    def pending_followups(self) -> list[str]:
+        """Follow-up 等待队列当前文本(副本)。同 :meth:`pending_steering`。"""
+        return list(self._followups)
+
+    def drop_queued(self, *, kind: Literal["steering", "followup"], index: int) -> bool:
+        """移除等待队列中的一项(工作台队列管理,按显示下标)。
+
+        下标越界返回 False 不抛——队列管理是低风险操作,调用方按返回值
+        刷新即可。并发边界:与执行线程的 drain 之间存在窗口,靠 GIL 的
+        pop 原子性把竞态收敛成"偶发删错一项"的低风险,单用户工作台可接受。
+        """
+        target = self._steering if kind == "steering" else self._followups
+        if 0 <= index < len(target):
+            target.pop(index)
+            return True
+        return False
 
     def reload_tools(self, source: str | None = None) -> list[ReloadReport]:
         """热重载扩展工具并重建常驻区（详规 §2/§3；SDK 公开方法，评测 B3 臂用）。

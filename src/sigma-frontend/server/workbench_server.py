@@ -34,6 +34,8 @@ import asyncio
 import json
 import os
 import threading
+import uuid
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -42,17 +44,25 @@ from urllib.parse import parse_qs
 from sigma import __version__
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
 from sigma.config.settings import resolve_api_key
-from sigma.events.lifecycle import HookEvent, TextChunk
-from sigma.hooks.base import BaseHook
+from sigma.events.lifecycle import ApprovalDecision, HookEvent, TextChunk
+from sigma.hooks.base import ApprovalHook, BaseHook
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
+from sigma.prompts.system_prompt import SYSTEM_PROMPT
 from sigma.providers.anthropic.provider import AnthropicProvider
 from sigma.providers.base import BaseProvider
-from sigma.providers.messages import AssistantMessage, TextBlock, ToolCallBlock, UserMessage
+from sigma.providers.messages import (
+    AssistantMessage,
+    ThinkingBlock,
+    TextBlock,
+    ToolCallBlock,
+    UserMessage,
+)
 from sigma.providers.openai.provider import OpenAICompatProvider
 from sigma.providers.registry import builtin_providers
 from sigma.providers.stamps import now as _now_stamp
-from sigma.sdk import run_task
+from sigma.sdk import InteractiveSession
+from sigma.security.approval import analyze_call
 from sigma.sessions.sessions import (
     TRACE_SUFFIX,
     new_session_id,
@@ -90,8 +100,255 @@ _RUNNING: set[str] = set()
 #: pieces 由 TextChunk 钩子订阅者逐块追加("逐块透传,不聚合"——聚合了就没流式了)。
 _DELTAS: dict[str, dict[str, Any]] = {}
 _DELTAS_LOCK = threading.Lock()
+#: 持久会话(每任务一个):steering/follow-up 队列与断点续跑都要求
+#: **同一个 InteractiveSession 跨轮复用**——run_task 每次新建会话做不到。
+_SESSIONS: dict[str, InteractiveSession] = {}
+_SESSIONS_LOCK = threading.Lock()
+#: 待审批项:task_id → [{id, tool, summary, event, decision, reason}]。
+_APPROVALS: dict[str, list[dict[str, Any]]] = {}
+_APPROVALS_LOCK = threading.Lock()
 #: 测试注入点:提供假 provider(否则按 sigma 配置真构造)。
 _PROVIDER_FACTORY: Callable[[], BaseProvider] | None = None
+
+#: 工作区项目注册表(用户级,仓库外):二级工作区 + 会话→项目归属索引。
+#: sigma 的会话目录是全局扁平的(~/.sigma/sessions),会话本身不记工作区——
+#: 归属由工作台在执行时记下,导入前的历史会话归入主工作区(如实说明)。
+_REGISTRY_PATH = Path.home() / ".sigma" / "workbench-projects.json"
+
+#: 计划模式追加的系统提示词段(与 L3 审批的写类拒绝配合:
+#: 模型先出计划,用户看完切回其他模式再执行)。
+_PLAN_INSTRUCTION = (
+    "【计划模式】先输出完整计划(要改哪些文件、每一步做什么、怎么验证),"
+    "**不要调用 write/edit/bash 执行任何修改**;等用户切换模式后再动手。"
+)
+
+#: 各权限模式的提示行(前端下拉与这里同词)。
+ACCESS_MODES: dict[str, str] = {
+    "full": "完全访问",
+    "auto": "自动编辑",
+    "confirm": "变更前确认",
+    "plan": "计划模式",
+    "readonly": "只读",
+}
+
+#: 写类工具(readonly/plan 模式拒绝的对象)。
+_WRITE_TOOLS = frozenset({"write", "edit", "bash", "multi_agent"})
+
+
+def _registry_read() -> dict[str, Any]:
+    if _REGISTRY_PATH.is_file():
+        try:
+            data = json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}  # 注册表坏了按空处理(它只是索引,不是审计事实)
+    return {}
+
+
+def _registry_write(reg: dict[str, Any]) -> None:
+    _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _REGISTRY_PATH.write_text(
+        json.dumps(reg, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _all_projects(primary: Path) -> list[dict[str, Any]]:
+    """主工作区(服务启动时的 workspace)+ 用户导入的二级工作区。"""
+    reg = _registry_read()
+    projects: list[dict[str, Any]] = [
+        {
+            "id": PROJECT_ID,
+            "name": primary.name or "sigma",
+            "repoPath": str(primary),
+            "branch": "",
+            "createdAt": "",
+        }
+    ]
+    for entry in reg.get("projects", []):
+        if entry.get("repoPath") == str(primary):
+            continue  # 主工作区已在列
+        projects.append(
+            {
+                "id": entry.get("id", ""),
+                "name": entry.get("name", ""),
+                "repoPath": entry.get("repoPath", ""),
+                "branch": "",
+                "createdAt": entry.get("createdAt", ""),
+            }
+        )
+    return projects
+
+
+def _register_project(primary: Path, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """导入工作区:校验目录存在,去重后写入注册表。"""
+    repo = str(body.get("repoPath") or "").strip().strip('"')
+    if repo == "":
+        return 400, {"detail": "repoPath 必填(工作区绝对路径)"}
+    path = Path(repo)
+    if not path.is_dir():
+        return 400, {"detail": f"目录不存在:{repo}"}
+    reg = _registry_read()
+    projects: list[dict[str, Any]] = list(reg.get("projects", []))
+    for entry in projects:
+        if entry.get("repoPath") == str(path):
+            return 200, {"id": entry["id"], "name": entry["name"], "repoPath": str(path), "branch": "", "createdAt": entry.get("createdAt", "")}
+    project_id = "proj-" + uuid.uuid4().hex[:8]
+    entry = {
+        "id": project_id,
+        "name": str(body.get("name") or "").strip() or path.name,
+        "repoPath": str(path),
+        "createdAt": _now_stamp(),
+    }
+    projects.append(entry)
+    reg["projects"] = projects
+    _registry_write(reg)
+    return 200, {"id": project_id, "name": entry["name"], "repoPath": str(path), "branch": "", "createdAt": entry["createdAt"]}
+
+
+def _project_by_id(primary: Path, project_id: str) -> dict[str, Any] | None:
+    for project in _all_projects(primary):
+        if project["id"] == project_id:
+            return project
+    return None
+
+
+def _session_project_id(primary: Path, session_id: str) -> str:
+    """会话归属:执行时记入注册表索引;无记录的历史会话归主工作区(如实)。"""
+    reg = _registry_read()
+    index: dict[str, str] = reg.get("sessions", {})
+    return index.get(session_id, PROJECT_ID)
+
+
+def _index_session(session_id: str, project_id: str) -> None:
+    reg = _registry_read()
+    index: dict[str, str] = dict(reg.get("sessions", {}))
+    index[session_id] = project_id
+    reg["sessions"] = index
+    _registry_write(reg)
+
+
+class _HttpApprovalGate(ApprovalHook):
+    """HTTP 审批环(M2 切片):待确认项入列表,前端决策唤醒(线程 Event)。
+
+    模式映射(与前端 ACCESS_OPTIONS 同词,以 sigma 现有能力为核心):
+    - **full 完全访问**:全部放行(现状行为);
+    - **auto 自动编辑**:危险 bash(analyze_call 命中)才确认,编辑自动;
+    - **confirm 变更前确认**:写类工具与危险 bash 都确认,只读放行;
+    - **plan 计划模式**:写类一律拒(提示先出计划),配合系统提示词计划段;
+    - **readonly 只读**:写类一律拒。
+    审批等待用 ``asyncio.to_thread(event.wait)``——不阻塞执行循环。
+    """
+
+    name = "workbench-approval"
+
+    def __init__(self, mode: str, task_id: str, workspace: Path) -> None:
+        self._mode = mode if mode in ACCESS_MODES else "full"
+        self._task_id = task_id
+        self._workspace = workspace
+
+    def _ask(self, name: str, arguments: dict[str, Any]) -> ApprovalDecision:
+        request_id = uuid.uuid4().hex[:8]
+        entry: dict[str, Any] = {
+            "id": request_id,
+            "tool": name,
+            "summary": _clip(json.dumps(arguments, ensure_ascii=False), 220),
+            "event": threading.Event(),
+            "decision": "deny",
+            "reason": "等待审批超时(300s),自动拒绝",
+        }
+        with _APPROVALS_LOCK:
+            _APPROVALS.setdefault(self._task_id, []).append(entry)
+        got = entry["event"].wait(300)
+        with _APPROVALS_LOCK:
+            pending = _APPROVALS.get(self._task_id, [])
+            if entry in pending:
+                pending.remove(entry)
+        if not got:
+            return ApprovalDecision(allowed=False, reason=entry["reason"])
+        if entry["decision"] == "approve":
+            return ApprovalDecision(allowed=True)
+        return ApprovalDecision(
+            allowed=False,
+            reason=str(entry.get("reason") or "已在工作台拒绝"),
+        )
+
+    async def approve(
+        self, name: str, arguments: dict[str, Any], call_id: str
+    ) -> ApprovalDecision:
+        mode = self._mode
+        if mode == "full":
+            return ApprovalDecision(allowed=True)
+        if mode == "readonly":
+            if name in _WRITE_TOOLS:
+                return ApprovalDecision(
+                    allowed=False, reason="只读模式:写类工具被拒(工作台)"
+                )
+            return ApprovalDecision(allowed=True)
+        if mode == "plan":
+            if name in _WRITE_TOOLS:
+                return ApprovalDecision(
+                    allowed=False,
+                    reason="计划模式:先给出计划,不要执行修改;切回其他模式后再执行",
+                )
+            return ApprovalDecision(allowed=True)
+        findings = analyze_call(name, arguments, self._workspace)
+        if mode == "auto":
+            if findings:
+                return await asyncio.to_thread(self._ask, name, arguments)
+            return ApprovalDecision(allowed=True)
+        # confirm:写类工具与危险调用都要确认
+        if name in _WRITE_TOOLS or findings:
+            return await asyncio.to_thread(self._ask, name, arguments)
+        return ApprovalDecision(allowed=True)
+
+
+def _decide_approval(task_id: str, request_id: str, decision: str) -> bool:
+    """前端审批决策:找到待确认项,写入结论并唤醒执行线程。"""
+    with _APPROVALS_LOCK:
+        for entry in _APPROVALS.get(task_id, []):
+            if entry["id"] == request_id:
+                entry["decision"] = "approve" if decision == "approve" else "deny"
+                if decision != "approve":
+                    entry["reason"] = "已在工作台拒绝"
+                entry["event"].set()
+                return True
+    return False
+
+
+def _pending_approvals(task_id: str) -> list[dict[str, str]]:
+    with _APPROVALS_LOCK:
+        pending = list(_APPROVALS.get(task_id, []))
+    return [
+        {"id": e["id"], "tool": e["tool"], "summary": e["summary"]} for e in pending
+    ]
+
+
+def _session_of(task_id: str) -> InteractiveSession | None:
+    with _SESSIONS_LOCK:
+        return _SESSIONS.get(task_id)
+
+
+def _queue_op(task_id: str, op: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """队列操作(图一语义):steer=「立即」打断注入;queue=默认排队;
+    queue-remove=删除排队项。会话尚未创建(没执行过)时无队列可操作。"""
+    text = str(body.get("text") or "").strip()
+    if op in ("steer", "queue") and text == "":
+        return 400, {"detail": "内容不能为空"}
+    session = _session_of(task_id)
+    if session is None:
+        return 409, {"detail": "会话尚未开始执行(发第一条消息后再使用队列)"}
+    if op == "steer":
+        session.submit_steering(text)
+        return 200, {"ok": True, "steered": True}
+    if op == "queue":
+        session.submit_followup(text)
+        return 200, {"ok": True, "queued": True}
+    kind = str(body.get("kind") or "followup")
+    index = int(body.get("index") or -1)
+    removed = session.drop_queued(
+        kind="steering" if kind == "steering" else "followup", index=index
+    )
+    return 200, {"ok": removed}
 
 
 class _StreamCollector(BaseHook):
@@ -154,20 +411,20 @@ def _make_provider(base_url: str, api_key: str) -> BaseProvider:
     return OpenAICompatProvider(base_url=base_url, api_key=api_key, provider_name=preset)
 
 
-def _run_turn(
+def _get_or_create_session(
     task_id: str,
-    text: str,
-    workspace: Path,
+    repo: Path,
+    access: str,
+    collector: _StreamCollector,
     sessions_root: Path,
-    *,
-    extra_hooks: list[BaseHook] | None = None,
-) -> str:
-    """跑一轮:新建或续跑会话,返回最终状态(completed/error/stopped)。
-
-    会话树:**有文件就续**(断点续跑,增量持久化免费),没有就建带 store
-    的新树(一下笔就落盘)。L2 影子快照按 CLI 同一条规则装配
-    (家目录工作区自动禁)。trace 默认开 → 时间线端点拿到真实指标。
-    """
+) -> InteractiveSession:
+    """取(或建)任务的**持久会话**:steering/follow-up 队列与断点续跑
+    都要求同一个 InteractiveSession 跨轮复用——这是 run_task 做不到的,
+    所以工作台直接走 SDK 装配(与 CLI 同一条构造路径、同一批默认值)。"""
+    with _SESSIONS_LOCK:
+        session = _SESSIONS.get(task_id)
+    if session is not None:
+        return session
     base_url, api_key, model = _execution_params()
     provider = _make_provider(base_url, api_key)
     path = session_path(sessions_root, task_id)
@@ -175,43 +432,54 @@ def _run_turn(
         tree = SessionTree.from_store(JsonlStore(sessions_root, task_id))
     else:
         tree = SessionTree(store=JsonlStore(sessions_root, task_id))
-    from sigma.cli.main import (  # noqa: PLC0415 - cli 是这些工具函数的所有者
+    from sigma.cli.main import (  # noqa: PLC0415 - cli 是工具函数的所有者
         checkpoint_disabled_reason as _checkpoint_disabled,
     )
     from sigma.cli.main import shadow_git_dir_for as _shadow_dir  # noqa: PLC0415
 
-    disabled = _checkpoint_disabled(workspace, no_checkpoint_flag=False)
-    shadow_dir = None if disabled else _shadow_dir(workspace)
+    disabled = _checkpoint_disabled(repo, no_checkpoint_flag=False)
+    shadow_dir = None if disabled else _shadow_dir(repo)
+    access = access if access in ACCESS_MODES else "full"
+    approval: ApprovalHook | None = None if access == "full" else _HttpApprovalGate(
+        access, task_id, repo
+    )
+    system_prompt = SYSTEM_PROMPT + (
+        ("\n\n" + _PLAN_INSTRUCTION) if access == "plan" else ""
+    )
+    session = InteractiveSession(
+        provider=provider,
+        workspace_root=repo,
+        model=model,
+        system_prompt=system_prompt,
+        max_rounds=20,
+        tree=tree,
+        session_id=task_id,
+        shadow_git_dir=shadow_dir,
+        enable_checkpoint=shadow_dir is not None,
+        enable_trace=True,
+        approval=approval,
+        extra_hooks=[collector],
+    )
+    with _SESSIONS_LOCK:
+        _SESSIONS[task_id] = session
+    return session
 
-    async def _one_loop() -> str:
-        """run_task 与 provider.aclose 必须**同一个事件循环**:
-        分两个 asyncio.run 时,httpx 连接绑定在第一个循环上,
-        在第二个循环里关闭会抛 RuntimeError("Event loop is closed")(Windows 实测)。"""
-        try:
-            result = await run_task(
-                text,
-                provider=provider,
-                workspace_root=workspace,
-                model=model,
-                session_id=task_id,
-                tree=tree,
-                shadow_git_dir=shadow_dir,
-                max_rounds=20,
-                extra_hooks=tuple(extra_hooks) if extra_hooks else (),
-            )
-            return str(result.status)
-        finally:
-            closer = getattr(provider, "aclose", None)
-            if closer is not None:
-                await closer()
 
-    return asyncio.run(_one_loop())
+def _project_of(task_id: str, record: dict[str, Any] | None, primary: Path) -> dict[str, Any]:
+    """任务的工作区:草稿记录里记的 projectId → 注册表;执行时也写归属索引。"""
+    project_id = (record or {}).get("projectId") or _session_project_id(primary, task_id)
+    return _project_by_id(primary, project_id) or {
+        "id": PROJECT_ID,
+        "name": primary.name or "sigma",
+        "repoPath": str(primary),
+    }
 
 
 def _create_task(body: dict[str, Any]) -> dict[str, Any]:
     """创建草稿任务(前端 Composer/侧栏「新建会话」)。元数据仅内存。"""
     record: dict[str, Any] = {
         "id": new_session_id(),
+        "projectId": str(body.get("projectId") or PROJECT_ID),
         "title": str(body.get("title") or "").strip(),
         "description": str(body.get("description") or "").strip(),
         "access": str(body.get("access") or ""),
@@ -229,7 +497,7 @@ def _draft_payload(record: dict[str, Any]) -> dict[str, Any]:
     created = str(record.get("createdAt") or "")
     return {
         "id": record["id"],
-        "projectId": PROJECT_ID,
+        "projectId": str(record.get("projectId") or PROJECT_ID),
         "title": str(record.get("title") or "") or "(新会话)",
         "description": str(record.get("description") or ""),
         "status": "draft",
@@ -246,14 +514,13 @@ def _draft_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_message(
-    sessions_root: Path, workspace: Path, task_id: str, text: str
+    primary: Path, sessions_root: Path, task_id: str, text: str
 ) -> tuple[int, dict[str, Any]]:
     """发一条消息:**立即返回 running**,一轮在后台线程执行(前端流式轮询)。
 
     并发守卫:同一会话同时只允许一轮(``409``);未知任务 ``404``;
     未配 key ``400``(指路文案,启动线程前先验,快速失败)。
-    执行失败不放大成 HTTP 500——会话文件里已经落了的事实照常回放,
-    最终状态经 deltas 端点的 done/error 与任务载荷传达。
+    会话→项目归属索引在本入口写入(工作台执行过的会话才知道归属)。
     """
     text = text.strip()
     if text == "":
@@ -267,10 +534,12 @@ def _post_message(
         if record is None and not session_path(sessions_root, task_id).is_file():
             return 404, {"detail": f"任务 {task_id} 不存在(草稿随工作台重启消失,已执行的会话在磁盘上)"}
         if task_id in _RUNNING:
-            return 409, {"detail": "该会话正在执行中,请等当前轮完成再发下一条"}
+            return 409, {"detail": "该会话正在执行中,输入会自动排队(或点「立即」打断注入)"}
         _RUNNING.add(task_id)
         if record is not None:
             record["status"] = "running"
+    project = _project_of(task_id, record, primary)
+    _index_session(task_id, str(project["id"]))
     buffer: dict[str, Any] = {
         "pieces": [],
         "lock": threading.Lock(),
@@ -282,11 +551,11 @@ def _post_message(
     collector = _StreamCollector(buffer["pieces"], buffer["lock"])
     threading.Thread(
         target=_turn_thread,
-        args=(task_id, text, workspace, sessions_root, collector, buffer),
+        args=(task_id, text, project, sessions_root, collector, buffer, primary),
         daemon=True,
         name=f"wb-turn-{task_id}",
     ).start()
-    payload = _merged_task_payload(sessions_root, task_id)
+    payload = _merged_task_payload(primary, sessions_root, task_id)
     payload["status"] = "running"
     return 200, payload
 
@@ -294,18 +563,40 @@ def _post_message(
 def _turn_thread(
     task_id: str,
     text: str,
-    workspace: Path,
+    project: dict[str, Any],
     sessions_root: Path,
     collector: _StreamCollector,
     buffer: dict[str, Any],
+    primary: Path,
 ) -> None:
-    """后台执行一轮;结束封缓冲(done=True),失败信息进缓冲与任务记录。"""
+    """后台执行一轮(持久会话);follow-up 队列在本线程**自动续跑**
+    ("默认排队"的语义——排队项在当前任务完成后逐条执行)。"""
     try:
-        status = _run_turn(task_id, text, workspace, sessions_root, extra_hooks=[collector])
-        with _TASKS_LOCK:
-            record = _TASKS.get(task_id)
-            if record is not None and status != "completed":
-                record["status"] = "failed" if status == "error" else "draft"
+        session = _get_or_create_session(
+            task_id,
+            Path(str(project["repoPath"])),
+            str(((_TASKS.get(task_id) or {}).get("access")) or "full"),
+            collector,
+            sessions_root,
+        )
+
+        async def _run_all() -> str:
+            result = await session.send(text)
+            statuses = [str(result.status)]
+            guard = 0
+            while session.has_followups() and guard < 10:
+                guard += 1
+                nxt = session.pop_followup()
+                nxt_result = await session.send(nxt)
+                statuses.append(str(nxt_result.status))
+            return statuses[-1]
+
+        status = asyncio.run(_run_all())
+        if status != "completed":
+            with _TASKS_LOCK:
+                record = _TASKS.get(task_id)
+                if record is not None:
+                    record["status"] = "failed" if status == "error" else "draft"
     except Exception as exc:
         buffer["error"] = f"{type(exc).__name__}: {exc}"
         with _TASKS_LOCK:
@@ -336,7 +627,9 @@ def _deltas_payload(task_id: str, since: int) -> dict[str, Any]:
     }
 
 
-def _merged_task_payload(sessions_root: Path, task_id: str) -> dict[str, Any]:
+def _merged_task_payload(
+    primary: Path, sessions_root: Path, task_id: str
+) -> dict[str, Any]:
     """执行后的任务载荷:磁盘会话重建(事实),草稿记录补充 access/effort(意图)。"""
     with _TASKS_LOCK:
         record = dict(_TASKS[task_id]) if task_id in _TASKS else None
@@ -344,7 +637,7 @@ def _merged_task_payload(sessions_root: Path, task_id: str) -> dict[str, Any]:
     if session_path(sessions_root, task_id).is_file():
         try:
             payload = _task_payload(
-                sessions_root, task_id, first_user_text=None, message_count=0, modified=0
+                primary, sessions_root, task_id, first_user_text=None, message_count=0, modified=0
             )
         except Exception:
             payload = None  # 坏数据降级:退回草稿形状
@@ -361,9 +654,12 @@ def _merged_task_payload(sessions_root: Path, task_id: str) -> dict[str, Any]:
     return payload
 
 
-def _all_task_payloads(sessions_root: Path) -> list[dict[str, Any]]:
+def _all_task_payloads(primary: Path, sessions_root: Path) -> list[dict[str, Any]]:
     """草稿(内存)+ 已执行会话(磁盘)合并;同 id 磁盘版本优先(事实更全)。"""
-    disk = {payload["id"]: payload for payload in _list_task_payloads(sessions_root)}
+    disk = {
+        payload["id"]: payload
+        for payload in _list_task_payloads(primary, sessions_root)
+    }
     with _TASKS_LOCK:
         records = {rid: dict(record) for rid, record in _TASKS.items()}
     merged: dict[str, dict[str, Any]] = {}
@@ -439,15 +735,27 @@ def _assistant_text(content: list[Any]) -> str:
     return "".join(parts)
 
 
-def _events_from_history(history: list[Any]) -> list[dict[str, str]]:
+def _epoch_of(stamp: str) -> float | None:
+    """可读时间戳 → epoch(工具耗时计算用);解析不了返回 None。"""
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _events_from_history(history: list[Any]) -> list[dict[str, Any]]:
     """把会话树压成前端 ``TaskEvent[]``(只读回放,截断在展示层语义内)。
 
-    kind 映射:用户/助手消息 → ``message``(+ ``role`` 供气泡分边);
-    assistant 声明的工具调用 → ``tool_call``;
-    工具结果错误 → ``note``(✗ 前缀);取**最后** EVENTS_LIMIT 条——
-    新会话看全,老会话看尾巴,与"工作台是回放不是审计导出"的定位一致。
+    kind 映射(参照成熟 agent UI 的区分度,星辰 2026-10-01):
+    - 用户/助手消息 → ``message``(+ ``role`` 供气泡分边,助手=平铺正文);
+    - assistant 的思考块 → ``thinking``(muted 行,与正文区分);
+    - 工具调用 → ``tool_call``:**与结果配对**,带 ``status``(ok/error)与
+      ``durationMs``(调用到结果的时间戳差,≈ 口径)——图二的"已完成"列;
+    - 悬空调用(无结果=中断)→ status 缺省,前端显示"未完成"。
+    取**最后** EVENTS_LIMIT 条——新会话看全,老会话看尾巴。
     """
-    events: list[dict[str, str]] = []
+    events: list[dict[str, Any]] = []
+    pending_calls: dict[str, dict[str, Any]] = {}
     for message in history:
         at = message.timestamp
         if isinstance(message, LlmMessageWrapper) and isinstance(message.message, UserMessage):
@@ -463,6 +771,19 @@ def _events_from_history(history: list[Any]) -> list[dict[str, str]]:
         elif isinstance(message, LlmMessageWrapper) and isinstance(
             message.message, AssistantMessage
         ):
+            for block in message.message.content:
+                if isinstance(block, ThinkingBlock):
+                    thinking = block.thinking.strip()
+                    if thinking:
+                        events.append(
+                            {
+                                "id": f"e{len(events)}",
+                                "kind": "thinking",
+                                "role": "thinking",
+                                "text": _clip(thinking, 600),
+                                "at": at,
+                            }
+                        )
             text = _assistant_text(message.message.content).strip()
             if text:
                 events.append(
@@ -476,32 +797,48 @@ def _events_from_history(history: list[Any]) -> list[dict[str, str]]:
                 )
             for block in message.message.content:
                 if isinstance(block, ToolCallBlock):
-                    args = json.dumps(block.arguments, ensure_ascii=False)
-                    events.append(
-                        {
-                            "id": f"e{len(events)}",
-                            "kind": "tool_call",
-                            "role": "tool",
-                            "tool": block.name,
-                            "text": _clip(f"{block.name}({args})", 220),
-                            "at": at,
-                        }
-                    )
+                    pending_calls[block.id] = {"name": block.name, "at": at, "args": block.arguments}
         elif isinstance(message, ToolResultAgentMessage):
-            if message.is_error:
-                events.append(
-                    {
-                        "id": f"e{len(events)}",
-                        "kind": "note",
-                        "text": _clip(f"✗ {message.tool_name} 失败", 160),
-                        "at": at,
-                    }
-                )
+            call = pending_calls.pop(message.tool_call_id, None)
+            duration: int | None = None
+            if call is not None:
+                start, end = _epoch_of(call["at"]), _epoch_of(at)
+                if start is not None and end is not None:
+                    duration = max(0, round((end - start) * 1000))
+            args = json.dumps((call or {}).get("args") or {}, ensure_ascii=False)
+            events.append(
+                {
+                    "id": f"e{len(events)}",
+                    "kind": "tool_call",
+                    "role": "tool",
+                    "tool": message.tool_name,
+                    "status": "error" if message.is_error else "ok",
+                    "durationMs": duration,
+                    "text": _clip(f"{message.tool_name}({args})", 220),
+                    "at": at,
+                }
+            )
+    # 悬空调用(assistant 声明了但没有结果 = 中断)→ 无 status,前端显示"未完成"。
+    for call in pending_calls.values():
+        args = json.dumps(call.get("args") or {}, ensure_ascii=False)
+        events.append(
+            {
+                "id": f"e{len(events)}",
+                "kind": "tool_call",
+                "role": "tool",
+                "tool": call["name"],
+                "status": "",
+                "durationMs": None,
+                "text": _clip(f"{call['name']}({args})", 220),
+                "at": call["at"],
+            }
+        )
     # id 在截断后重排——key 唯一即可,不必与会话节点 id 对应。
     return [{**event, "id": f"e{index}"} for index, event in enumerate(events[-EVENTS_LIMIT:])]
 
 
 def _task_payload(
+    primary: Path,
     sessions_root: Path,
     session_id: str,
     *,
@@ -534,7 +871,7 @@ def _task_payload(
     updated = history[-1].timestamp if history else ""
     return {
         "id": session_id,
-        "projectId": PROJECT_ID,
+        "projectId": _session_project_id(primary, session_id),
         "title": _clip(description.split("\n")[0], 40) or "(空会话)",
         "description": _clip(description, 2000),
         "status": status,
@@ -553,7 +890,7 @@ def _task_payload(
     }
 
 
-def _list_task_payloads(sessions_root: Path) -> list[dict[str, Any]]:
+def _list_task_payloads(primary: Path, sessions_root: Path) -> list[dict[str, Any]]:
     """最近 TASKS_LIMIT 个会话的任务载荷(按修改时间,最新在前)。
 
     单个会话解析失败(如 v1.4 时间戳格式变更前的旧记录:整数 timestamp
@@ -565,6 +902,7 @@ def _list_task_payloads(sessions_root: Path) -> list[dict[str, Any]]:
     for preview in previews:
         try:
             payload = _task_payload(
+                primary,
                 sessions_root,
                 preview.id,
                 first_user_text=preview.first_user_text,
@@ -673,23 +1011,6 @@ def _memory_payload(workspace: Path) -> list[dict[str, str]]:
     """跨会话记忆索引(P5-批次3)。条目只有 slug + 首行标题(快照语义,会话内冻结)。"""
     scan = scan_memory(memory_dir_for(workspace))
     return [{"slug": entry.slug, "title": entry.title} for entry in scan.entries]
-
-
-def _project_payload(workspace: Path) -> dict[str, Any]:
-    """当前工作区 → 前端 ``Project``。分支从 .git/HEAD 读,读不到就是 main。"""
-    branch = "main"
-    head = workspace / ".git" / "HEAD"
-    if head.is_file():
-        text = head.read_text(encoding="utf-8").strip()
-        if text.startswith("ref: refs/heads/"):
-            branch = text.removeprefix("ref: refs/heads/")
-    return {
-        "id": PROJECT_ID,
-        "name": workspace.name or "sigma",
-        "repoPath": str(workspace),
-        "branch": branch,
-        "createdAt": "",
-    }
 
 
 class WorkbenchHandler(BaseHTTPRequestHandler):
@@ -801,17 +1122,17 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 {"ok": True, "mode": "http", "version": __version__, "workspace": str(self.workspace)},
             )
             return
-        # /projects
+        # /projects:主工作区 + 导入的二级工作区
         if parts == ["projects"]:
-            self._send_json(200, [_project_payload(self.workspace)])
+            self._send_json(200, _all_projects(self.workspace))
             return
         # /tasks(草稿+磁盘合并;过滤参数前端本地做——单项目、量级小)
         if parts == ["tasks"]:
-            self._send_json(200, _all_task_payloads(root))
+            self._send_json(200, _all_task_payloads(self.workspace, root))
             return
         # /tasks/{id}[/timeline]
         if len(parts) == 2 and parts[0] == "tasks":
-            payload = _task_payload_for_id(root, parts[1])
+            payload = _task_payload_for_id(self.workspace, root, parts[1])
             self._send_json(200, payload)  # 找不到 → null(契约:getTask 返回 Task | null)
             return
         if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "timeline":
@@ -824,6 +1145,19 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             except ValueError:
                 since = 0
             self._send_json(200, _deltas_payload(parts[1], max(0, since)))
+            return
+        # /tasks/{id}/queues:steering/follow-up 队列 + 待审批项(队列管理与审批卡)。
+        if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "queues":
+            session = _session_of(parts[1])
+            self._send_json(
+                200,
+                {
+                    "running": parts[1] in _RUNNING,
+                    "steering": session.pending_steering() if session is not None else [],
+                    "followups": session.pending_followups() if session is not None else [],
+                    "approvals": _pending_approvals(parts[1]),
+                },
+            )
             return
         # /automations、/plugins、/models
         if parts == ["automations"]:
@@ -844,17 +1178,42 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
         clean = self.path.split("?", 1)[0]
         parts = [p for p in clean.split("/") if p]
+        # 导入工作区(项目管理)。
+        if parts == ["api", "v1", "projects"]:
+            self._send_json(*_register_project(self.workspace, self._read_json_body()))
+            return
         # 创建草稿任务(Composer / 侧栏「新建会话」)。
         if parts == ["api", "v1", "tasks"]:
             self._send_json(200, _create_task(self._read_json_body()))
             return
-        # 发消息并同步跑一轮(执行完返回最终载荷;长轮询——UI 侧乐观显示 running)。
+        # 发消息:立即返回 running,后台执行,前端经 deltas 流式取增量。
         if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"] and parts[4] == "messages":
             body = self._read_json_body()
             code, payload = _post_message(
-                self.sessions_root, self.workspace, parts[3], str(body.get("text", ""))
+                self.workspace, self.sessions_root, parts[3], str(body.get("text", ""))
             )
             self._send_json(code, payload)
+            return
+        # /tasks/{id}/steer | /queue | /queue/remove:打断注入 / 排队 / 队列管理。
+        if (
+            len(parts) == 5
+            and parts[:3] == ["api", "v1", "tasks"]
+            and parts[4] in ("steer", "queue", "queue-remove")
+        ):
+            body = self._read_json_body()
+            code, payload = _queue_op(parts[3], parts[4], body)
+            self._send_json(code, payload)
+            return
+        # /tasks/{id}/approvals/{req}:审批决策(变更前确认环)。
+        if (
+            len(parts) == 6
+            and parts[:3] == ["api", "v1", "tasks"]
+            and parts[4] == "approvals"
+        ):
+            body = self._read_json_body()
+            decision = str(body.get("decision") or "deny")
+            ok = _decide_approval(parts[3], parts[5], decision)
+            self._send_json(200 if ok else 404, {"ok": ok})
             return
         self._not_implemented(_what_from_path(self.path), "M2")
 
@@ -887,14 +1246,14 @@ def _what_from_path(path: str) -> str:
         return "自动化调度(σ 未实现调度器)"
     if "/plugins" in path:
         return "插件装卸(M3:接技能/工具装卸)"
-    if "/projects" in path:
-        return "注册工作区"
     return "任务执行(创建/推进/打断/审批)"
 
 
-def _task_payload_for_id(sessions_root: Path, session_id: str) -> dict[str, Any] | None:
+def _task_payload_for_id(
+    primary: Path, sessions_root: Path, session_id: str
+) -> dict[str, Any] | None:
     """按 id 取单任务;安全网:先过一遍列表映射,避免路径段被拼进文件路径。"""
-    for payload in _list_task_payloads(sessions_root):
+    for payload in _list_task_payloads(primary, sessions_root):
         if payload["id"] == session_id:
             return payload
     return None

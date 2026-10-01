@@ -24,6 +24,7 @@ export interface Project {
 export type TaskEventKind =
   | 'created'
   | 'message'
+  | 'thinking'
   | 'tool_call'
   | 'approval'
   | 'status'
@@ -36,8 +37,12 @@ export interface TaskEvent {
   at: string
   /** message 类事件的角色(user/assistant)——气泡分边;其它 kind 无此字段 */
   role?: string
-  /** message 类事件里的工具调用名(tool_call 事件) */
+  /** 工具名(tool_call 事件) */
   tool?: string
+  /** 工具执行结果:ok=已完成 / error=失败 / 缺省=未完成(悬空调用,中断) */
+  status?: string
+  /** 工具耗时(调用到结果的时间戳差,≈ 口径) */
+  durationMs?: number | null
 }
 
 export interface Task {
@@ -200,6 +205,17 @@ export interface TaskDeltas {
   error: string | null
 }
 
+/** 队列与待审批(执行中管理,图一/图三语义)。 */
+export interface TaskQueues {
+  running: boolean
+  /** steer 队列(下一轮模型调用前生效的打断注入) */
+  steering: string[]
+  /** follow-up 队列(当前任务完成后逐条自动执行) */
+  followups: string[]
+  /** 待确认的审批(变更前确认环) */
+  approvals: { id: string; tool: string; summary: string }[]
+}
+
 export interface SigmaApiClient {
   readonly mode: 'mock' | 'http'
   ping(): Promise<PingInfo>
@@ -229,4 +245,14 @@ export interface SigmaApiClient {
   addTaskMessage?(taskId: string, text: string): Promise<Task>
   /** 流式增量轮询(TextChunk 钩子缓冲;可选方法,mock 不实现)。 */
   getTaskDeltas?(taskId: string, since: number): Promise<TaskDeltas>
+  /** 队列与待审批快照(可选方法,mock 不实现)。 */
+  getTaskQueues?(taskId: string): Promise<TaskQueues>
+  /** 「立即」:把一条排队指导升级为 steering(下一轮模型调用前生效)。 */
+  steerTask?(taskId: string, text: string): Promise<void>
+  /** 排队:当前任务完成后自动执行(follow-up)。 */
+  queueTask?(taskId: string, text: string): Promise<void>
+  /** 删除排队项。 */
+  removeQueued?(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void>
+  /** 审批决策(变更前确认环)。 */
+  decideApproval?(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
 }

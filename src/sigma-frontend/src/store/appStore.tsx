@@ -105,6 +105,18 @@ export interface AppActions {
   sendFirstMessage(taskId: string, text: string): Promise<void>
   /** 向已有会话追加一条消息并同步执行一轮(草稿首条 / 已完成续聊同一条路) */
   sendMessage(taskId: string, text: string): Promise<void>
+  /** 执行中排队(follow-up):当前任务完成后自动执行——图一「默认排队」 */
+  queueMessage(taskId: string, text: string): Promise<void>
+  /** 「立即」:把排队指导升级为 steering(打断注入,下一轮前生效) */
+  steerTask(taskId: string, text: string): Promise<void>
+  /** 删除排队项 */
+  removeQueued(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void>
+  /** 审批决策(变更前确认环) */
+  decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
+  /** 导入工作区(绝对路径) */
+  importWorkspace(repoPath: string, name?: string): Promise<void>
+  /** 重新拉取全部列表(导入工作区/项目变更后) */
+  refreshAll(): Promise<void>
   setSidebarView(view: SidebarView): void
   setStatusFilter(filter: StatusFilter): void
   setActiveProjectId(projectId: string): void
@@ -126,39 +138,10 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   const stateRef = useRef<AppState>(state)
   stateRef.current = state
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const actionsRef = useRef<AppActions | null>(null)
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [projects, tasks, automations, plugins, models] = await Promise.all([
-          apiClient.listProjects(),
-          apiClient.listTasks(),
-          apiClient.listAutomations(),
-          apiClient.listPlugins(),
-          apiClient.listModels(),
-        ])
-        dispatch({ type: 'loaded', projects, tasks, automations, plugins, models })
-      } catch (error) {
-        // 桥接服务没起(或 σ-server 未部署):空数据进场 + 常驻提示,
-        // 界面保持可用(空态各视图都有说明),不能停在"加载中"。
-        dispatch({
-          type: 'loaded',
-          projects: [],
-          tasks: [],
-          automations: [],
-          plugins: [],
-          models: [],
-        })
-        dispatch({
-          type: 'patch',
-          patch: {
-            toast: `无法连接 sigma 桥接服务(默认 127.0.0.1:8301):${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          },
-        })
-      }
-    })()
+    void actionsRef.current?.refreshAll()
   }, [])
 
   const actions = useMemo<AppActions>(() => {
@@ -315,6 +298,82 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       async sendMessage(taskId: string, text: string): Promise<void> {
         await runOrToast((): Promise<string> => send(taskId, text))
       },
+      async queueMessage(taskId: string, text: string): Promise<void> {
+        const queuer = apiClient.queueTask
+        if (queuer === undefined) {
+          throw new Error('当前后端不支持排队(桥接服务过旧或处于 mock 模式)')
+        }
+        await runOrToast(async (): Promise<string> => {
+          await queuer(taskId, text.trim())
+          return '已排队:当前任务完成后自动执行(点「立即」可打断注入)'
+        })
+      },
+      async steerTask(taskId: string, text: string): Promise<void> {
+        const steerer = apiClient.steerTask
+        if (steerer === undefined) {
+          throw new Error('当前后端不支持打断注入(桥接服务过旧或处于 mock 模式)')
+        }
+        await runOrToast(async (): Promise<string> => {
+          await steerer(taskId, text.trim())
+          return '已注入:下一轮模型调用前生效'
+        })
+      },
+      async removeQueued(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void> {
+        const remover = apiClient.removeQueued
+        if (remover === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          await remover(taskId, kind, index)
+          return '已移除排队项'
+        })
+      },
+      async decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void> {
+        const decider = apiClient.decideApproval
+        if (decider === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          await decider(taskId, requestId, decision)
+          return decision === 'approve' ? '已批准' : '已拒绝'
+        })
+      },
+      async importWorkspace(repoPath: string, name?: string): Promise<void> {
+        const importer = apiClient.createProject
+        if (importer === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          const created = await importer({ repoPath: repoPath.trim(), name: name ?? '' })
+          await actionsRef.current?.refreshAll()
+          return `工作区「${created.name}」已导入`
+        })
+      },
+      async refreshAll(): Promise<void> {
+        try {
+          const [projects, tasks, automations, plugins, models] = await Promise.all([
+            apiClient.listProjects(),
+            apiClient.listTasks(),
+            apiClient.listAutomations(),
+            apiClient.listPlugins(),
+            apiClient.listModels(),
+          ])
+          dispatch({ type: 'loaded', projects, tasks, automations, plugins, models })
+        } catch (error) {
+          // 桥接服务没起(或 σ-server 未部署):空数据进场 + 常驻提示,
+          // 界面保持可用(空态各视图都有说明),不能停在"加载中"。
+          dispatch({
+            type: 'loaded',
+            projects: [],
+            tasks: [],
+            automations: [],
+            plugins: [],
+            models: [],
+          })
+          dispatch({
+            type: 'patch',
+            patch: {
+              toast: `无法连接 sigma 桥接服务(默认 127.0.0.1:8301):${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            },
+          })
+        }
+      },
       setSidebarView(view: SidebarView): void {
         patch({ sidebarView: view })
       },
@@ -376,6 +435,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       },
     }
   }, [])
+  actionsRef.current = actions
 
   return (
     <StateContext.Provider value={state}>

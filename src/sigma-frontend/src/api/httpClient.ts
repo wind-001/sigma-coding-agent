@@ -12,6 +12,7 @@ import {
   type TaskPatch,
   type TaskTimeline,
   type TaskDeltas,
+  type TaskQueues,
 } from './client'
 
 /**
@@ -131,5 +132,45 @@ export class HttpSigmaClient implements SigmaApiClient {
 
   getTaskDeltas(taskId: string, since: number): Promise<TaskDeltas> {
     return this.request<TaskDeltas>(`/tasks/${taskId}/deltas?since=${since}`)
+  }
+
+  getTaskQueues(taskId: string): Promise<TaskQueues> {
+    return this.request<TaskQueues>(`/tasks/${taskId}/queues`)
+  }
+
+  async steerTask(taskId: string, text: string): Promise<void> {
+    await this.request<unknown>(`/tasks/${taskId}/steer`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    })
+  }
+
+  async queueTask(taskId: string, text: string): Promise<void> {
+    await this.request<unknown>(`/tasks/${taskId}/queue`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    })
+  }
+
+  async removeQueued(
+    taskId: string,
+    kind: 'steering' | 'followup',
+    index: number,
+  ): Promise<void> {
+    await this.request<unknown>(`/tasks/${taskId}/queue-remove`, {
+      method: 'POST',
+      body: JSON.stringify({ kind, index }),
+    })
+  }
+
+  async decideApproval(
+    taskId: string,
+    requestId: string,
+    decision: 'approve' | 'deny',
+  ): Promise<void> {
+    await this.request<unknown>(`/tasks/${taskId}/approvals/${requestId}`, {
+      method: 'POST',
+      body: JSON.stringify({ decision }),
+    })
   }
 }
