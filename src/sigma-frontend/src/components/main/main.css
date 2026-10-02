@@ -17,9 +17,10 @@
    诉求：整页铺水墨山水，但**不能遮挡文字输出**。
 
    做法（三层，缺一不可）：
-   1. 图铺在 .main 自身（fixed 定位 → 不随内容滚动，滚长会话时
-      背景不跟着走，视觉稳定；contain 让水墨不被拉伸变形）；
-   2. **veil 层**（::before，fixed）——半透明白纱压在图上。这是
+   1. 图铺在 .main 自身（`background-attachment: fixed` → 不随内容
+      滚动，滚长会话时背景不跟着走，视觉稳定；cover 让水墨不被
+      拉伸变形）；
+   2. **veil 层**（::before）——半透明白纱压在图上。这是
       文字可读性的真正保障：助手气泡是「平铺正文、无底色」
       （.wb-bubble 不设 background），图会直接透到字后面。
       不靠给每个气泡加底色解决：那会让一串消息变成白砖墙，
@@ -28,13 +29,25 @@
       万一 veil 被覆盖（覆盖层/滚动容器叠加）字仍然可读。
       只给助手正文加，工具行/指标小字是弱信息不需要。
 
-   ⚠ 层叠教训（写下来防复发）：veil 是 `z-index: 0` 的**定位**元素，
-   而 `.main__center` / `.task-detail` 是 `z-index: auto` 的普通流内容——
-   auto 层级**低于** 0，veil 会盖住正文。所以内容层必须显式 `z-index: 1`
-   抬到 veil 之上（原注释写"无需提升"是错的，已被 CSS 规范否掉）。
-   veil 用 `pointer-events: none`，纯装饰不吃事件。
+   ⚠ 层叠教训一（写下来防复发）：veil 若是 `z-index: 0` 的**定位**
+   元素，而 `.main__center` / `.task-detail` 是 `z-index: auto` 的
+   普通流内容——auto 层级**低于** 0，veil 会盖住正文。所以内容层
+   必须显式 `z-index: 1` 抬到 veil 之上（原注释写"无需提升"是错的，
+   已被 CSS 规范否掉）。veil 用 `pointer-events: none`，纯装饰不吃事件。
 
-   纯装饰：inset:0 铺满、fixed 不随内容滚动。
+   ⚠ 层叠教训二（星辰 2026-10-02 实测，本轮修的 bug）：
+   veil 原用 `position: fixed`。**fixed 的包含块是视口，不是 .main**，
+   `inset: 0` 于是铺满整个窗口，横向溢出盖到了左侧栏上。
+   侧栏是 `position: static`、无 z-index 的普通流内容，按绘制顺序
+   先于定位元素画出 → 62% 白纱压在侧栏文字上，把 #2b2e35 洗成
+   rgb(173,174,178)，对比度从 12.35:1 掉到 2.11:1（远低于 AA 的 4.5），
+   视觉表现正是"左边的文字颜色很浅"。
+   注意：`.main` 是 `position: relative` 但 `z-index: auto`，**不创建
+   层叠上下文**，所以 veil 的 z-index 是挂在根上下文上的，溢出无法
+   被父级裁掉。改用 `absolute` 后包含块变回 .main，veil 被关进
+   主区自己的盒子里，侧栏不再受影响。
+   ——排查这一条时我先只查了 DOM 包含关系（侧栏不在 .main 内）就
+   排除了嫌疑，那是查错了维度：**DOM 包含 ≠ 定位包含**。
    ============================================================ */
 .main {
   background-image: url('../../assets/bg-guofeng.png');
@@ -45,10 +58,14 @@
 }
 
 /* 白纱 veil：约 6 成不透明度盖住水墨的暗部（远山/枯枝），
-   把背景整体推到"极淡纹理"层级，正文对比度回到可读区间。 */
+   把背景整体推到"极淡纹理"层级，正文对比度回到可读区间。
+
+   ⚠ 必须是 absolute 而不是 fixed：fixed 的包含块是视口，veil 会
+   横向溢出盖到侧栏上把浅色文字洗掉（详见上方层叠教训二）。
+   .main 自身是 relative，绝对定位即以主区为界。 */
 .main::before {
   content: '';
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
