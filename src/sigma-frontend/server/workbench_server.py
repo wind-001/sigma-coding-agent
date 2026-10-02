@@ -44,7 +44,14 @@ from urllib.parse import parse_qs
 from sigma import __version__
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
 from sigma.config.settings import resolve_api_key
-from sigma.events.lifecycle import ApprovalDecision, HookEvent, TextChunk
+from sigma.events.lifecycle import (
+    ApprovalDecision,
+    HookEvent,
+    TextChunk,
+    ThinkingChunk,
+    ToolEnd,
+    ToolStart,
+)
 from sigma.hooks.base import ApprovalHook, BaseHook
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
@@ -104,6 +111,10 @@ _DELTAS_LOCK = threading.Lock()
 #: **同一个 InteractiveSession 跨轮复用**——run_task 每次新建会话做不到。
 _SESSIONS: dict[str, InteractiveSession] = {}
 _SESSIONS_LOCK = threading.Lock()
+#: 审批闸注册表:approve() 逐调用读 mode,工作台切权限档时热替换(见
+#: _set_task_access)——无需重建会话,下一声工具调用立即生效。
+_GATES: dict[str, _HttpApprovalGate] = {}  # noqa: F821 - 类定义在下面(from __future__ annotations)
+_GATES_LOCK = threading.Lock()
 #: 待审批项:task_id → [{id, tool, summary, event, decision, reason}]。
 _APPROVALS: dict[str, list[dict[str, Any]]] = {}
 _APPROVALS_LOCK = threading.Lock()
@@ -114,6 +125,9 @@ _PROVIDER_FACTORY: Callable[[], BaseProvider] | None = None
 #: sigma 的会话目录是全局扁平的(~/.sigma/sessions),会话本身不记工作区——
 #: 归属由工作台在执行时记下,导入前的历史会话归入主工作区(如实说明)。
 _REGISTRY_PATH = Path.home() / ".sigma" / "workbench-projects.json"
+
+#: 删除会话的回收站(移入而非 unlink:审计事实可恢复)。测试可替换。
+_TRASH_DIR = Path.home() / ".sigma" / "trash"
 
 #: 计划模式追加的系统提示词段(与 L3 审批的写类拒绝配合:
 #: 模型先出计划,用户看完切回其他模式再执行)。
@@ -150,6 +164,110 @@ def _registry_write(reg: dict[str, Any]) -> None:
     _REGISTRY_PATH.write_text(
         json.dumps(reg, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+# ---------------------------------------------------------------------------
+# 模型配置注册表(工作台"模型设置"):用户自定义 base_url/api_key/model_id
+# 的条目,与内置 preset 并列进 /models;执行链按名字解析。apiKey 落盘在
+# ~/.sigma/workbench-models.json——与 ~/.sigma/.env 同一信任域(本机明文),
+# 且**绝不回传前端**(GET 载荷只有 hasKey 布尔)。
+# ---------------------------------------------------------------------------
+
+_MODELS_REGISTRY_PATH = Path.home() / ".sigma" / "workbench-models.json"
+
+#: 档位随附方式:OpenAI 风格 reasoning_effort 字符串 / 智谱风格 thinking 对象。
+#: 取值集合刻意封闭——线格式是协议事实,不该让用户自由发挥。
+EFFORT_STYLES: tuple[str, ...] = ("reasoning_effort", "thinking")
+
+_PROTOCOLS: tuple[str, ...] = ("openai-compat", "anthropic")
+
+
+def _models_registry_read() -> dict[str, Any]:
+    try:
+        data = json.loads(_MODELS_REGISTRY_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}  # 同项目注册表:配置坏了按空处理,不让工作台起不来
+
+
+def _models_registry_write(reg: dict[str, Any]) -> None:
+    _MODELS_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _MODELS_REGISTRY_PATH.write_text(
+        json.dumps(reg, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _effort_extra_body(style: str, effort: str) -> dict[str, Any] | None:
+    """档位值 → 请求体附加字段。空档位 = None(请求字节与无档位完全一致)。"""
+    effort = effort.strip()
+    if effort == "":
+        return None
+    if style == "thinking":
+        return {"thinking": {"type": effort}}
+    return {"reasoning_effort": effort}
+
+
+def _save_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """新增/更新模型条目。``name`` 是执行链的解析键,必须唯一;
+    ``apiKey`` 留空 = 保留原值(密钥不回传前端,表单无从带回)。"""
+    name = str(body.get("name") or "").strip()
+    base_url = str(body.get("baseUrl") or "").strip()
+    model_id = str(body.get("modelId") or "").strip()
+    protocol = str(body.get("protocol") or "openai-compat").strip()
+    style = str(body.get("effortStyle") or "reasoning_effort").strip()
+    efforts_raw = body.get("efforts")
+    if name == "" or base_url == "" or model_id == "":
+        return 400, {"detail": "name / baseUrl / modelId 均必填"}
+    if protocol not in _PROTOCOLS:
+        return 400, {"detail": f"protocol 只支持 {'/'.join(_PROTOCOLS)}"}
+    if style not in EFFORT_STYLES:
+        return 400, {"detail": f"effortStyle 只支持 {'/'.join(EFFORT_STYLES)}"}
+    efforts: list[str] = (
+        [str(e).strip() for e in efforts_raw if str(e).strip()]
+        if isinstance(efforts_raw, list)
+        else []
+    )
+    reg = _models_registry_read()
+    models: list[dict[str, Any]] = list(reg.get("models", []))
+    entry_id = str(body.get("id") or "").strip()
+    target: dict[str, Any] | None = next(
+        (e for e in models if e.get("id") == entry_id), None
+    )
+    if target is None:
+        target = {"id": "mdl-" + uuid.uuid4().hex[:8]}
+        models.append(target)
+    # name 是执行链的解析键:撞到**别的**条目(含改名撞名)一律拒绝。
+    if any(e.get("name") == name and e is not target for e in models):
+        return 400, {"detail": f"模型名 {name!r} 已存在(name 是解析键,不可重复)"}
+    target.update(
+        {
+            "name": name,
+            "protocol": protocol,
+            "baseUrl": base_url,
+            "modelId": model_id,
+            "efforts": efforts,
+            "effortStyle": style,
+            "createdAt": target.get("createdAt", _now_stamp()),
+        }
+    )
+    api_key = str(body.get("apiKey") or "")
+    if api_key != "" or "apiKey" not in target:
+        target["apiKey"] = api_key  # 新条目落空串;更新留空 = 保留原值
+    reg["models"] = models
+    _models_registry_write(reg)
+    return 200, {"ok": True, "id": target["id"]}
+
+
+def _remove_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    entry_id = str(body.get("id") or "").strip()
+    reg = _models_registry_read()
+    models: list[dict[str, Any]] = list(reg.get("models", []))
+    kept = [e for e in models if e.get("id") != entry_id]
+    if len(kept) == len(models):
+        return 404, {"detail": f"模型条目 {entry_id} 不存在"}
+    reg["models"] = kept
+    _models_registry_write(reg)
+    return 200, {"ok": True}
 
 
 def _all_projects(primary: Path) -> list[dict[str, Any]]:
@@ -250,7 +368,15 @@ def _fs_listing(raw: str, include_files: bool = False) -> dict[str, Any]:
                 entries.append({"name": child.name, "path": str(child), "isDir": False})
     except (PermissionError, OSError) as exc:
         return {"path": str(path), "parent": None, "entries": [], "error": f"无法读取:{exc}"}
-    parent = str(path.parent) if path.parent != path else None
+    # 盘符根(D:\)的 path.parent == path,若同样给 None,「上一级」在根目录
+    # 被禁死、永远回不到盘符列表换盘——故盘符根的 parent 给空串
+    # (空 path 在本函数入口即"此电脑"层)。POSIX "/" 走不到这(入口已拦)。
+    if path.parent != path:
+        parent: str | None = str(path.parent)
+    elif path.drive:
+        parent = ""
+    else:
+        parent = None
     return {"path": str(path), "parent": parent, "entries": entries}
 
 
@@ -320,6 +446,12 @@ class _HttpApprovalGate(ApprovalHook):
         self._mode = mode if mode in ACCESS_MODES else "full"
         self._task_id = task_id
         self._workspace = workspace
+
+    def set_mode(self, mode: str) -> None:
+        """中途换挡(工作台权限自由切换):approve() 每次调用都读 self._mode,
+        改完下一声工具调用立即生效——无需重建会话。线程安全靠 GIL 的
+        属性赋值原子性(模式字符串无中间态)。"""
+        self._mode = mode if mode in ACCESS_MODES else "full"
 
     def _ask(self, name: str, arguments: dict[str, Any]) -> ApprovalDecision:
         request_id = uuid.uuid4().hex[:8]
@@ -398,6 +530,82 @@ def _pending_approvals(task_id: str) -> list[dict[str, str]]:
     ]
 
 
+def _set_task_access(
+    primary: Path, task_id: str, body: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    """中途切换权限模式(human-in-the-loop,星辰 2026-10-02):记录更新 +
+    存活会话审批闸热替换——approve() 逐调用读 mode,下一声工具调用立即生效。
+    会话尚未执行过时只改记录,下次执行按新档装配(plan 模式的系统提示词段
+    在会话创建时注入,存活会话中途切 plan 只有闸行为、无提示词引导——如实)。"""
+    mode = str(body.get("access") or "").strip()
+    if mode not in ACCESS_MODES:
+        return 400, {"detail": f"access 只支持 {'/'.join(ACCESS_MODES)}"}
+    with _TASKS_LOCK:
+        record = _TASKS.get(task_id)
+        if record is None:
+            # 纯磁盘会话(本进程没跑过):补一条最小记录,让载荷与后续
+            # 执行都读到新档位。归属按注册表如实回填。
+            record = {
+                "id": task_id,
+                "projectId": _session_project_id(primary, task_id),
+                "title": "",
+                "access": mode,
+            }
+            _TASKS[task_id] = record
+        else:
+            record["access"] = mode
+    with _GATES_LOCK:
+        gate = _GATES.get(task_id)
+    if gate is not None:
+        gate.set_mode(mode)
+    return 200, {"ok": True, "access": mode}
+
+
+def _delete_task(sessions_root: Path, task_id: str) -> tuple[int, dict[str, Any]]:
+    """删除会话(审计安全版):JSONL 与 trace **移入回收站**(_TRASH_DIR,
+    不直接 unlink——删除可恢复,审计事实仍在盘上);内存草稿记录、流式缓冲、
+    缓存会话与注册表归属索引一并清除。执行中的会话拒绝删除。"""
+    if task_id in _RUNNING:
+        return 409, {"detail": "会话执行中,等本轮结束再删"}
+    if (
+        task_id == ""
+        or len(task_id) > 80
+        or ".." in task_id
+        or set(task_id) - set("abcdefghijklmnopqrstuvwxyz0123456789._-")
+    ):
+        return 400, {"detail": "非法任务 id"}
+    with _TASKS_LOCK:
+        record = _TASKS.pop(task_id, None)
+    moved = False
+    src = session_path(sessions_root, task_id)
+    trace = src.with_name(src.name + TRACE_SUFFIX)
+    if src.is_file() or trace.is_file():
+        trash = _TRASH_DIR
+        trash.mkdir(parents=True, exist_ok=True)
+        stamp = _now_stamp().replace(":", "").replace(" ", "-")
+        if src.is_file():
+            src.replace(trash / f"{task_id}.{stamp}.jsonl")
+            moved = True
+        if trace.is_file():
+            trace.replace(trash / f"{task_id}.{stamp}{TRACE_SUFFIX}")
+    with _DELTAS_LOCK:
+        _DELTAS.pop(task_id, None)
+    with _APPROVALS_LOCK:
+        _APPROVALS.pop(task_id, None)
+    with _SESSIONS_LOCK:
+        _SESSIONS.pop(task_id, None)
+    with _GATES_LOCK:
+        _GATES.pop(task_id, None)
+    reg = _registry_read()
+    index = reg.get("sessions", {})
+    if task_id in index:
+        reg["sessions"] = {k: v for k, v in index.items() if k != task_id}
+        _registry_write(reg)
+    if record is None and not moved:
+        return 404, {"detail": "任务不存在"}
+    return 200, {"ok": True}
+
+
 def _session_of(task_id: str) -> InteractiveSession | None:
     with _SESSIONS_LOCK:
         return _SESSIONS.get(task_id)
@@ -405,9 +613,10 @@ def _session_of(task_id: str) -> InteractiveSession | None:
 
 def _queue_op(task_id: str, op: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """队列操作(图一语义):steer=「立即」打断注入;queue=默认排队;
-    queue-remove=删除排队项。会话尚未创建(没执行过)时无队列可操作。"""
+    queue-remove=删除排队项;queue-edit=改写排队文本(星辰 2026-10-02)。
+    会话尚未创建(没执行过)时无队列可操作。"""
     text = str(body.get("text") or "").strip()
-    if op in ("steer", "queue") and text == "":
+    if op in ("steer", "queue", "queue-edit") and text == "":
         return 400, {"detail": "内容不能为空"}
     session = _session_of(task_id)
     if session is None:
@@ -420,6 +629,11 @@ def _queue_op(task_id: str, op: str, body: dict[str, Any]) -> tuple[int, dict[st
         return 200, {"ok": True, "queued": True}
     kind = str(body.get("kind") or "followup")
     index = int(body.get("index") or -1)
+    if op == "queue-edit":
+        edited = session.edit_queued(
+            kind="steering" if kind == "steering" else "followup", index=index, text=text
+        )
+        return 200, {"ok": edited}
     removed = session.drop_queued(
         kind="steering" if kind == "steering" else "followup", index=index
     )
@@ -427,25 +641,58 @@ def _queue_op(task_id: str, op: str, body: dict[str, Any]) -> tuple[int, dict[st
 
 
 class _StreamCollector(BaseHook):
-    """TextChunk 订阅者:把模型文本**增量**追加进本会话的缓冲。
+    """流式订阅者:把模型过程**增量**追加进本会话缓冲,**结构化分块**。
 
-    这是 sigma 文档写明的唯一扩展面("钩子是唯一扩展面")——
-    流式零核心改动。 ThinkingChunk 不订(OpenAI 兼容 provider 不产生)。
+    collector 随会话缓存（每会话一个），但缓冲区**按 task_id 实时读取**
+    （``_DELTAS[task_id]``）——每一轮 ``_post_message`` 都会换新缓冲区，
+    若把缓冲区绑死在 collector 上，第二轮起事件会写进上一轮的旧缓冲区，
+    deltas 永远为空，前端只能在轮结束后一次性拉全量（实测 2026-10-02）。
+
+    块形状(前端直播区按块渲染,与回放气泡流同一套视觉,星辰 2026-10-02
+    "参考成熟 agent:文本块/思考块/工具调用块分开"):
+    - ``{"k": "text", "t": ...}``        模型正文增量(逐块透传,不聚合);
+    - ``{"k": "thinking", "t": ...}``    思考增量(当前 provider 不产生,订阅
+      零成本留通路——一旦上游有了直播区自动出现思考块);
+    - ``{"k": "tool_start", "name": ..., "args": ...}``   工具即将执行;
+    - ``{"k": "tool_end", "name": ..., "ok": ..., "preview": ...}`` 结果落定。
+    这是 sigma 文档写明的唯一扩展面("钩子是唯一扩展面")——流式零核心改动。
     """
 
     name = "workbench-stream"
 
-    def __init__(self, pieces: list[str], lock: threading.Lock) -> None:
-        self._pieces = pieces
-        self._lock = lock
+    def __init__(self, task_id: str) -> None:
+        self._task_id = task_id
 
     def events(self) -> tuple[type[HookEvent], ...]:
-        return (TextChunk,)
+        return (TextChunk, ThinkingChunk, ToolStart, ToolEnd)
 
     def on_event(self, event: HookEvent) -> None:
+        piece: dict[str, Any] | None = None
         if isinstance(event, TextChunk):
-            with self._lock:
-                self._pieces.append(event.text)
+            piece = {"k": "text", "t": event.text}
+        elif isinstance(event, ThinkingChunk):
+            piece = {"k": "thinking", "t": event.text}
+        elif isinstance(event, ToolStart):
+            piece = {
+                "k": "tool_start",
+                "name": event.name,
+                "args": _clip(json.dumps(event.arguments, ensure_ascii=False), 220),
+            }
+        elif isinstance(event, ToolEnd):
+            piece = {
+                "k": "tool_end",
+                "name": event.name,
+                "ok": bool(event.ok),
+                "preview": _clip(event.preview, 220),
+            }
+        if piece is None:
+            return
+        with _DELTAS_LOCK:
+            buffer = _DELTAS.get(self._task_id)
+        if buffer is None:
+            return  # 轮间隙/缓冲已清:事件无处可写,如实丢弃
+        with buffer["lock"]:
+            buffer["pieces"].append(piece)
 
 
 def _default_preset() -> str:
@@ -455,62 +702,114 @@ def _default_preset() -> str:
     return DEFAULT_PRESET
 
 
-def _execution_params(model_hint: str = "") -> tuple[str, str, str, str]:
-    """解析执行四要素 ``(base_url, api_key, model, preset)``。
+def _execution_params(
+    model_hint: str = "", effort_hint: str = ""
+) -> tuple[str, str, str, str, dict[str, Any] | None]:
+    """解析执行五要素 ``(base_url, api_key, model, protocol, extra_body)``。
 
-    预设选择链:任务里显式选的模型名(工作台下拉,与 CLI ``--preset`` 同
-    一套注册表词汇)优先——点击选择是明确意图,整体接管 preset/base_url/
-    model;没选或名字未注册 → 与 CLI 同链(env SIGMA_BASE_URL / SIGMA_MODEL
-    / SIGMA_PRESET > 厂商预设默认值;密钥:命令行 > 环境变量 > 用户级 .env
-    > 项目 .env)。没配 key 抛 ``LookupError``,由端点转成 400 的指路文案。
+    模型解析链(按优先级):
+    1. **用户自定义条目**(模型设置里配的,name 精确匹配)——base_url/
+       model_id/协议/key 全按条目,apiKey 留空才走 resolve_api_key 链;
+       档位按条目声明的 ``effortStyle`` 随附;
+    2. **内置 preset**(与 CLI ``--preset`` 同一套注册表词汇)——显式选择
+       整体接管 preset/base_url/model;
+    3. 都没有 → 与 CLI 同链(env SIGMA_BASE_URL / SIGMA_MODEL / SIGMA_PRESET
+       > 厂商预设默认值;密钥:命令行 > 环境变量 > 用户级 .env > 项目 .env)。
+
+    没配 key(且条目没带 key)抛 ``LookupError``,由端点转成 400 指路文案。
     """
-    api_key, _source = resolve_api_key()
+    registry = builtin_providers()
+    hint = model_hint.strip()
+    if hint != "":
+        entry = next(
+            (e for e in _models_registry_read().get("models", []) if e.get("name") == hint),
+            None,
+        )
+        if entry is not None:
+            api_key = str(entry.get("apiKey") or "")
+            if api_key == "":
+                chained, _source = resolve_api_key()
+                api_key = chained or ""
+                if api_key == "":
+                    raise LookupError(
+                        f"模型「{hint}」未配置密钥:在模型设置里填 apiKey,"
+                        "或走 SIGMA_API_KEY / ~/.sigma/.env 链。"
+                    )
+            style = str(entry.get("effortStyle") or "reasoning_effort")
+            return (
+                str(entry.get("baseUrl") or ""),
+                api_key,
+                str(entry.get("modelId") or ""),
+                str(entry.get("protocol") or "openai-compat"),
+                _effort_extra_body(style, effort_hint),
+            )
+        if hint in registry:
+            spec = registry.resolve(hint)
+            chained, _source = resolve_api_key()
+            api_key = chained or ""
+            if not api_key:
+                raise LookupError(
+                    "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env(推荐)"
+                    "——与 sigma CLI 用的是同一份配置。"
+                )
+            return (
+                spec.base_url,
+                api_key,
+                spec.default_model,
+                spec.protocol,
+                _effort_extra_body("reasoning_effort", effort_hint),
+            )
+    chained, _source = resolve_api_key()
+    api_key = chained or ""
     if not api_key:
         raise LookupError(
             "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env(推荐)"
             "——与 sigma CLI 用的是同一份配置。"
         )
-    registry = builtin_providers()
-    hint = model_hint.strip()
-    if hint != "" and hint in registry:
-        spec = registry.resolve(hint)
-        return spec.base_url, api_key, spec.default_model, hint
     preset = os.environ.get("SIGMA_PRESET", _default_preset())
     spec = registry.resolve(preset)
     base_url = os.environ.get("SIGMA_BASE_URL") or spec.base_url
     model = os.environ.get("SIGMA_MODEL") or spec.default_model
-    return base_url, api_key, model, preset
+    return (
+        base_url,
+        api_key,
+        model,
+        spec.protocol,
+        _effort_extra_body("reasoning_effort", effort_hint),
+    )
 
 
-def _make_provider(base_url: str, api_key: str, preset: str) -> BaseProvider:
-    """按预设的**线协议**分派 provider 实现类(与 cli._make_provider 同判据)。"""
+def _make_provider(base_url: str, api_key: str, protocol: str) -> BaseProvider:
+    """按**线协议**分派 provider 实现类(与 cli._make_provider 同判据)。"""
     if _PROVIDER_FACTORY is not None:
         return _PROVIDER_FACTORY()
-    spec = builtin_providers().resolve(preset)
-    if spec.protocol == "anthropic":
-        return AnthropicProvider(base_url=base_url, api_key=api_key, provider_name=preset)
-    return OpenAICompatProvider(base_url=base_url, api_key=api_key, provider_name=preset)
+    if protocol == "anthropic":
+        return AnthropicProvider(base_url=base_url, api_key=api_key, provider_name=protocol)
+    return OpenAICompatProvider(base_url=base_url, api_key=api_key, provider_name=protocol)
 
 
 def _get_or_create_session(
     task_id: str,
     repo: Path,
     access: str,
-    collector: _StreamCollector,
     sessions_root: Path,
 ) -> InteractiveSession:
     """取(或建)任务的**持久会话**:steering/follow-up 队列与断点续跑
     都要求同一个 InteractiveSession 跨轮复用——这是 run_task 做不到的,
-    所以工作台直接走 SDK 装配(与 CLI 同一条构造路径、同一批默认值)。"""
+    所以工作台直接走 SDK 装配(与 CLI 同一条构造路径、同一批默认值)。
+    流式 collector 随会话建一次(缓冲区按 task_id 每轮实时读,见
+    _StreamCollector)。"""
     with _SESSIONS_LOCK:
         session = _SESSIONS.get(task_id)
     if session is not None:
         return session
-    # 模型选择:任务记录里显式选的 preset 优先(下拉与 CLI --preset 同词汇);
-    # 历史/磁盘会话无记录 → 与 CLI 同链(env / 默认预设)。
-    model_hint = str((_TASKS.get(task_id) or {}).get("model") or "")
-    base_url, api_key, model, preset = _execution_params(model_hint)
-    provider = _make_provider(base_url, api_key, preset)
+    # 模型/档位:任务记录里显式选的优先(自定义条目 > 内置 preset > CLI 同链);
+    # 历史/磁盘会话无记录 → 与 CLI 同链。会话级冻结(见 InteractiveSession)。
+    record = _TASKS.get(task_id) or {}
+    base_url, api_key, model, protocol, extra_body = _execution_params(
+        str(record.get("model") or ""), str(record.get("effort") or "")
+    )
+    provider = _make_provider(base_url, api_key, protocol)
     path = session_path(sessions_root, task_id)
     if path.is_file():
         tree = SessionTree.from_store(JsonlStore(sessions_root, task_id))
@@ -524,9 +823,12 @@ def _get_or_create_session(
     disabled = _checkpoint_disabled(repo, no_checkpoint_flag=False)
     shadow_dir = None if disabled else _shadow_dir(repo)
     access = access if access in ACCESS_MODES else "full"
-    approval: ApprovalHook | None = None if access == "full" else _HttpApprovalGate(
-        access, task_id, repo
-    )
+    # 审批闸**恒挂载**(full 本身就是秒放行路径,行为不变):中途切档时
+    # 从 _GATES 拿到同一个 gate 热替换模式即可,不用重建会话。
+    gate = _HttpApprovalGate(access, task_id, repo)
+    with _GATES_LOCK:
+        _GATES[task_id] = gate
+    approval: ApprovalHook = gate
     system_prompt = SYSTEM_PROMPT + (
         ("\n\n" + _PLAN_INSTRUCTION) if access == "plan" else ""
     )
@@ -536,13 +838,14 @@ def _get_or_create_session(
         model=model,
         system_prompt=system_prompt,
         max_rounds=20,
+        extra_body=extra_body,
         tree=tree,
         session_id=task_id,
         shadow_git_dir=shadow_dir,
         enable_checkpoint=shadow_dir is not None,
         enable_trace=True,
         approval=approval,
-        extra_hooks=[collector],
+        extra_hooks=[_StreamCollector(task_id)],
     )
     with _SESSIONS_LOCK:
         _SESSIONS[task_id] = session
@@ -632,10 +935,9 @@ def _post_message(
     }
     with _DELTAS_LOCK:
         _DELTAS[task_id] = buffer
-    collector = _StreamCollector(buffer["pieces"], buffer["lock"])
     threading.Thread(
         target=_turn_thread,
-        args=(task_id, text, project, sessions_root, collector, buffer, primary),
+        args=(task_id, text, project, sessions_root, buffer, primary),
         daemon=True,
         name=f"wb-turn-{task_id}",
     ).start()
@@ -644,12 +946,54 @@ def _post_message(
     return 200, payload
 
 
+#: 持久事件循环(独立线程,**永不关闭**):InteractiveSession 的 httpx
+#: AsyncClient 与 asyncio.Lock 都绑定**创建时**的运行循环——之前每轮
+#: ``asyncio.run`` 各造一个循环,第二轮起客户端拿着已关闭循环的连接池,
+#: 必现 ``RuntimeError: Event loop is closed``(星辰实测 2026-10-02)。
+#: CLI 是整会话共用一个循环;工作台每轮一循环是自创用法,不是 SDK 的锅。
+_TURN_LOOP: asyncio.AbstractEventLoop | None = None
+_TURN_LOOP_LOCK = threading.Lock()
+
+
+def _run_on_persistent_loop(coro: Any) -> Any:
+    """把一轮协程提交到持久循环并阻塞到完成(替代 asyncio.run)。"""
+    global _TURN_LOOP
+    with _TURN_LOOP_LOCK:
+        if _TURN_LOOP is None or _TURN_LOOP.is_closed():
+            _TURN_LOOP = asyncio.new_event_loop()
+            threading.Thread(
+                target=_TURN_LOOP.run_forever, daemon=True, name="wb-turn-loop"
+            ).start()
+    return asyncio.run_coroutine_threadsafe(coro, _TURN_LOOP).result()
+
+
+def _stop_task(task_id: str) -> tuple[int, dict[str, Any]]:
+    """外部强制中断(星辰 2026-10-02):调 ``InteractiveSession.interrupt()``,
+    协作式停止——在跑的工具先完成,流在下一个块边界停;树上状态已持久化,
+    断点重续免费。线程安全(interrupt 可从任意线程调)。
+
+    后端已无在跑的轮时**不回 409 而是返回成功 + interrupted=False**:
+    前端的 running 可能是滞留状态(轮已结束/桥接重启过内存态丢失),
+    此时"停止"的正确语义是自愈——把滞留的 running 就地纠正,而不是
+    让界面永远卡在执行态(实测 2026-10-02)。"""
+    if task_id in _RUNNING:
+        session = _session_of(task_id)
+        if session is None:
+            return 409, {"detail": "会话未装配,无法中断"}
+        stopped = session.interrupt()
+        return 200, {"ok": True, "interrupted": stopped}
+    with _TASKS_LOCK:
+        record = _TASKS.get(task_id)
+        if record is not None and record.get("status") == "running":
+            record["status"] = "draft"
+    return 200, {"ok": True, "interrupted": False}
+
+
 def _turn_thread(
     task_id: str,
     text: str,
     project: dict[str, Any],
     sessions_root: Path,
-    collector: _StreamCollector,
     buffer: dict[str, Any],
     primary: Path,
 ) -> None:
@@ -660,7 +1004,6 @@ def _turn_thread(
             task_id,
             Path(str(project["repoPath"])),
             str(((_TASKS.get(task_id) or {}).get("access")) or "full"),
-            collector,
             sessions_root,
         )
 
@@ -670,12 +1013,17 @@ def _turn_thread(
             guard = 0
             while session.has_followups() and guard < 10:
                 guard += 1
+                if statuses[-1] != "completed":
+                    # 中断/出错后**不再自动续跑排队项**——用户点停止的意图是
+                    # "停下来",接着把排队的任务跑完违背意图(星辰 2026-10-02)。
+                    # 排队项保留在队列里:可续跑后执行,也可在界面手动删除。
+                    break
                 nxt = session.pop_followup()
                 nxt_result = await session.send(nxt)
                 statuses.append(str(nxt_result.status))
             return statuses[-1]
 
-        status = asyncio.run(_run_all())
+        status = _run_on_persistent_loop(_run_all())
         if status != "completed":
             with _TASKS_LOCK:
                 record = _TASKS.get(task_id)
@@ -695,17 +1043,18 @@ def _turn_thread(
 
 
 def _deltas_payload(task_id: str, since: int) -> dict[str, Any]:
-    """``since`` 之后的文本增量;running=False 表示轮已结束(含最终错误)。"""
+    """``since`` 之后的**结构化块**(文本/思考/工具开始/工具结束);
+    running=False 表示轮已结束(含最终错误)。seq = 块总数。"""
     with _DELTAS_LOCK:
         buffer = _DELTAS.get(task_id)
     if buffer is None:
-        return {"seq": 0, "text": "", "running": False, "error": None}
+        return {"seq": 0, "pieces": [], "running": False, "error": None}
     with buffer["lock"]:
         pieces = list(buffer["pieces"])
-    text = "".join(pieces[since:]) if since < len(pieces) else ""
+    tail = pieces[since:] if since < len(pieces) else []
     return {
-        "seq": min(since, len(pieces)) if since > len(pieces) else len(pieces),
-        "text": text,
+        "seq": len(pieces),
+        "pieces": tail,
         "running": not bool(buffer["done"]),
         "error": buffer.get("error"),
     }
@@ -1265,16 +1614,44 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self._send_json(200, _plugins_payload(self.workspace))
             return
         if parts == ["models"]:
-            # 真实注册表 preset(与 CLI --preset 同一套词汇);执行链按任务
-            # 记录里的选择分派 base_url/协议/默认模型——不是摆设。
-            # 默认 preset 排第一:前端首载落在它上,与"什么都不选"的执行链一致。
+            # 自定义条目在前(与用户实际模型匹配),内置 preset 在后(默认
+            # preset 排第一,前端首载落在它上)。apiKey 绝不回传——只有
+            # hasKey 布尔;前端编辑留空 = 保留原值。
+            payloads: list[dict[str, Any]] = []
+            for entry in _models_registry_read().get("models", []):
+                payloads.append(
+                    {
+                        "id": str(entry.get("id") or ""),
+                        "name": str(entry.get("name") or ""),
+                        "efforts": list(entry.get("efforts", [])),
+                        "custom": True,
+                        "modelId": str(entry.get("modelId") or ""),
+                        "baseUrl": str(entry.get("baseUrl") or ""),
+                        "protocol": str(entry.get("protocol") or "openai-compat"),
+                        "effortStyle": str(entry.get("effortStyle") or "reasoning_effort"),
+                        "hasKey": bool(entry.get("apiKey")),
+                    }
+                )
             default = _default_preset()
-            names = builtin_providers().names()
-            ordered = [default] + [n for n in names if n != default] if default in names else names
-            self._send_json(
-                200,
-                [{"id": name, "name": name, "efforts": []} for name in ordered],
+            registry = builtin_providers()
+            names = registry.names()
+            ordered = (
+                [default] + [n for n in names if n != default] if default in names else names
             )
+            for name in ordered:
+                spec = registry.resolve(name)
+                payloads.append(
+                    {
+                        "id": name,
+                        "name": name,
+                        "efforts": [],
+                        "custom": False,
+                        "modelId": spec.default_model,
+                        "baseUrl": spec.base_url,
+                        "protocol": spec.protocol,
+                    }
+                )
+            self._send_json(200, payloads)
             return
         # /memory:契约之外的附加数据面(工作台"记忆"区)。
         if parts == ["memory"]:
@@ -1300,6 +1677,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             ok, detail = _remove_project(self.workspace, str(body.get("id") or ""))
             self._send_json(200 if ok else 400, {"ok": ok, "detail": detail})
             return
+        # 模型设置:新增/更新(留空 apiKey=保留原值)与移除自定义条目。
+        if parts == ["api", "v1", "models", "save"]:
+            self._send_json(*_save_model_entry(self._read_json_body()))
+            return
+        if parts == ["api", "v1", "models", "remove"]:
+            self._send_json(*_remove_model_entry(self._read_json_body()))
+            return
         # 创建草稿任务(Composer / 侧栏「新建会话」)。
         if parts == ["api", "v1", "tasks"]:
             self._send_json(200, _create_task(self._read_json_body()))
@@ -1312,11 +1696,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             )
             self._send_json(code, payload)
             return
-        # /tasks/{id}/steer | /queue | /queue/remove:打断注入 / 排队 / 队列管理。
+        # /tasks/{id}/steer | /queue | /queue/remove | /queue/edit:
+        # 打断注入 / 排队 / 队列管理 / 改写排队文本。
         if (
             len(parts) == 5
             and parts[:3] == ["api", "v1", "tasks"]
-            and parts[4] in ("steer", "queue", "queue-remove")
+            and parts[4] in ("steer", "queue", "queue-remove", "queue-edit")
         ):
             body = self._read_json_body()
             code, payload = _queue_op(parts[3], parts[4], body)
@@ -1332,6 +1717,24 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             decision = str(body.get("decision") or "deny")
             ok = _decide_approval(parts[3], parts[5], decision)
             self._send_json(200 if ok else 404, {"ok": ok})
+            return
+        # /tasks/{id}/access:权限模式中途切换(human-in-the-loop)。
+        if (
+            len(parts) == 5
+            and parts[:3] == ["api", "v1", "tasks"]
+            and parts[4] == "access"
+        ):
+            self._send_json(
+                *_set_task_access(self.workspace, parts[3], self._read_json_body())
+            )
+            return
+        # /tasks/{id}/stop:外部强制中断(协作式,块边界停)。
+        if (
+            len(parts) == 5
+            and parts[:3] == ["api", "v1", "tasks"]
+            and parts[4] == "stop"
+        ):
+            self._send_json(*_stop_task(parts[3]))
             return
         self._not_implemented(_what_from_path(self.path), "M2")
 
@@ -1352,7 +1755,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self._not_implemented(_what_from_path(self.path), "M2")
 
     def do_DELETE(self) -> None:  # noqa: N802 - 基类命名
-        self._not_implemented("删除任务(会话 JSONL 是审计事实,工作台只读)", "—")
+        clean = self.path.split("?", 1)[0]
+        parts = [p for p in clean.split("/") if p]
+        # /tasks/{id}:删除会话(JSONL/trace 移入回收站,审计可恢复)。
+        if len(parts) == 4 and parts[:3] == ["api", "v1", "tasks"]:
+            self._send_json(*_delete_task(self.sessions_root, parts[3]))
+            return
+        self._not_implemented(_what_from_path(self.path), "—")
 
     def do_PUT(self) -> None:  # noqa: N802 - 基类命名
         self._not_implemented(_what_from_path(self.path), "M2")
@@ -1370,10 +1779,22 @@ def _what_from_path(path: str) -> str:
 def _task_payload_for_id(
     primary: Path, sessions_root: Path, session_id: str
 ) -> dict[str, Any] | None:
-    """按 id 取单任务;安全网:先过一遍列表映射,避免路径段被拼进文件路径。"""
+    """按 id 取单任务;安全网:先过一遍列表映射,避免路径段被拼进文件路径。
+    草稿记录里的 access/effort(用户意图)与列表端点同规则合并。
+    磁盘上没有 → 回退**内存草稿记录**(列表端点合并草稿、单任务端点也必须
+    认——否则草稿期切权限档,前端回读拿到 null 不更新,实测 2026-10-02)。"""
     for payload in _list_task_payloads(primary, sessions_root):
         if payload["id"] == session_id:
+            with _TASKS_LOCK:
+                record = dict(_TASKS[session_id]) if session_id in _TASKS else None
+            if record is not None:
+                payload["access"] = str(record.get("access") or "") or payload["access"]
+                payload["effort"] = str(record.get("effort") or "") or payload["effort"]
             return payload
+    with _TASKS_LOCK:
+        record = dict(_TASKS[session_id]) if session_id in _TASKS else None
+    if record is not None:
+        return _draft_payload(record)
     return None
 
 

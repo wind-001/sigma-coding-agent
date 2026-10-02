@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import threading
@@ -42,6 +43,7 @@ from sigma.providers.messages import (
 )
 from sigma.sessions.store import JsonlStore
 from sigma.sessions.tree import SessionTree
+from sigma.events.lifecycle import TextChunk, ThinkingChunk, ToolEnd, ToolStart
 
 _TS = "2026-10-01T10:00:00.000"
 
@@ -359,6 +361,15 @@ def _post(base: str, path: str, payload: dict[str, Any] | None = None) -> tuple[
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def _delete(base: str, path: str) -> tuple[int, Any]:
+    request = urllib.request.Request(f"{base}{path}", method="DELETE")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
 def test_http_get_endpoints(http_server: tuple[str, Path]) -> None:
     base, _root = http_server
     code, ping = _get(base, "/api/v1/system/ping")
@@ -401,17 +412,22 @@ def test_execution_loop_create_and_run(http_server: tuple[str, Path], execution_
     assert code == 200
     assert started["status"] == "running"
 
-    # 轮询流式增量直到轮结束
+    # 轮询流式增量直到轮结束(结构化块:text/thinking/tool_start/tool_end)
     text_acc, seq = "", 0
+    kinds: set[str] = set()
     for _ in range(200):
         code, d = _get(base, f"/api/v1/tasks/{created['id']}/deltas?since={seq}")
         assert code == 200
-        text_acc += d["text"]
+        for piece in d["pieces"]:
+            kinds.add(piece["k"])
+            if piece["k"] == "text":
+                text_acc += piece["t"]
         seq = d["seq"]
         if not d["running"]:
             break
         time.sleep(0.05)
     assert "我是 sigma" in text_acc
+    assert kinds == {"text"}  # 假 provider 纯文本:只见文本块,协议形状如实
 
     # 轮结束:任务 completed,回放含双方消息,会话事实落盘,时间线有真实用量
     code, final = _get(base, f"/api/v1/tasks/{created['id']}")
@@ -438,6 +454,44 @@ def test_post_message_empty_text_rejected(http_server: tuple[str, Path], executi
     assert excinfo.value.code == 400
 
 
+def test_second_turn_shares_persistent_loop(
+    http_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一会话连续两轮必须跑在**同一个**事件循环上。
+
+    回归:provider 的 httpx.AsyncClient / asyncio.Lock 绑定创建时的循环,
+    旧实现每轮 asyncio.run 各造一个循环,第二轮起必现
+    ``RuntimeError: Event loop is closed``(星辰实测 2026-10-02)。
+    修复 = 工作台用持久循环线程;此断言在旧代码下必红(两轮两循环)。"""
+    base, _root = http_server
+    monkeypatch.setenv("SIGMA_API_KEY", "test-key")
+    loops: list[int] = []
+
+    class _LoopSpyProvider(_ScriptedProvider):
+        def __init__(self) -> None:
+            super().__init__("第二轮回执")
+
+        async def stream(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+            loops.append(id(asyncio.get_running_loop()))
+            async for event in super().stream(*args, **kwargs):
+                yield event
+
+    monkeypatch.setattr(SERVER, "_PROVIDER_FACTORY", _LoopSpyProvider)
+
+    code, created = _post(base, "/api/v1/tasks")
+    assert code == 200
+    for text in ("第一轮", "第二轮"):
+        code, _started = _post(base, f"/api/v1/tasks/{created['id']}/messages", {"text": text})
+        assert code == 200
+        for _ in range(200):
+            _code, d = _get(base, f"/api/v1/tasks/{created['id']}/deltas?since=0")
+            if not d["running"]:
+                break
+            time.sleep(0.05)
+    assert len(loops) == 2
+    assert loops[0] == loops[1]  # 同一持久循环——旧代码这里两轮各一个
+
+
 def test_post_message_unknown_task_404(http_server: tuple[str, Path], execution_env: str) -> None:
     base, _root = http_server
     request = urllib.request.Request(
@@ -456,18 +510,120 @@ def test_post_message_unknown_task_404(http_server: tuple[str, Path], execution_
 # ---------------------------------------------------------------------------
 
 
-def test_models_endpoint_lists_registry_presets(http_server: tuple[str, Path]) -> None:
-    """/models = 真实注册表 preset(与 CLI --preset 同一套词汇),不再是占位行。"""
+def test_models_endpoint_custom_first_and_no_key_leak(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """/models = 自定义条目(模型设置,排最前)+ 内置 preset(CLI 同词汇);
+    默认 preset 排内置组第一;apiKey 绝不回传(只有 hasKey 布尔)。"""
     from sigma.cli.main import DEFAULT_PRESET
     from sigma.providers.registry import builtin_providers
 
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
     base, _root = http_server
+    code, saved = _post(base, "/api/v1/models/save", {
+        "name": "GLM-5.3-Flash",
+        "protocol": "openai-compat",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKey": "sk-test-123",
+        "modelId": "glm-5.3-flash",
+        "efforts": ["开启", "关闭"],
+        "effortStyle": "thinking",
+    })
+    assert code == 200 and saved["ok"] is True
+
     code, models = _get(base, "/api/v1/models")
     assert code == 200
     names = [m["name"] for m in models]
-    assert sorted(names) == builtin_providers().names()  # 同一套词汇,不增不删
-    assert names[0] == DEFAULT_PRESET  # 默认 preset 排第一(前端首载落它)
-    assert all(m["efforts"] == [] for m in models)
+    assert names[0] == "GLM-5.3-Flash"  # 自定义条目永远在前
+    assert sorted(names[1:]) == builtin_providers().names()
+    assert names[1] == DEFAULT_PRESET
+    mine = models[0]
+    assert mine["efforts"] == ["开启", "关闭"] and mine["custom"] is True
+    assert mine["modelId"] == "glm-5.3-flash" and mine["hasKey"] is True
+    assert "apiKey" not in mine and "sk-test-123" not in json.dumps(models)
+
+
+def test_model_save_rejects_duplicate_name(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """name 是执行链的解析键:重名(含改名撞名)一律 400;更新自身留空
+    apiKey = 保留原值(密钥不回传,表单无从带回)。"""
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    base, _root = http_server
+    payload = {
+        "name": "my-model", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKey": "k", "modelId": "m-1",
+        "efforts": [], "effortStyle": "reasoning_effort",
+    }
+    code, first = _post(base, "/api/v1/models/save", payload)
+    assert code == 200
+    code, clash = _post(base, "/api/v1/models/save", {**payload, "modelId": "m-2"})
+    assert code == 400 and "已存在" in clash["detail"]
+    code, updated = _post(base, "/api/v1/models/save", {**payload, "id": first["id"], "apiKey": ""})
+    assert code == 200
+    stored = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))["models"][0]
+    assert stored["modelId"] == "m-1" and stored["apiKey"] == "k"
+
+
+def test_model_remove_roundtrip(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    base, _root = http_server
+    _code, saved = _post(base, "/api/v1/models/save", {
+        "name": "gone", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKey": "", "modelId": "m",
+        "efforts": [], "effortStyle": "reasoning_effort",
+    })
+    code, body = _post(base, "/api/v1/models/remove", {"id": saved["id"]})
+    assert code == 200 and body["ok"] is True
+    code, body = _post(base, "/api/v1/models/remove", {"id": saved["id"]})
+    assert code == 404
+
+
+def test_effort_extra_body_styles() -> None:
+    """档位 → 请求体:thinking 风格包对象,reasoning_effort 风格直传字符串,
+    空档位 = None(请求字节与无档位一致)。"""
+    assert SERVER._effort_extra_body("thinking", "开启") == {"thinking": {"type": "开启"}}
+    assert SERVER._effort_extra_body("reasoning_effort", "high") == {"reasoning_effort": "high"}
+    assert SERVER._effort_extra_body("thinking", "  ") is None
+
+
+def test_execution_params_custom_model_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """自定义条目整体接管 base_url/model/协议/key;档位按条目 effortStyle
+    随附;内置 preset 仍按名解析(reasoning_effort 风格)。"""
+    for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    (tmp_path / "models.json").write_text(json.dumps({
+        "models": [{
+            "id": "mdl-x", "name": "GLM-5.3-Flash", "protocol": "openai-compat",
+            "baseUrl": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "zk-own-key",
+            "modelId": "glm-5.3-flash", "efforts": ["开启", "关闭"],
+            "effortStyle": "thinking",
+        }]
+    }), encoding="utf-8")
+
+    base_url, api_key, model, protocol, extra = SERVER._execution_params(
+        "GLM-5.3-Flash", "开启"
+    )
+    assert (base_url, model, protocol) == (
+        "https://open.bigmodel.cn/api/paas/v4", "glm-5.3-flash", "openai-compat"
+    )
+    assert api_key == "zk-own-key"  # 条目自带 key,不碰环境链
+    assert extra == {"thinking": {"type": "开启"}}
+
+    _url, _k, model, protocol, extra = SERVER._execution_params("zhipu", "high")
+    assert protocol == "openai-compat" and extra == {"reasoning_effort": "high"}
+    assert model == "glm-4-flash"
 
 
 def test_fs_listing_with_files_flag(http_server: tuple[str, Path]) -> None:
@@ -493,26 +649,177 @@ def test_fs_listing_with_files_flag(http_server: tuple[str, Path]) -> None:
     assert with_files["entries"][-1]["isDir"] is False
 
 
-def test_execution_params_model_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """模型选择解析链:显式选择整体接管 preset;未注册名回落 CLI 同链;
-    env 覆盖只在无显式选择时生效。"""
+def test_stream_collector_structured_pieces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """collector 把四类事件折叠成**结构化块**——直播区分块渲染的原料:
+    text/thinking/tool_start/tool_end,工具参数与结果摘要服务端截断。
+    collector 随会话缓存,但缓冲区按 task_id **每轮实时读取**——换新缓冲
+    立即生效(旧实现绑死首轮流缓冲,第二轮起 deltas 永远为空,实测)。"""
+    pieces: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        SERVER,
+        "_DELTAS",
+        {"t1": {"pieces": pieces, "lock": threading.Lock(), "done": False, "error": None}},
+    )
+    collector = SERVER._StreamCollector("t1")
+    message = LlmMessageWrapper(timestamp=_TS, message=UserMessage(content="x", timestamp=_TS))
+    collector.on_event(TextChunk(text="我先看一下目录。"))
+    collector.on_event(ThinkingChunk(text="想一想"))
+    collector.on_event(ToolStart(name="bash", arguments={"command": "pwd"}, call_id="c1"))
+    collector.on_event(ToolEnd(name="bash", ok=True, preview="D:\\", message=message))
+    assert [piece["k"] for piece in pieces] == ["text", "thinking", "tool_start", "tool_end"]
+    assert pieces[0] == {"k": "text", "t": "我先看一下目录。"}
+    assert pieces[2]["name"] == "bash" and "pwd" in pieces[2]["args"]
+    assert pieces[3]["ok"] is True and pieces[3]["preview"] == "D:\\"
+    # 换新缓冲区(新一轮开始)后,事件写进**新**缓冲——跨轮不串
+    pieces2: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        SERVER,
+        "_DELTAS",
+        {"t1": {"pieces": pieces2, "lock": threading.Lock(), "done": False, "error": None}},
+    )
+    collector.on_event(TextChunk(text="第二轮"))
+    assert len(pieces) == 4 and [p["t"] for p in pieces2] == ["第二轮"]
+    # 缓冲不存在(轮间隙/已清理):事件无处可写,不抛
+    monkeypatch.setattr(SERVER, "_DELTAS", {})
+    collector.on_event(TextChunk(text="孤儿事件"))
+
+
+def test_http_stop_task_no_run_self_heals(http_server: tuple[str, Path]) -> None:
+    """后端无在跑轮:stop 返回 200(interrupted=False)并纠正滞留的
+    running 状态——界面卡执行态时点停止应自愈,而不是 409 卡死
+    (实测 2026-10-02)。在跑但会话缺失的异常态仍 409。"""
+    base, _root = http_server
+    code, body = _post(base, "/api/v1/tasks/s-http/stop")
+    assert code == 200 and body["interrupted"] is False
+    SERVER._TASKS["s-http"] = {"id": "s-http", "status": "running", "projectId": "proj-sigma"}
+    try:
+        code, body = _post(base, "/api/v1/tasks/s-http/stop")
+        assert code == 200 and body["interrupted"] is False
+        assert SERVER._TASKS["s-http"]["status"] == "draft"
+    finally:
+        SERVER._TASKS.pop("s-http", None)
+    SERVER._RUNNING.add("s-http")
+    try:
+        code, body = _post(base, "/api/v1/tasks/s-http/stop")
+        assert code == 409 and "会话未装配" in body["detail"]
+    finally:
+        SERVER._RUNNING.discard("s-http")
+
+
+def test_http_queue_edit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """queue-edit:改写排队文本落到 session.edit_queued;空文本 400;无会话 409。"""
+    calls: list[tuple[str, int, str]] = []
+
+    class _FakeSession:
+        def edit_queued(self, *, kind: str, index: int, text: str) -> bool:
+            calls.append((kind, index, text))
+            return True
+
+    monkeypatch.setattr(SERVER, "_SESSIONS", {"t-q": _FakeSession()})
+    code, body = SERVER._queue_op(
+        "t-q", "queue-edit", {"kind": "followup", "index": 1, "text": "改过的任务"}
+    )
+    assert code == 200 and body["ok"] is True
+    assert calls == [("followup", 1, "改过的任务")]
+    code, body = SERVER._queue_op("t-q", "queue-edit", {"kind": "followup", "index": 0, "text": "  "})
+    assert code == 400
+    monkeypatch.setattr(SERVER, "_SESSIONS", {})
+    code, body = SERVER._queue_op("t-q", "queue-edit", {"kind": "followup", "index": 0, "text": "x"})
+    assert code == 409
+
+
+def test_fs_listing_drive_root_parent_back_to_drives() -> None:
+    """盘符根(D:\\)的 parent 是空串(回「此电脑」层),不能是 None——
+    否则「上一级」在根目录被禁死,用户永远换不了盘。"""
+    if not Path("C:\\").is_dir():
+        pytest.skip("非 Windows 环境,无盘符根")
+    listing = SERVER._fs_listing("C:\\")
+    assert listing["parent"] == ""
+    drives = SERVER._fs_listing("")
+    assert drives["path"] == "" and drives["parent"] is None
+    assert all(entry["isDir"] for entry in drives["entries"])
+
+
+def test_http_delete_task_moves_to_trash(
+    http_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """删除 = 回收站移入(审计可恢复),不是 unlink;列表同步消失,
+    再删一次 404。"""
+    base, sessions_root = http_server
+    monkeypatch.setattr(SERVER, "_TRASH_DIR", tmp_path / "trash")
+    code, body = _delete(base, "/api/v1/tasks/s-http")
+    assert code == 200 and body["ok"] is True
+    assert not SERVER.session_path(sessions_root, "s-http").is_file()
+    trashed = list((tmp_path / "trash").glob("s-http.*.jsonl"))
+    assert len(trashed) == 1 and trashed[0].read_text(encoding="utf-8") != ""
+    code, tasks = _get(base, "/api/v1/tasks")
+    assert code == 200 and all(task["id"] != "s-http" for task in tasks)
+    code, body = _delete(base, "/api/v1/tasks/s-http")
+    assert code == 404
+
+
+def test_http_delete_task_rejects_running_and_bad_id(
+    http_server: tuple[str, Path],
+) -> None:
+    """执行中的会话拒绝删除(409);路径段拼不进文件路径(400)。"""
+    base, _root = http_server
+    SERVER._RUNNING.add("s-http")
+    try:
+        code, body = _delete(base, "/api/v1/tasks/s-http")
+        assert code == 409 and "执行中" in body["detail"]
+    finally:
+        SERVER._RUNNING.discard("s-http")
+    code, body = _delete(base, "/api/v1/tasks/..")
+    assert code == 400
+
+
+def test_http_access_switch_hot_reloads_gate(
+    http_server: tuple[str, Path],
+) -> None:
+    """权限模式中途切换:记录更新(载荷读到新档)+ 存活 gate 热替换;
+    非法档位 400。**草稿(未落盘)也要能读到**——单任务端点必须认内存
+    草稿记录,否则草稿期切档前端回读 null 不更新(实测 2026-10-02)。"""
+    base, _root = http_server
+    try:
+        code, body = _post(base, "/api/v1/tasks/s-http/access", {"access": "confirm"})
+        assert code == 200 and body["access"] == "confirm"
+        code, task = _get(base, "/api/v1/tasks/s-http")
+        assert code == 200 and task["access"] == "confirm"
+        code, body = _post(base, "/api/v1/tasks/s-http/access", {"access": "yolo"})
+        assert code == 400
+        # 纯草稿(不在磁盘):切档后单任务端点仍要回读得到新档位
+        code, created = _post(base, "/api/v1/tasks", {"title": "草稿"})
+        assert code == 200
+        code, body = _post(base, f"/api/v1/tasks/{created['id']}/access", {"access": "auto"})
+        assert code == 200
+        code, task = _get(base, f"/api/v1/tasks/{created['id']}")
+        assert code == 200 and task is not None and task["access"] == "auto"
+    finally:
+        SERVER._TASKS.pop("s-http", None)
+
+
+def test_execution_params_model_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """内置 preset 路径:显式选择整体接管(协议随 preset);未注册名回落
+    CLI 同链;env 覆盖只在无显式选择时生效;无档位 extra_body=None。"""
     from sigma.providers.registry import builtin_providers
 
     for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(SERVER, "resolve_api_key", lambda: ("test-key", "test"))
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
 
-    base_url, _key, model, preset = SERVER._execution_params("zhipu")
-    assert preset == "zhipu"
-    assert base_url == builtin_providers().resolve("zhipu").base_url
-    assert model == "glm-4-flash"
+    base_url, _key, model, protocol, extra = SERVER._execution_params("zhipu")
+    spec = builtin_providers().resolve("zhipu")
+    assert (base_url, model, protocol) == (spec.base_url, "glm-4-flash", spec.protocol)
+    assert extra is None
 
-    _url, _key, model, preset = SERVER._execution_params("no-such-preset")
-    assert preset == "deepseek"  # DEFAULT_PRESET
-    assert model == "deepseek-chat"
+    _url, _key, model, _protocol, _extra = SERVER._execution_params("no-such-preset")
+    assert model == "deepseek-chat"  # DEFAULT_PRESET=deepseek
 
     monkeypatch.setenv("SIGMA_MODEL", "custom-model-x")
-    _url, _key, model, preset = SERVER._execution_params("")
-    assert preset == "deepseek" and model == "custom-model-x"  # env 覆盖生效
-    _url, _key, model, _preset = SERVER._execution_params("zhipu")
+    _url, _key, model, _protocol, _extra = SERVER._execution_params("")
+    assert model == "custom-model-x"  # env 覆盖生效
+    _url, _key, model, _protocol, _extra = SERVER._execution_params("zhipu")
     assert model == "glm-4-flash"  # 显式选择压过 env
