@@ -104,7 +104,30 @@ export interface Plugin {
 export interface ModelInfo {
   id: string
   name: string
+  /** 档位取值由条目自己声明(空 = 该模型无档位,前端隐藏下拉) */
   efforts: string[]
+  /** 自定义条目(模型设置里配的 base_url/api_key/model_id) */
+  custom?: boolean
+  /** 实际发给 API 的 model id */
+  modelId?: string
+  baseUrl?: string
+  protocol?: string
+  /** 档位随附方式:reasoning_effort(OpenAI 风格)| thinking(智谱风格) */
+  effortStyle?: string
+  /** 是否已配密钥(密钥本身绝不回传前端) */
+  hasKey?: boolean
+}
+
+/** 模型设置表单(新增/更新);apiKey 留空 = 保留原值 */
+export interface ModelSaveInput {
+  id?: string
+  name: string
+  protocol: string
+  baseUrl: string
+  apiKey: string
+  modelId: string
+  efforts: string[]
+  effortStyle: string
 }
 
 export interface AccessOption {
@@ -116,7 +139,6 @@ export const ACCESS_OPTIONS: readonly AccessOption[] = [
   { id: 'full', label: '完全访问' },
   { id: 'auto', label: '自动审批' },
   { id: 'confirm', label: '手动确认' },
-  { id: 'readonly', label: '只读' },
 ]
 
 export const STATUS_META: Record<TaskStatus, { label: string; color: string }> = {
@@ -198,10 +220,25 @@ export interface WorkbenchBudget {
   measured: Record<string, number>
 }
 
-/** 流式增量(最小执行环):since 之后的新文本;running=false 表示轮已结束。 */
+/** 流式增量**结构化块**:直播区分块渲染的原料(文本/思考/工具块,星辰 2026-10-02)。 */
+export interface TaskDeltaPiece {
+  k: 'text' | 'thinking' | 'tool_start' | 'tool_end'
+  /** text/thinking 的文本增量 */
+  t?: string
+  /** 工具名(tool_start/tool_end) */
+  name?: string
+  /** 工具参数摘要(tool_start,服务端已截断) */
+  args?: string
+  /** 工具结果摘要(tool_end,服务端已截断) */
+  preview?: string
+  /** 工具结果状态(tool_end) */
+  ok?: boolean
+}
+
+/** 流式增量(最小执行环):pieces = since 之后的**新块**;running=false 表示轮已结束。 */
 export interface TaskDeltas {
   seq: number
-  text: string
+  pieces: TaskDeltaPiece[]
   running: boolean
   error: string | null
 }
@@ -246,6 +283,10 @@ export interface SigmaApiClient {
   listPlugins(): Promise<Plugin[]>
   setPluginInstalled(pluginId: string, installed: boolean): Promise<Plugin>
   listModels(): Promise<ModelInfo[]>
+  /** 模型设置:新增/更新自定义条目(可选方法,mock 不实现) */
+  saveModel?(input: ModelSaveInput): Promise<void>
+  /** 模型设置:移除自定义条目(可选方法,mock 不实现) */
+  removeModel?(id: string): Promise<void>
   /**
    * 运行时间线(契约外附加,只读桥接服务已实现)。
    * 可选方法:mock 不实现,消费方须以 `apiClient.getTaskTimeline?.()` 调用。
@@ -267,8 +308,15 @@ export interface SigmaApiClient {
   queueTask?(taskId: string, text: string): Promise<void>
   /** 删除排队项。 */
   removeQueued?(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void>
+  /** 改写排队文本(排队项可编辑,星辰 2026-10-02)。 */
+  editQueued?(taskId: string, kind: 'steering' | 'followup', index: number, text: string): Promise<void>
   /** 审批决策(变更前确认环)。 */
   decideApproval?(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
+  /** 权限模式中途切换(human-in-the-loop):热替换审批闸,下一声工具调用生效。 */
+  setTaskAccess?(taskId: string, access: string): Promise<void>
+  /** 外部强制中断(协作式:在跑工具完成后于块边界停,状态已持久化可续跑)。
+   *  interrupted=false 表示后端本就没在跑(滞留状态已被纠正)。 */
+  stopTask?(taskId: string): Promise<{ interrupted: boolean }>
   /** 当前激活的工作区(可选方法,mock 不实现)。 */
   getWorkspace?(): Promise<WorkspaceState>
   /** 切换激活的工作区(可选方法,mock 不实现)。 */

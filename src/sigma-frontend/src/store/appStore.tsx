@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
-import { apiClient, STATUS_META, type Automation, type ModelInfo, type Plugin, type Project, type Task, type TaskStatus } from '../api'
+import { apiClient, ACCESS_OPTIONS, STATUS_META, type Automation, type ModelInfo, type ModelSaveInput, type Plugin, type Project, type Task, type TaskDeltaPiece, type TaskEvent, type TaskStatus } from '../api'
+import { piecesToLiveEvents } from '../lib/liveBlocks'
 
 export type StatusFilter = 'all' | 'active' | 'completed'
-export type OverlayKind = 'automations' | 'plugins' | 'help' | 'fs-picker' | 'fs-file' | null
+export type OverlayKind = 'automations' | 'plugins' | 'help' | 'fs-picker' | 'fs-file' | 'model-settings' | null
 
 export interface AppState {
   ready: boolean
@@ -19,6 +20,8 @@ export interface AppState {
   draft: string
   composerAccess: string
   composerModel: string
+  /** 档位取值由所选模型条目声明;条目无档位时为 ''(前端隐藏下拉) */
+  composerEffort: string
   paletteOpen: boolean
   overlay: OverlayKind
   /** 递增触发 Composer 聚焦 */
@@ -40,6 +43,7 @@ const initialState: AppState = {
   draft: '',
   composerAccess: 'full',
   composerModel: '',
+  composerEffort: '',
   paletteOpen: false,
   overlay: null,
   focusComposerSignal: 0,
@@ -108,8 +112,14 @@ export interface AppActions {
   steerTask(taskId: string, text: string): Promise<void>
   /** 删除排队项 */
   removeQueued(taskId: string, kind: 'steering' | 'followup', index: number): Promise<void>
+  /** 改写排队文本(排队项可编辑) */
+  editQueued(taskId: string, kind: 'steering' | 'followup', index: number, text: string): Promise<void>
   /** 审批决策(变更前确认环) */
   decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
+  /** 权限模式中途切换:热替换审批闸,下一声工具调用生效 */
+  setTaskAccess(taskId: string, access: string): Promise<void>
+  /** 外部强制中断:协作式停止,块边界生效,状态可续跑 */
+  stopTask(taskId: string): Promise<void>
   /** 导入工作区(选择目录) */
   importWorkspace(repoPath: string, name?: string): Promise<void>
   /** 切换激活的工作区 */
@@ -120,7 +130,11 @@ export interface AppActions {
   refreshAll(): Promise<void>
   setStatusFilter(filter: StatusFilter): void
   setActiveProjectId(projectId: string): void
-  setComposerOpt(patch: { access?: string; model?: string }): void
+  setComposerOpt(patch: { access?: string; model?: string; effort?: string }): void
+  /** 模型设置:新增/更新自定义条目(apiKey 留空 = 保留原值) */
+  saveModelConfig(input: ModelSaveInput): Promise<void>
+  /** 模型设置:移除自定义条目 */
+  removeModelConfig(id: string): Promise<void>
   togglePalette(): void
   closePalette(): void
   setOverlay(overlay: OverlayKind): void
@@ -160,9 +174,10 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         showToast(error instanceof Error ? error.message : String(error))
       }
     }
-    /** 最小执行环(流式):发消息启动一轮 → 轮询 deltas 增量追加 live 气泡 →
-     * 完成后取最终载荷替换。⚠ 以 `apiClient.xxx(...)` 方法调用形式执行——
-     * 取出来调会丢 this(实测白屏)。 */
+    /** 最小执行环(流式):发消息启动一轮 → 轮询 deltas 取**结构化块** →
+     * 折叠成分块直播事件(文本/思考/工具,参考成熟 agent)→ 完成后取最终
+     * 载荷替换。⚠ 以 `apiClient.xxx(...)` 方法调用形式执行——取出来调会
+     * 丢 this(实测白屏)。 */
     const send = async (taskId: string, text: string): Promise<string> => {
       if (apiClient.addTaskMessage === undefined) {
         throw new Error('当前后端不支持执行(桥接服务过旧或处于 mock 模式)')
@@ -170,38 +185,75 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       const trimmed: string = text.trim()
       if (trimmed === '') return '消息为空'
       const existing = stateRef.current.tasks.find((t) => t.id === taskId)
-      if (existing !== undefined) {
-        dispatch({ type: 'taskReplaced', task: { ...existing, status: 'running' } })
+      const existingEvents: TaskEvent[] = existing?.events ?? []
+      const userBubble: TaskEvent = {
+        id: '__user-pending',
+        kind: 'message',
+        role: 'user',
+        text: trimmed,
+        at: '',
       }
-      const started = await apiClient.addTaskMessage(taskId, trimmed)
-      dispatch({ type: 'taskReplaced', task: started })
+      // 第一时间渲染(星辰 2026-10-02):提问气泡在 **按 Enter 的瞬间** 上屏,
+      // 不等任何网络往返。submitDraft 已预插则跳过(id 相同去重)。
+      const alreadyOptimistic = existingEvents.some(
+        (e) => e.id === '__user-pending' && e.text === trimmed,
+      )
+      if (existing !== undefined && !alreadyOptimistic) {
+        dispatch({
+          type: 'taskReplaced',
+          task: { ...existing, status: 'running', events: [...existingEvents, userBubble] },
+        })
+      }
+      let started: Task
+      try {
+        started = await apiClient.addTaskMessage(taskId, trimmed)
+      } catch (error) {
+        // 发送失败要回滚乐观气泡,否则界面停在一个假 running 态
+        const landed = await apiClient.getTask(taskId).catch((): null => null)
+        if (landed !== null) {
+          dispatch({ type: 'taskReplaced', task: landed })
+        } else if (existing !== undefined) {
+          dispatch({
+            type: 'taskReplaced',
+            task: { ...existing, status: existing.status, events: existingEvents },
+          })
+        }
+        throw error
+      }
+      // POST 载荷里还没有刚发的提问(要等执行链持久化)——乐观气泡补上,
+      // 与落盘真身靠完成时整体替换去重。
+      const startedEvents: TaskEvent[] = started.events ?? []
+      const hasPendingUser = startedEvents.some(
+        (e) => e.role === 'user' && e.text === trimmed,
+      )
+      const eventsWithUser: TaskEvent[] = hasPendingUser
+        ? startedEvents
+        : [...startedEvents, userBubble]
+      dispatch({ type: 'taskReplaced', task: { ...started, events: eventsWithUser } })
       if (apiClient.getTaskDeltas !== undefined) {
         let offset = 0
-        let live = ''
+        let livePieces: TaskDeltaPiece[] = []
         let streamError: string | null = null
         for (;;) {
           await new Promise<void>((resolve): void => {
-            setTimeout(resolve, 250)
+            setTimeout(resolve, 100)  // 本地回环很便宜,细粒度才丝滑(星辰 2026-10-02)
           })
           const d = await apiClient.getTaskDeltas(taskId, offset)
           if (d.error !== null && d.error !== undefined) {
             streamError = d.error
             break
           }
-          if (d.text !== '') {
-            live += d.text
+          if (d.pieces.length > 0) {
+            livePieces = livePieces.concat(d.pieces)
             offset = d.seq
             const current = stateRef.current.tasks.find((t) => t.id === taskId)
             if (current !== undefined) {
-              const settled = current.events.filter((e) => e.id !== '__live__')
+              const settled = current.events.filter((e) => !e.id.startsWith('__live'))
               dispatch({
                 type: 'taskReplaced',
                 task: {
                   ...current,
-                  events: [
-                    ...settled,
-                    { id: '__live__', kind: 'message', role: 'assistant', text: live, at: '' },
-                  ],
+                  events: [...settled, ...piecesToLiveEvents(livePieces)],
                 },
               })
             }
@@ -254,8 +306,18 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             description: text,
             access: s.composerAccess,
             model: s.composerModel,
+            effort: s.composerEffort,
           })
-          dispatch({ type: 'taskAdded', task: created })
+          // 提问气泡第一时间上屏:创建瞬间预插(send 里按 id 去重不会重复)
+          dispatch({
+            type: 'taskAdded',
+            task: {
+              ...created,
+              events: [
+                { id: '__user-pending', kind: 'message', role: 'user', text, at: '' },
+              ],
+            },
+          })
           patch({ view: 'task', selectedTaskId: created.id, draft: '' })
           // 最小执行环:首条消息直接开跑(同步一轮,完成即替换载荷)。
           return await send(created.id, text)
@@ -287,6 +349,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             description: '',
             access: s.composerAccess,
             model: s.composerModel,
+            effort: s.composerEffort,
           })
           dispatch({ type: 'taskAdded', task })
           patch({ view: 'task', selectedTaskId: task.id })
@@ -330,12 +393,45 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
           return '已移除排队项'
         })
       },
+      async editQueued(taskId: string, kind: 'steering' | 'followup', index: number, text: string): Promise<void> {
+        const editQueued = apiClient.editQueued
+        if (editQueued === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          await editQueued(taskId, kind, index, text.trim())
+          return '排队项已更新'
+        })
+      },
       async decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void> {
         const decideApproval = apiClient.decideApproval
         if (decideApproval === undefined) return
         await runOrToast(async (): Promise<string> => {
           await decideApproval(taskId, requestId, decision)
           return decision === 'approve' ? '已批准' : '已拒绝'
+        })
+      },
+      async setTaskAccess(taskId: string, access: string): Promise<void> {
+        const setter = apiClient.setTaskAccess
+        if (setter === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          await setter(taskId, access)
+          // 回读真实载荷替换(记录里的 access 合并规则在服务端)
+          const landed = await apiClient.getTask(taskId)
+          if (landed !== null) {
+            dispatch({ type: 'taskReplaced', task: landed })
+          }
+          const label = ACCESS_OPTIONS.find((option) => option.id === access)?.label ?? access
+          return `权限已切换为「${label}」,下一声工具调用生效`
+        })
+      },
+      async stopTask(taskId: string): Promise<void> {
+        const stopper = apiClient.stopTask
+        if (stopper === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          const result = await stopper(taskId)
+          await actionsRef.current?.refreshAll()
+          return result.interrupted
+            ? '已请求中断:当前工具完成后在块边界停止(状态已保存,可续跑)'
+            : '后端已无在跑的轮,滞留的执行状态已纠正'
         })
       },
       async importWorkspace(repoPath: string, name?: string): Promise<void> {
@@ -395,11 +491,16 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             models,
           })
           dispatch({ type: 'patch', patch: { activeProjectId: workspace.activeId } })
-          // 模型下拉数据来自服务端注册表:当前选择不在列表里(首载/列表变化)
-          // 时落到第一项,避免选中值悬空。
+          // 模型/档位下拉数据来自服务端:当前选择不在列表里(首载/列表变化)
+          // 时落回——模型取第一项,档位取该条目声明里的末档。
           const modelNames = models.map((m) => m.name)
           if (!modelNames.includes(stateRef.current.composerModel)) {
             patch({ composerModel: modelNames[0] ?? '' })
+          }
+          const entry = models.find((m) => m.name === (stateRef.current.composerModel || modelNames[0]))
+          const efforts = entry?.efforts ?? []
+          if (!efforts.includes(stateRef.current.composerEffort)) {
+            patch({ composerEffort: efforts[efforts.length - 1] ?? '' })
           }
         } catch (error) {
           // 桥接服务没起(或 σ-server 未部署):空数据进场 + 常驻提示,
@@ -429,10 +530,38 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         patch({ activeProjectId: projectId })
       },
       setComposerOpt(p): void {
+        const s = stateRef.current
         const next: Partial<AppState> = {}
         if (p.access !== undefined) next.composerAccess = p.access
         if (p.model !== undefined) next.composerModel = p.model
+        if (p.effort !== undefined) next.composerEffort = p.effort
+        // 换模型时档位跟随:新条目声明里没有当前档位 → 落到末档(最高档语义)。
+        if (p.model !== undefined) {
+          const entry = s.models.find((m) => m.name === p.model)
+          const currentEffort = next.composerEffort ?? s.composerEffort
+          if (entry !== undefined && !entry.efforts.includes(currentEffort)) {
+            next.composerEffort = entry.efforts[entry.efforts.length - 1] ?? ''
+          }
+        }
         patch(next)
+      },
+      async saveModelConfig(input: ModelSaveInput): Promise<void> {
+        const saver = apiClient.saveModel
+        if (saver === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          await saver(input)
+          await actionsRef.current?.refreshAll()
+          return `模型「${input.name}」已保存`
+        })
+      },
+      async removeModelConfig(id: string): Promise<void> {
+        const remover = apiClient.removeModel
+        if (remover === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          await remover(id)
+          await actionsRef.current?.refreshAll()
+          return '模型条目已移除'
+        })
       },
       togglePalette(): void {
         patch({ paletteOpen: !stateRef.current.paletteOpen })

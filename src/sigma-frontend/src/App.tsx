@@ -6,6 +6,7 @@ import AutomationsPanel from './components/overlays/AutomationsPanel'
 import PluginsPanel from './components/overlays/PluginsPanel'
 import HelpModal from './components/overlays/HelpModal'
 import FsPicker from './components/overlays/FsPicker'
+import ModelSettings from './components/overlays/ModelSettings'
 import { AppProvider, useAppState, useAppActions } from './store/appStore'
 
 function Toast(): JSX.Element | null {
@@ -42,6 +43,7 @@ function Shell(): JSX.Element {
       {state.overlay === 'plugins' ? <PluginsPanel /> : null}
       {state.overlay === 'fs-picker' ? <FsPicker mode="dir" /> : null}
       {state.overlay === 'fs-file' ? <FsPicker mode="file" /> : null}
+      {state.overlay === 'model-settings' ? <ModelSettings /> : null}
       {state.overlay === 'help' ? <HelpModal /> : null}
       <Toast />
     </div>

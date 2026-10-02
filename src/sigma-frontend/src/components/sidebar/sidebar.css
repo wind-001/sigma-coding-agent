@@ -454,6 +454,33 @@
   opacity: 1;
 }
 
+/* 移除工作区(导入项目组头,悬停显形;位置在「+」左侧) */
+.sidebar__group-remove {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--sb-icon-neutral);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.sidebar__group-remove:hover {
+  color: #c62828;
+  background: var(--bg-active);
+}
+
+.sidebar__group-header-row:hover .sidebar__group-remove,
+.sidebar__group-remove:focus-visible {
+  opacity: 1;
+}
+
 .sidebar__group-header-row:hover .sidebar__count {
   opacity: 0;
 }

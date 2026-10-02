@@ -4,7 +4,6 @@ import {
   ArrowRight,
   CalendarClock,
   Check,
-  ChevronDown,
   CirclePlus,
   Folder,
   FolderOpen,
@@ -127,6 +126,8 @@ interface ProjectSectionProps {
   onSelectTask: (taskId: string) => void
   onCreateSession: (projectId: string) => void
   onDeleteTask: (taskId: string) => void
+  /** 提供时组头悬停显示「移除工作区」(主工作区不提供该入口) */
+  onRemove?: (projectId: string) => void
 }
 
 /** 普通项目 section:Folder 图标 + 项目名(+ 任务数),组头可折叠,悬停出现「新建会话」 */
@@ -139,6 +140,7 @@ function ProjectSection({
   onSelectTask,
   onCreateSession,
   onDeleteTask,
+  onRemove,
 }: ProjectSectionProps): JSX.Element {
   return (
     <div className="sidebar__group">
@@ -170,19 +172,37 @@ function ProjectSection({
         >
           <Plus size={14} aria-hidden="true" />
         </button>
+        {onRemove !== undefined ? (
+          <button
+            type="button"
+            className="sidebar__group-remove"
+            aria-label={`移除工作区 ${project.name}`}
+            title={`移除工作区 ${project.name}(其会话回放归入主工作区)`}
+            onClick={(event: React.MouseEvent<HTMLButtonElement>): void => {
+              event.stopPropagation()
+              onRemove(project.id)
+            }}
+          >
+            <X size={13} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
       {collapsed ? null : (
         <div className="sidebar__group-items">
-          {tasks.map((task) => (
-            <SidebarTaskItem
-              key={task.id}
-              task={task}
-              variant="group"
-              selected={selectedTaskId === task.id}
-              onSelect={onSelectTask}
-              onDelete={onDeleteTask}
-            />
-          ))}
+          {tasks.length === 0 ? (
+            <div className="sidebar__empty">暂无会话,悬停项目名点右侧 + 新建</div>
+          ) : (
+            tasks.map((task) => (
+              <SidebarTaskItem
+                key={task.id}
+                task={task}
+                variant="group"
+                selected={selectedTaskId === task.id}
+                onSelect={onSelectTask}
+                onDelete={onDeleteTask}
+              />
+            ))
+          )}
         </div>
       )}
     </div>
@@ -198,10 +218,8 @@ export default function Sidebar(): JSX.Element {
   const actions = useAppActions()
   const [collapsedIds, setCollapsedIds] = useState<string[]>([])
   const [filterOpen, setFilterOpen] = useState<boolean>(false)
-  const [wsPanelOpen, setWsPanelOpen] = useState<boolean>(false)
   const [toast, setToast] = useState<string | null>(null)
   const filterRef = useRef<HTMLDivElement | null>(null)
-  const wsRef = useRef<HTMLButtonElement | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect((): (() => void) => {
@@ -210,9 +228,9 @@ export default function Sidebar(): JSX.Element {
     }
   }, [])
 
-  // 点击外部关闭筛选下拉与工作区面板
+  // 点击外部关闭筛选下拉(工作区切换器已删:项目区直接平铺管理,星辰 2026-10-02)
   useEffect((): (() => void) | undefined => {
-    if (!filterOpen && !wsPanelOpen) {
+    if (!filterOpen) {
       return undefined
     }
     const handleDocumentMouseDown = (event: MouseEvent): void => {
@@ -220,15 +238,12 @@ export default function Sidebar(): JSX.Element {
       if (filterRef.current !== null && target instanceof Node && !filterRef.current.contains(target)) {
         setFilterOpen(false)
       }
-      if (wsRef.current !== null && target instanceof Node && !wsRef.current.contains(target)) {
-        setWsPanelOpen(false)
-      }
     }
     document.addEventListener('mousedown', handleDocumentMouseDown)
     return (): void => {
       document.removeEventListener('mousedown', handleDocumentMouseDown)
     }
-  }, [filterOpen, wsPanelOpen])
+  }, [filterOpen])
 
   /** 本地 toast:复用全局 .toast 样式(store 未暴露 showToast,只能就地提示) */
   const showToast = (message: string): void => {
@@ -237,15 +252,9 @@ export default function Sidebar(): JSX.Element {
     toastTimer.current = setTimeout(() => setToast(null), 2600)
   }
 
-  // 状态过滤 + **工作区过滤**(切换语义:列表只显示激活工作区的会话),
-  // 再按项目分桶。
-  const visibleTasks: Task[] = state.tasks.filter(
-    (task) => task.projectId === state.activeProjectId && matchStatusFilter(task, state.statusFilter),
-  )
-  const activeProject: Project | undefined = state.projects.find(
-    (project: Project): boolean => project.id === state.activeProjectId,
-  )
-  const activeProjectName: string = activeProject?.name ?? '工作区'
+  // 状态过滤(全局)——项目区平铺**全部**项目、各带各的会话(星辰 2026-10-02
+  // mockup):多项目直接管理,点谁开谁,不再只显示激活工作区。
+  const visibleTasks: Task[] = state.tasks.filter((task) => matchStatusFilter(task, state.statusFilter))
   const tasksByProject = new Map<string, Task[]>()
   for (const task of visibleTasks) {
     const bucket = tasksByProject.get(task.projectId)
@@ -285,6 +294,13 @@ export default function Sidebar(): JSX.Element {
     void actions.createSessionInProject(projectId)
   }
 
+  const handleRemoveWorkspace = (projectId: string): void => {
+    const project = state.projects.find((item) => item.id === projectId)
+    if (project !== undefined && window.confirm(`移除工作区「${project.name}」?其会话回放将归入主工作区。`)) {
+      void actions.removeWorkspace(projectId)
+    }
+  }
+
   const handleDeleteTask = (taskId: string): void => {
     const task = state.tasks.find((item) => item.id === taskId)
     if (task !== undefined && window.confirm(`确认删除会话「${task.title}」?该操作不可撤销。`)) {
@@ -313,15 +329,16 @@ export default function Sidebar(): JSX.Element {
     if (!state.ready) {
       return <div className="sidebar__empty">加载中…</div>
     }
-    if (visibleTasks.length === 0) {
-      return <div className="sidebar__empty">暂无任务,按 Ctrl+N 新建</div>
+    // 项目组头恒渲染(项目列表是骨架,不该随会话数消失):
+    // 激活项目 0 会话时组头照常显示,组内给空态提示——否则导入新工作区后
+    // 整个列表区塌成「暂无任务」,项目行不见、新建会话入口也找不到(实测)。
+    if (state.projects.length === 0) {
+      return <div className="sidebar__empty">暂无工作区,点「项目」右侧 + 导入</div>
     }
     return (
       <>
         <div className="sidebar__section-title">项目</div>
-        {state.projects
-          .filter((project: Project): boolean => project.id === state.activeProjectId)
-          .map((project) => {
+        {state.projects.map((project) => {
           const projectTasks: Task[] = tasksByProject.get(project.id) ?? []
           // 收件箱项目:纯文字 section「任务」,无文件夹图标,条目缩进同截图
           if (project.id === INBOX_PROJECT_ID) {
@@ -329,16 +346,20 @@ export default function Sidebar(): JSX.Element {
               <div key={project.id} className="sidebar__group">
                 <div className="sidebar__section-title">任务</div>
                 <div className="sidebar__group-items">
-                  {projectTasks.map((task) => (
-                    <SidebarTaskItem
-                      key={task.id}
-                      task={task}
-                      variant="task"
-                      selected={state.selectedTaskId === task.id}
-                      onSelect={handleSelectTask}
-                      onDelete={handleDeleteTask}
-                    />
-                  ))}
+                  {projectTasks.length === 0 ? (
+                    <div className="sidebar__empty">暂无任务,按 Ctrl+N 新建</div>
+                  ) : (
+                    projectTasks.map((task) => (
+                      <SidebarTaskItem
+                        key={task.id}
+                        task={task}
+                        variant="task"
+                        selected={state.selectedTaskId === task.id}
+                        onSelect={handleSelectTask}
+                        onDelete={handleDeleteTask}
+                      />
+                    ))
+                  )}
                 </div>
               </div>
             )
@@ -354,6 +375,7 @@ export default function Sidebar(): JSX.Element {
               onSelectTask={handleSelectTask}
               onCreateSession={handleCreateSession}
               onDeleteTask={handleDeleteTask}
+              onRemove={project.id === 'proj-sigma' ? undefined : handleRemoveWorkspace}
             />
           )
         })}
@@ -364,19 +386,8 @@ export default function Sidebar(): JSX.Element {
   return (
     <aside className="sidebar">
       <header className="sidebar__brand">
-        {/* 工作区切换器(图一语义:当前工作区 + 下拉切换/移除;导入走下方「+」) */}
-        <button
-          type="button"
-          ref={wsRef}
-          className={`sidebar__ws${wsPanelOpen ? ' sidebar__ws--open' : ''}`}
-          aria-expanded={wsPanelOpen}
-          title="切换工作区"
-          onClick={(): void => setWsPanelOpen((prev) => !prev)}
-        >
-          <Folder size={16} className="sidebar__ws-icon" aria-hidden="true" />
-          <span className="sidebar__ws-name">{activeProjectName}</span>
-          <ChevronDown size={14} aria-hidden="true" />
-        </button>
+        {/* 工作区切换器已删(星辰 2026-10-02):项目区平铺全部项目直接管理,
+            新会话的目标项目由输入卡的项目下拉决定,这里不再重复提供入口。 */}
         <div className="sidebar__history">
           <button type="button" className="sidebar__history-btn" aria-label="后退" title="后退">
             <ArrowLeft size={18} aria-hidden="true" />
@@ -386,46 +397,6 @@ export default function Sidebar(): JSX.Element {
           </button>
         </div>
       </header>
-
-      {wsPanelOpen ? (
-        <div className="sidebar__ws-panel" role="menu">
-          <div className="sidebar__ws-title">工作区</div>
-          {state.projects.map((project) => {
-            const active: boolean = project.id === state.activeProjectId
-            return (
-              <div key={project.id} className="sidebar__ws-row">
-                <button
-                  type="button"
-                  className={`sidebar__ws-item${active ? ' sidebar__ws-item--active' : ''}`}
-                  onClick={(): void => {
-                    setWsPanelOpen(false)
-                    if (!active) void actions.switchProject(project.id)
-                  }}
-                  title={project.repoPath}
-                >
-                  {active ? <Check size={14} aria-hidden="true" /> : <Folder size={14} aria-hidden="true" />}
-                  <span className="sidebar__ws-item-name">{project.name}</span>
-                </button>
-                {project.id !== 'proj-sigma' ? (
-                  <button
-                    type="button"
-                    className="sidebar__ws-remove"
-                    aria-label={`移除工作区 ${project.name}`}
-                    title="移除(其会话回放归入主工作区)"
-                    onClick={(): void => {
-                      if (window.confirm(`移除工作区「${project.name}」?其会话回放将归入主工作区。`)) {
-                        void actions.removeWorkspace(project.id)
-                      }
-                    }}
-                  >
-                    <X size={13} aria-hidden="true" />
-                  </button>
-                ) : null}
-              </div>
-            )
-          })}
-        </div>
-      ) : null}
 
       <nav className="sidebar__nav">
         {NAV_ITEMS.map((nav) => {
@@ -536,7 +507,13 @@ export default function Sidebar(): JSX.Element {
           <button type="button" className="sidebar__icon-btn" aria-label="移动设备">
             <Smartphone size={17} aria-hidden="true" />
           </button>
-          <button type="button" className="sidebar__icon-btn" aria-label="设置">
+          <button
+            type="button"
+            className="sidebar__icon-btn"
+            aria-label="设置"
+            title="模型设置"
+            onClick={(): void => actions.setOverlay('model-settings')}
+          >
             <Settings size={17} aria-hidden="true" />
           </button>
         </div>

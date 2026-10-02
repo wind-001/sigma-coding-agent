@@ -2,6 +2,7 @@ import {
   type Automation,
   type CreateTaskInput,
   type ModelInfo,
+  type ModelSaveInput,
   type PingInfo,
   type Plugin,
   type Project,
@@ -128,8 +129,22 @@ export class HttpSigmaClient implements SigmaApiClient {
   }
 
   listModels(): Promise<ModelInfo[]> {
-    // 真实注册表 preset(服务端与 CLI --preset 同源)——不是前端硬编码名单。
+    // 服务端合并:自定义条目(模型设置)+ 内置 preset——apiKey 不回传。
     return this.request<ModelInfo[]>('/models')
+  }
+
+  async saveModel(input: ModelSaveInput): Promise<void> {
+    await this.request<unknown>('/models/save', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
+  async removeModel(id: string): Promise<void> {
+    await this.request<unknown>('/models/remove', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    })
   }
 
   getTaskTimeline(taskId: string): Promise<TaskTimeline | null> {
@@ -176,6 +191,18 @@ export class HttpSigmaClient implements SigmaApiClient {
     })
   }
 
+  async editQueued(
+    taskId: string,
+    kind: 'steering' | 'followup',
+    index: number,
+    text: string,
+  ): Promise<void> {
+    await this.request<unknown>(`/tasks/${taskId}/queue-edit`, {
+      method: 'POST',
+      body: JSON.stringify({ kind, index, text }),
+    })
+  }
+
   async decideApproval(
     taskId: string,
     requestId: string,
@@ -184,6 +211,19 @@ export class HttpSigmaClient implements SigmaApiClient {
     await this.request<unknown>(`/tasks/${taskId}/approvals/${requestId}`, {
       method: 'POST',
       body: JSON.stringify({ decision }),
+    })
+  }
+
+  async setTaskAccess(taskId: string, access: string): Promise<void> {
+    await this.request<unknown>(`/tasks/${taskId}/access`, {
+      method: 'POST',
+      body: JSON.stringify({ access }),
+    })
+  }
+
+  async stopTask(taskId: string): Promise<{ interrupted: boolean }> {
+    return this.request<{ interrupted: boolean }>(`/tasks/${taskId}/stop`, {
+      method: 'POST',
     })
   }
 

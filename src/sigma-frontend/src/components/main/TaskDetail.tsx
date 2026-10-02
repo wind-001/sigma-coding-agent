@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUp, Send, X } from 'lucide-react'
+import { ArrowLeft, ArrowUp, ChevronDown, Pencil, Send, ShieldCheck, Square, X } from 'lucide-react'
 import {
   ACCESS_OPTIONS,
   apiClient,
@@ -11,6 +11,9 @@ import {
 } from '../../api'
 import { formatDateTime } from '../../lib/time'
 import { useAppActions, useAppState } from '../../store/appStore'
+import Dropdown from './Dropdown'
+import FullAccessWarning from './FullAccessWarning'
+import RichText from './RichText'
 
 /** 十六进制颜色 → rgba 字符串(用于状态徽章底色的透明度) */
 function hexToRgba(hex: string, alpha: number): string {
@@ -21,8 +24,10 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-/** 工具调用行(图二语义):工具名 + 结果状态 + 耗时,与正文/思考有区分度。 */
+/** 工具调用行(图二语义):工具名 + 结果状态 + 耗时,与正文/思考有区分度。
+ * 点击展开/收起完整调用参数(默认单行截断,星辰 2026-10-02 折叠诉求)。 */
 function ToolChip({ event }: { event: TaskEvent }): JSX.Element {
+  const [open, setOpen] = useState<boolean>(false)
   const statusLabel =
     event.status === 'ok' ? '已完成' : event.status === 'error' ? '失败' : '未完成'
   const statusClass =
@@ -36,13 +41,18 @@ function ToolChip({ event }: { event: TaskEvent }): JSX.Element {
       ? ` · ${(event.durationMs / 1000).toFixed(1)}s`
       : ''
   return (
-    <div className="wb-toolrow" title={event.at}>
+    <button
+      type="button"
+      className={`wb-toolrow${open ? ' wb-toolrow--open' : ''}`}
+      title={open ? '点击收起' : '点击展开完整调用'}
+      onClick={(): void => setOpen((prev) => !prev)}
+    >
       <span className="wb-toolrow__dot" />
       <span className="wb-toolrow__name">{event.tool ?? 'tool'}</span>
       <span className={`wb-toolrow__status ${statusClass}`}>{statusLabel}</span>
       <span className="wb-toolrow__args">{event.text}</span>
       <span className="wb-toolrow__dur">{duration}</span>
-    </div>
+    </button>
   )
 }
 
@@ -50,7 +60,7 @@ function ToolChip({ event }: { event: TaskEvent }): JSX.Element {
 function ThinkingRow({ event }: { event: TaskEvent }): JSX.Element {
   return (
     <div className="wb-thinking" title={event.text}>
-      <span className="wb-thinking__label">思考</span>
+      <span className="wb-thinking__label">深度思考</span>
       <span className="wb-thinking__text">{event.text}</span>
     </div>
   )
@@ -76,6 +86,21 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const [queues, setQueues] = useState<TaskQueues | null>(null)
   const [composeText, setComposeText] = useState<string>('')
   const [sending, setSending] = useState<boolean>(false)
+  /** 切到「完全访问」前必须过风险知情确认(共享组件,星辰 2026-10-02)。 */
+  const [showFullWarn, setShowFullWarn] = useState<boolean>(false)
+  /** 已请求强制中断:协作式停止有窗口期(当前工具跑完才停),期间指示条
+   * 要如实显示"等待工具完成"而不是继续假装在流式输出(星辰 2026-10-02)。 */
+  const [stopRequested, setStopRequested] = useState<boolean>(false)
+  /** 排队项行内编辑(星辰 2026-10-02"排队文本可重新编辑")。 */
+  const [editTarget, setEditTarget] = useState<{ kind: 'steering' | 'followup'; index: number } | null>(null)
+  const [editText, setEditText] = useState<string>('')
+
+  const handleSaveEdit = (): void => {
+    if (editTarget === null || editText.trim() === '') return
+    void actions.editQueued(task.id, editTarget.kind, editTarget.index, editText)
+    setEditTarget(null)
+    setEditText('')
+  }
   const composeReady: boolean = composeText.trim().length > 0 && !sending
   const threadRef = useRef<HTMLDivElement | null>(null)
 
@@ -133,11 +158,29 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
     }
   }, [task.events.length, task.status, queues?.followups.length, queues?.approvals.length])
 
+  // 轮结束(无论成败)后复位中断请求标记,下一轮从头开始。
+  useEffect((): void => {
+    if (task.status !== 'running') setStopRequested(false)
+  }, [task.status])
+
   const project = state.projects.find((p): boolean => p.id === task.projectId)
   const projectName: string = project?.name ?? '未知工作区'
   const statusMeta = STATUS_META[task.status]
+  // 权限档位:空 = 未显式设置,执行链的默认即「完全访问」(如实显示)。
   const accessLabel: string =
-    ACCESS_OPTIONS.find((option): boolean => option.id === task.access)?.label ?? ''
+    ACCESS_OPTIONS.find((option): boolean => option.id === task.access)?.label ?? '完全访问'
+  const isFullAccess: boolean = accessLabel === '完全访问'
+
+  const handleAccessSelect = (label: string): void => {
+    const option = ACCESS_OPTIONS.find((o): boolean => o.label === label)
+    if (option === undefined || option.label === accessLabel) return
+    if (option.id === 'full' && !isFullAccess) {
+      // 启用完全访问前必须过风险知情确认(与输入卡同一规则)
+      setShowFullWarn(true)
+      return
+    }
+    void actions.setTaskAccess(task.id, option.id)
+  }
 
   const handleSendCompose = (): void => {
     if (!composeReady) return
@@ -215,9 +258,8 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             <span className="status-badge__dot" style={{ backgroundColor: statusMeta.color }} />
             <span className="status-badge__text">{statusMeta.label}</span>
           </span>
-          {accessLabel !== '' ? (
-            <span className="task-detail__access">{accessLabel}</span>
-          ) : null}
+          {/* 权限模式显示与切换统一收在下方输入区左下角(星辰 2026-10-02),
+              顶栏不再重复提供入口。 */}
           <span className="task-detail__meta-id" title={task.id}>
             {task.id}
           </span>
@@ -249,10 +291,18 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
                 )
               }
               if (event.role === 'assistant') {
+                const live = event.id.startsWith('__live')
                 return (
                   <div key={event.id} className="wb-row wb-row--assistant">
-                    <div className="wb-bubble wb-bubble--assistant" title={formatDateTime(event.at)}>
-                      {event.text}
+                    <div
+                      className={`wb-bubble wb-bubble--assistant${live ? ' wb-bubble--live' : ''}`}
+                      title={
+                        live
+                          ? '流式直播:分块弱化显示,完成后以正式气泡沉淀'
+                          : formatDateTime(event.at)
+                      }
+                    >
+                      <RichText text={event.text} />
                     </div>
                   </div>
                 )
@@ -264,12 +314,42 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               )
             })
           )}
+          {/* 收尾标记(星辰 2026-10-02:完成后戛然而止太突兀)。
+              完成给绿色收尾行带指标摘要;失败给红色行指路。 */}
+          {task.status === 'completed' ? (
+            <div className="wb-endcap wb-endcap--ok">
+              <span className="wb-endcap__rule" />
+              <span className="wb-endcap__text">
+                ✓ 本轮执行完成
+                {timeline !== null
+                  ? ` · ${timeline.rounds.length} 轮${
+                      timeline.wallSeconds !== null
+                        ? ` · 耗时 ${timeline.wallSeconds.toFixed(1)}s${timeline.wallApprox ? '≈' : ''}`
+                        : ''
+                    }`
+                  : ''}
+                ,可继续输入追问
+              </span>
+            </div>
+          ) : null}
+          {task.status === 'failed' ? (
+            <div className="wb-endcap wb-endcap--bad">
+              <span className="wb-endcap__rule" />
+              <span className="wb-endcap__text">✕ 本轮执行失败,可重试或换个模型/档位再试</span>
+            </div>
+          ) : null}
           {isRunning || sending ? (
             <div className="wb-typing">
               <span className="wb-typing__dot" />
               <span className="wb-typing__dot" />
               <span className="wb-typing__dot" />
-              正在执行,回复流式输出中…
+              {stopRequested
+                ? '已请求中断,等待当前工具完成后停止…'
+                : task.events.some(
+                      (event) => event.kind === 'thinking' && event.id.startsWith('__live'),
+                    )
+                  ? '深度思考中…'
+                  : '正在执行,回复流式输出中…'}
             </div>
           ) : null}
         </div>
@@ -307,7 +387,12 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
         {/* ============ 排队区(图一:默认排队,「立即」打断注入) ============ */}
         {isRunning && queuedItems.length > 0 ? (
           <div className="wb-queue">
-            {queuedItems.map((item) => (
+            {queuedItems.map((item) => {
+              const editingThis =
+                editTarget !== null &&
+                editTarget.kind === item.kind &&
+                editTarget.index === item.index
+              return (
               <div key={`${item.kind}-${item.index}`} className="wb-queue__row">
                 {item.kind === 'steering' ? (
                   <span className="wb-queue__tag">已注入</span>
@@ -327,6 +412,18 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
                     </button>
                     <button
                       type="button"
+                      className="wb-queue__edit-btn"
+                      aria-label="编辑排队文本"
+                      title="编辑排队文本"
+                      onClick={(): void => {
+                        setEditTarget({ kind: item.kind, index: item.index })
+                        setEditText(item.text)
+                      }}
+                    >
+                      <Pencil size={13} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
                       className="wb-queue__del"
                       aria-label="删除排队项"
                       onClick={(): void => void actions.removeQueued(task.id, 'followup', item.index)}
@@ -335,9 +432,48 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
                     </button>
                   </>
                 )}
-                <span className="wb-queue__text">{item.text}</span>
+                {editingThis ? (
+                  <div className="wb-queue__edit">
+                    <textarea
+                      className="wb-queue__edit-input"
+                      value={editText}
+                      rows={2}
+                      autoFocus
+                      onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void =>
+                        setEditText(event.target.value)
+                      }
+                      onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+                        if (event.key === 'Enter' && !event.shiftKey) {
+                          event.preventDefault()
+                          handleSaveEdit()
+                        }
+                        if (event.key === 'Escape') setEditTarget(null)
+                      }}
+                    />
+                    <div className="wb-queue__edit-actions">
+                      <button
+                        type="button"
+                        className="wb-queue__edit-save"
+                        disabled={editText.trim() === ''}
+                        onClick={handleSaveEdit}
+                      >
+                        保存
+                      </button>
+                      <button
+                        type="button"
+                        className="wb-queue__edit-cancel"
+                        onClick={(): void => setEditTarget(null)}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <span className="wb-queue__text">{item.text}</span>
+                )}
               </div>
-            ))}
+              )
+            })}
           </div>
         ) : null}
 
@@ -366,14 +502,50 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             }}
           />
           <div className="wb-composer__foot">
+            {/* 权限模式(human-in-the-loop):左下角随时切换,热替换审批闸,
+                下一声工具调用生效;切到「完全访问」先过风险知情确认。 */}
+            <Dropdown
+              trigger={
+                <span
+                  className={`wb-composer__access${isFullAccess ? ' wb-composer__access--full' : ''}`}
+                  title="权限模式:点击切换,立即生效"
+                >
+                  <ShieldCheck size={13} aria-hidden="true" />
+                  {accessLabel}
+                  <ChevronDown size={12} aria-hidden="true" />
+                </span>
+              }
+              items={ACCESS_OPTIONS.map((option): string => option.label)}
+              value={accessLabel}
+              onSelect={handleAccessSelect}
+              menuWidth={128}
+            />
             <span className="wb-composer__hint">
-              工具调用受权限模式约束(默认完全访问)· 审批确认 / 打断 / 排队经真实 sigma
-              队列 · 数据与 CLI 同一份(~/.sigma/sessions)
+              审批确认 / 打断 / 排队经真实 sigma 队列 · 数据与 CLI 同一份(~/.sigma/sessions)
             </span>
             {metrics !== null ? (
               <span className="wb-composer__metrics" title="本会话运行指标(观测层 timeline)">
                 {metrics}
               </span>
+            ) : null}
+            {isRunning ? (
+              <button
+                type="button"
+                className="wb-composer__stop"
+                disabled={sending || stopRequested}
+                onClick={(): void => {
+                  setStopRequested(true)
+                  void actions.stopTask(task.id)
+                }}
+                aria-label="强制中断"
+                title={
+                  stopRequested
+                    ? '已请求中断,等待当前工具完成'
+                    : '强制中断:当前工具完成后在块边界停止,状态已保存可续跑'
+                }
+              >
+                <Square size={14} />
+              </button>
             ) : null}
             <button
               type="button"
@@ -386,6 +558,17 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             </button>
           </div>
         </div>
+
+        {/* 完全访问的严厉警告(共享组件,勾选知情才可启用) */}
+        {showFullWarn ? (
+          <FullAccessWarning
+            onCancel={(): void => setShowFullWarn(false)}
+            onEnable={(): void => {
+              setShowFullWarn(false)
+              void actions.setTaskAccess(task.id, 'full')
+            }}
+          />
+        ) : null}
       </div>
     </div>
   )
