@@ -451,14 +451,37 @@ class _HttpApprovalGate(ApprovalHook):
     def set_mode(self, mode: str) -> None:
         """中途换挡(工作台权限自由切换):approve() 每次调用都读 self._mode,
         改完下一声工具调用立即生效——无需重建会话。线程安全靠 GIL 的
-        属性赋值原子性(模式字符串无中间态)。"""
+        属性赋值原子性(模式字符串无中间态)。
+
+        **同时唤醒已挂起的审批等待**,按新模式重新裁决(2026-10-02 实测:
+        手动确认下挂着的工具,切到自动审批后原等待不感知新模式,界面
+        卡在"执行中")——新模式下无需人工确认的立即放行,写类在只读/
+        计划模式下立即拒绝,仍需确认的继续等。"""
         self._mode = mode if mode in ACCESS_MODES else "full"
+        with _APPROVALS_LOCK:
+            pending = list(_APPROVALS.get(self._task_id, []))
+        for entry in pending:
+            if entry["event"].is_set():
+                continue
+            verdict = self._verdict_without_asking(
+                self._mode, str(entry.get("tool") or "?"), dict(entry.get("args") or {})
+            )
+            if verdict is None:
+                continue  # 新模式下仍需人工确认 → 原样等待
+            with _APPROVALS_LOCK:
+                if entry["event"].is_set():
+                    continue  # 与前端决策并发:先到先得,不覆盖
+                entry["decision"] = "approve" if verdict.allowed else "deny"
+                if not verdict.allowed:
+                    entry["reason"] = str(verdict.reason or "已按新权限模式拒绝")
+                entry["event"].set()
 
     def _ask(self, name: str, arguments: dict[str, Any]) -> ApprovalDecision:
         request_id = uuid.uuid4().hex[:8]
         entry: dict[str, Any] = {
             "id": request_id,
             "tool": name,
+            "args": arguments,
             "summary": _clip(json.dumps(arguments, ensure_ascii=False), 220),
             "event": threading.Event(),
             "decision": "deny",
@@ -480,10 +503,15 @@ class _HttpApprovalGate(ApprovalHook):
             reason=str(entry.get("reason") or "已在工作台拒绝"),
         )
 
-    async def approve(
-        self, name: str, arguments: dict[str, Any], call_id: str
-    ) -> ApprovalDecision:
-        mode = self._mode
+    def _verdict_without_asking(
+        self, mode: str, name: str, arguments: dict[str, Any]
+    ) -> ApprovalDecision | None:
+        """按给定模式直接裁决;``None`` = 该调用需要人工确认(_ask 等待)。
+
+        approve() 与 set_mode() 共用同一判定——**切换模式时对已挂起的审批
+        按新模式重新裁决**(星辰实测 2026-10-02:手动确认下挂着的工具,
+        切到自动审批后必须立即放行,否则界面卡死在"执行中"的体感里)。
+        """
         if mode == "full":
             return ApprovalDecision(allowed=True)
         if mode == "readonly":
@@ -502,12 +530,20 @@ class _HttpApprovalGate(ApprovalHook):
         findings = analyze_call(name, arguments, self._workspace)
         if mode == "auto":
             if findings:
-                return await asyncio.to_thread(self._ask, name, arguments)
+                return None
             return ApprovalDecision(allowed=True)
         # confirm:写类工具与危险调用都要确认
         if name in _WRITE_TOOLS or findings:
-            return await asyncio.to_thread(self._ask, name, arguments)
+            return None
         return ApprovalDecision(allowed=True)
+
+    async def approve(
+        self, name: str, arguments: dict[str, Any], call_id: str
+    ) -> ApprovalDecision:
+        decision = self._verdict_without_asking(self._mode, name, arguments)
+        if decision is not None:
+            return decision
+        return await asyncio.to_thread(self._ask, name, arguments)
 
 
 def _decide_approval(task_id: str, request_id: str, decision: str) -> bool:
@@ -541,18 +577,25 @@ def _set_task_access(
     mode = str(body.get("access") or "").strip()
     if mode not in ACCESS_MODES:
         return 400, {"detail": f"access 只支持 {'/'.join(ACCESS_MODES)}"}
+    # 先在锁外补纯磁盘会话的最小记录底稿(归属扫描是磁盘活,不进锁——
+    # 锁内做磁盘 IO 会拖死所有并发请求,与 _post_message 排队分支同纪律):
+    # 锁内只做 dict 读写。
+    fresh_record: dict[str, Any] | None = None
     with _TASKS_LOCK:
         record = _TASKS.get(task_id)
+    if record is None:
+        # 纯磁盘会话(本进程没跑过):补一条最小记录,让载荷与后续
+        # 执行都读到新档位。归属按注册表如实回填。
+        fresh_record = {
+            "id": task_id,
+            "projectId": _session_project_id(primary, task_id),
+            "title": "",
+            "access": mode,
+        }
+    with _TASKS_LOCK:
+        record = _TASKS.get(task_id)  # 双检:补底稿期间可能已被并发创建
         if record is None:
-            # 纯磁盘会话(本进程没跑过):补一条最小记录,让载荷与后续
-            # 执行都读到新档位。归属按注册表如实回填。
-            record = {
-                "id": task_id,
-                "projectId": _session_project_id(primary, task_id),
-                "title": "",
-                "access": mode,
-            }
-            _TASKS[task_id] = record
+            _TASKS[task_id] = fresh_record or {}
         else:
             record["access"] = mode
     with _GATES_LOCK:
@@ -918,15 +961,30 @@ def _post_message(
         _execution_params()  # 快速失败:没配 key 不起线程
     except LookupError as exc:
         return 400, {"detail": str(exc)}
+    queued = False
     with _TASKS_LOCK:
         record = _TASKS.get(task_id)
         if record is None and not session_path(sessions_root, task_id).is_file():
             return 404, {"detail": f"任务 {task_id} 不存在(草稿随工作台重启消失,已执行的会话在磁盘上)"}
         if task_id in _RUNNING:
-            return 409, {"detail": "该会话正在执行中,输入会自动排队(或点「立即」打断注入)"}
-        _RUNNING.add(task_id)
-        if record is not None:
-            record["status"] = "running"
+            # 排队判定只做标记,**锁外处理**——排队分支要调
+            # _merged_task_payload(内部重入 _TASKS_LOCK),threading.Lock
+            # 不可重入,锁内调 = 自死锁并拖死全部请求(全量测试抓到,
+            # 与线上"切权限后全面卡死"同族)。
+            queued = True
+        else:
+            _RUNNING.add(task_id)
+            if record is not None:
+                record["status"] = "running"
+    if queued:
+        session = _session_of(task_id)
+        if session is None:
+            return 409, {"detail": "该会话正在执行中但尚未装配完成,请稍后再试"}
+        session.submit_followup(text)
+        payload = _merged_task_payload(primary, sessions_root, task_id)
+        payload["status"] = "running"
+        payload["queued"] = True
+        return 200, payload
     project = _project_of(task_id, record, primary)
     _index_session(task_id, str(project["id"]))
     buffer: dict[str, Any] = {

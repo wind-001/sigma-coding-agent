@@ -728,6 +728,99 @@ def test_http_queue_edit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert code == 409
 
 
+def _pending_entry(task_id: str, entry_id: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    """往全局审批表塞一条**挂起**的审批(模拟 confirm 模式下等人工的工具)。"""
+    entry: dict[str, Any] = {
+        "id": entry_id,
+        "tool": tool,
+        "args": args,
+        "summary": "x",
+        "event": threading.Event(),
+        "decision": "deny",
+        "reason": "等待审批超时(300s),自动拒绝",
+    }
+    with SERVER._APPROVALS_LOCK:
+        SERVER._APPROVALS.setdefault(task_id, []).append(entry)
+    return entry
+
+
+def test_access_switch_wakes_pending_approval(http_server: tuple[str, Path]) -> None:
+    """切权限必须**唤醒已挂起的审批**并按新模式重新裁决(星辰实测 2026-10-02:
+    手动确认下挂着的 bash,切自动审批后原等待不感知新模式,界面卡死)。
+    - 切 auto/full:无需人工的立即放行;
+    - 切 readonly:写类立即拒绝(带原因);
+    - 切 confirm:仍需人工的继续等(不误杀)。"""
+    base, root = http_server
+    gate = SERVER._HttpApprovalGate("confirm", "t-wake", root)
+    SERVER._GATES["t-wake"] = gate
+    try:
+        entry1 = _pending_entry("t-wake", "r1", "bash", {"command": "tar -c . | tar -x"})
+        assert not entry1["event"].is_set()
+        code, body = _post(base, "/api/v1/tasks/t-wake/access", {"access": "full"})
+        assert code == 200
+        assert entry1["event"].is_set() and entry1["decision"] == "approve"
+
+        entry2 = _pending_entry("t-wake", "r2", "write", {"path": "x"})
+        code, _ = _post(base, "/api/v1/tasks/t-wake/access", {"access": "readonly"})
+        assert code == 200
+        assert entry2["event"].is_set() and entry2["decision"] == "deny"
+        assert "只读" in str(entry2["reason"])
+
+        entry3 = _pending_entry("t-wake", "r3", "write", {"path": "y"})
+        code, _ = _post(base, "/api/v1/tasks/t-wake/access", {"access": "confirm"})
+        assert code == 200
+        assert not entry3["event"].is_set()  # 仍需人工 → 继续等,不误杀
+        # 手动决策路径照常可用
+        code, _ = _post(base, "/api/v1/tasks/t-wake/approvals/r3", {"decision": "approve"})
+        assert code == 200 and entry3["event"].is_set() and entry3["decision"] == "approve"
+    finally:
+        SERVER._GATES.pop("t-wake", None)
+        SERVER._APPROVALS.pop("t-wake", None)
+        # 切档端点为纯磁盘会话补过草稿记录——不清会污染后续测试的全局断言
+        SERVER._TASKS.pop("t-wake", None)
+
+
+def test_post_message_running_task_queues_followup(
+    http_server: tuple[str, Path], execution_env: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """运行中发消息 = **自动排队**(200 + queued),不再 409 硬拒——
+    followup 落进会话队列,本轮结束自动接跑;被熔断/中断则留在
+    队列区可见可删(与'中断不自动续跑'语义一致)。"""
+    base, _root = http_server
+    received: list[str] = []
+
+    class _FakeSession:
+        def submit_followup(self, text: str) -> None:
+            received.append(text)
+
+        def pending_steering(self) -> list[str]:
+            return []
+
+        def pending_followups(self) -> list[str]:
+            return list(received)
+
+    monkeypatch.setattr(SERVER, "_SESSIONS", {"s-queue": _FakeSession()})
+    SERVER._RUNNING.add("s-queue")
+    SERVER._TASKS["s-queue"] = {
+        "id": "s-queue",
+        "projectId": "proj-sigma",
+        "title": "t",
+        "access": "full",
+    }
+    try:
+        code, body = _post(base, "/api/v1/tasks/s-queue/messages", {"text": "继续"})
+        assert code == 200
+        assert body.get("queued") is True
+        assert body["status"] == "running"
+        assert received == ["继续"]
+        # 队列端点可见(前端排队区的数据源)
+        code, queues = _get(base, "/api/v1/tasks/s-queue/queues")
+        assert code == 200 and queues["followups"] == ["继续"]
+    finally:
+        SERVER._RUNNING.discard("s-queue")
+        SERVER._TASKS.pop("s-queue", None)
+
+
 def test_fs_listing_drive_root_parent_back_to_drives() -> None:
     """盘符根(D:\\)的 parent 是空串(回「此电脑」层),不能是 None——
     否则「上一级」在根目录被禁死,用户永远换不了盘。"""

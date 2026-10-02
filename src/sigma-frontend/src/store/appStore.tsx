@@ -230,6 +230,12 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         ? startedEvents
         : [...startedEvents, userBubble]
       dispatch({ type: 'taskReplaced', task: { ...started, events: eventsWithUser } })
+      // 排队分支(星辰 2026-10-02):任务运行中发消息不再 409,后端直接进
+      // followup 队列(queued=true)。当前轮的流式轮询已在别处进行,这里
+      // 不再重复轮询——排队区(队列轮询)可见,本轮结束后自动接跑。
+      if ((started as unknown as { queued?: boolean }).queued === true) {
+        return '已排队:当前轮结束后自动执行,可在队列区管理'
+      }
       if (apiClient.getTaskDeltas !== undefined) {
         let offset = 0
         let livePieces: TaskDeltaPiece[] = []
