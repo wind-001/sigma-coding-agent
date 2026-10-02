@@ -68,11 +68,25 @@ export interface MetricItem {
 }
 
 /**
- * 底部指标列表。字段顺序 = 视觉顺序，按「规模 → 效率 → 质量 → 时间」排，
- * 让人从左到右读下来是「跑了多少 → 跑得省不省 → 有没有出错 → 花了多久」。
+ * 底部指标列表。字段顺序 = 视觉顺序，按「规模 → 质量 → 时间」排，
+ * 让人从左到右读下来是「跑了多少 → 有没有出错 → 花了多久」。
+ *
+ * ⚠ 单行排版（星辰 2026-10-02 定稿）：我第一版把标签和数值拆成
+ * **上下两行**（标签在上、数值在下），想用行数做层次——结果视觉上
+ * 像报销单，标签悬空、数值落地，读的时候视线要横扫再竖扫，很别扭。
+ * **层次靠字重和颜色，不靠行数**：一行内 `标签 数值`，标签浅灰、
+ * 数值半粗深色即可。底栏是横向扫描区，视线不会纵向移动。
+ *
+ * ⚠ 缓存命中率收进 tooltip（星辰定稿）：底栏只留「轮次 / token /
+ * 工具错误 / 耗时」四个常看项。缓存命中率是**实现效率**指标，
+ * 排查时要看，日常扫读时不需要占底栏一个位置。
  */
 export function buildMetrics(timeline: TaskTimeline | null): MetricItem[] {
   if (timeline === null) return []
+  const cacheNote =
+    timeline.cacheRate !== null
+      ? `　缓存命中 ${Math.round(timeline.cacheRate * 100)}%（${timeline.totalCached}）`
+      : ''
   const items: MetricItem[] = [
     {
       key: 'rounds',
@@ -84,17 +98,9 @@ export function buildMetrics(timeline: TaskTimeline | null): MetricItem[] {
       key: 'tokens',
       label: 'token',
       value: `${formatTokens(timeline.totalPrompt)}↑ ${formatTokens(timeline.totalCompletion)}↓`,
-      title: `入 / 出 token 累计　prompt ${timeline.totalPrompt} · completion ${timeline.totalCompletion} · 缓存命中 ${timeline.totalCached}`,
+      title: `入 / 出 token 累计　prompt ${timeline.totalPrompt} · completion ${timeline.totalCompletion}${cacheNote}`,
     },
   ]
-  if (timeline.cacheRate !== null) {
-    items.push({
-      key: 'cache',
-      label: '缓存',
-      value: `${Math.round(timeline.cacheRate * 100)}%`,
-      title: `缓存命中率 = cached / prompt（${timeline.totalCached} / ${timeline.totalPrompt}）`,
-    })
-  }
   items.push({
     key: 'toolErrors',
     label: '工具错误',

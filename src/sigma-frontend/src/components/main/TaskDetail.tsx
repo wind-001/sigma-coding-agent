@@ -543,13 +543,13 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             {metricItems.length > 0 ? (
               <div className="wb-metrics-bar" title="本会话运行指标(观测层 timeline)">
                 {metricItems.map((item) => (
-                  <span
-                    key={item.key}
-                    className={`wb-metric${item.tone === 'bad' ? ' wb-metric--bad' : ''}`}
-                    title={item.title}
-                  >
+                  <span key={item.key} className="wb-metric" title={item.title}>
                     <span className="wb-metric__label">{item.label}</span>
-                    <span className="wb-metric__value">{item.value}</span>
+                    <span
+                      className={`wb-metric__value${item.tone === 'bad' ? ' wb-metric__value--bad' : ''}`}
+                    >
+                      {item.value}
+                    </span>
                   </span>
                 ))}
               </div>
