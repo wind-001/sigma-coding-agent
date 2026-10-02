@@ -1804,6 +1804,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             ".svg": "image/svg+xml",
             ".png": "image/png",
             ".ico": "image/x-icon",
+            # .webp 是背景图压缩后新增的（2026-10-02，1902KB -> 48KB）。
+            # ⚠ 别以为「漏了会退回 application/octet-stream 也能显示」——
+            # 实测确实是 octet-stream。浏览器对 CSS 里的图片多数仍会渲染，
+            # 但严格 MIME 校验的场合（部分代理、`X-Content-Type-Options: nosniff`、
+            # 某些框架的资源管线）会**拒收**，症状是背景静默不出现。
+            # 所以：新增资源类型必须同时改这张表，否则压缩白做。
+            ".webp": "image/webp",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".woff2": "font/woff2",
         }.get(candidate.suffix, "application/octet-stream")
         body = candidate.read_bytes()
         self.send_response(200)

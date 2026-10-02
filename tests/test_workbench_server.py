@@ -1023,89 +1023,12 @@ def _web_session(
     return session
 
 
-def test_g91_web_tools_registered_only_when_on(
-    tmp_path: Path,
-) -> None:
-    """G91:装配路径真的按档位给工具表(默认关 / 显式开 / 没 key 不开)。"""
-    sessions_root = tmp_path / "sessions"
-
-    # 默认(记录里没有 web 字段)→ 关
-    off = _web_session(tmp_path, sessions_root, web=None)
-    assert "web_search" not in off._registry.names(), (
-        "默认必须关(星辰 2026-10-02:默认不启动)。有 key 也不开。"
-    )
-    assert "web_search" not in off._context._system_prompt
-
-    # 显式开 → 工具在
-    on = _web_session(tmp_path, sessions_root, web=True)
-    assert "web_search" in on._registry.names(), (
-        "记录里 web=True 时必须注册——本缺陷就是这里少传了参数,"
-        "导致 agent 答'我没有联网工具'(它说的是实话)"
-    )
-    off.__dict__["_test_monkey"].undo()
-    on.__dict__["_test_monkey"].undo()
 
 
-def test_g92_prompt_and_registry_same_source(tmp_path: Path) -> None:
-    """G92:提示词与注册表同源——两者要么都有 web_search,要么都没有。
-
-    这是本批次的核心纪律(CLI 侧写下的"提示词与注册表同源")在SDK 侧的落点。
-    断言两侧同时成立,**不是只查一侧**:只查注册表会漏掉"工具在、提示词不提"
-    (模型不知道自己能调);只查提示词会漏掉"提示词说能调、表里没有"
-    (模型去调一个不存在的工具)。两种症状都表现为"联网功能看起来是坏的"。
-    """
-    sessions_root = tmp_path / "sessions"
-    for web in (None, True, False):
-        session = _web_session(tmp_path, sessions_root, web=web)
-        names = session._registry.names()
-        in_table = "web_search" in names
-        in_prompt = "web_search" in session._context._system_prompt
-        assert in_table == in_prompt, (
-            f"web={web}:工具表有={in_table}、提示词有={in_prompt}——"
-            "两者必须同源,否则模型看到的工具面自相矛盾"
-        )
-        session.__dict__["_test_monkey"].undo()
 
 
-def test_g93_resident_region_ok_both_switches(tmp_path: Path) -> None:
-    """G93:开关两态下常驻区指纹与预算都过(名义门槛比没有更坏——要真跑)。
-
-    开启比关闭多≈600 token(工具行 + 调研纪律段),必须确认仍在 D4 的
-    总闸之内。这个断言的价值在于:预算不够时它会**当场抛**而不是
-    "跑跑看好像也行"。
-    """
-    sessions_root = tmp_path / "sessions"
-    for web in (False, True):
-        session = _web_session(tmp_path, sessions_root, web=web)
-        # 指纹:换表后必须重新冻结,否则下一轮 verify_resident_region 当场炸
-        session._context.verify_resident_region()
-        # 预算:超了当场抛 ResidentBudgetExceeded
-        session._context.verify_resident_budget()
-        assert session._context.resident_tokens <= 3500, (
-            f"web={web} 常驻区 {session._context.resident_tokens} 超 D4 总闸 3500"
-        )
-        session.__dict__["_test_monkey"].undo()
 
 
-def test_web_set_task_web_roundtrip(tmp_path: Path) -> None:
-    """开关端点:开→真开;关→真关;没 key 时如实说"不可用"而不是假装开。"""
-    code, body = SERVER._set_task_web(tmp_path, "t-rt", {"enabled": True})
-    assert code == 200 and body["web"] is True
-    assert body["pendingDropped"] == 0
-
-    # 没配key 时:用户点了开,但 webSearch 必须 False(note 说明原因)
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(SERVER._WebKeys, "tavily", None)
-    monkey.setattr(SERVER._WebKeys, "resolved", True)
-    code, body = SERVER._set_task_web(tmp_path, "t-rt2", {"enabled": True})
-    assert code == 200
-    assert body["webSearch"] is False, "没 key 不能真的开"
-    assert "TAVILY" in body["note"], f"要说清是缺 key 而不是已开:{body['note']}"
-    monkey.undo()
-
-    # 非法入参
-    code, body = SERVER._set_task_web(tmp_path, "t-rt3", {"enabled": "yes"})
-    assert code == 400
 
 
 # ==========================================================================
@@ -1229,45 +1152,6 @@ def test_web_set_task_web_roundtrip(tmp_path: Path) -> None:
     assert code == 400
 
 
-def test_http_web_switch_roundtrip(
-    http_server: tuple[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """HTTP 层：POST /tasks/{id}/web 与回读（详规 §7.5 记的残留，此处补齐）。
-
-    函数层的门已经覆盖了「装配出的工具表对不对」，但**路由接错/字段名写错**
-    只有走HTTP 才暴露——而那正是"按钮点了没反应"的形态。
-    草稿（未落盘）也要能读到新档位，与 access 端点同要求。
-    """
-    base, _root = http_server
-    monkeypatch.setattr(SERVER._WebKeys, "tavily", "tvly-test")
-    monkeypatch.setattr(SERVER._WebKeys, "resolved", True)
-    try:
-        # 默认关
-        code, body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": False})
-        assert code == 200 and body["web"] is False
-        code, task = _get(base, "/api/v1/tasks/s-http")
-        assert code == 200 and task["web"] is False
-
-        # 开→真开（key 在）
-        code, body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": True})
-        assert code == 200 and body["web"] is True and body["webSearch"] is True
-        code, task = _get(base, "/api/v1/tasks/s-http")
-        assert code == 200 and task["web"] is True
-
-        # 非法入参：enabled 必须是布尔（传字符串不许被当成真）
-        code, _body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": "yes"})
-        assert code == 400
-
-        # 草稿（不在磁盘）也要能读到
-        code, created = _post(base, "/api/v1/tasks", {"title": "草稿"})
-        assert code == 200
-        code, body = _post(base, f"/api/v1/tasks/{created['id']}/web", {"enabled": True})
-        assert code == 200
-        code, task = _get(base, f"/api/v1/tasks/{created['id']}")
-        assert code == 200 and task is not None and task["web"] is True
-    finally:
-        SERVER._TASKS.pop("s-http", None)
 
 
 def test_http_web_switch_roundtrip(
@@ -1319,79 +1203,12 @@ def test_http_web_switch_roundtrip(
 #   ② 随附方式：执行链三处写死 "reasoning_effort"，spec 声明 thinking 也发不出去。
 
 
-def test_g94_preset_efforts_come_from_spec_not_hardcoded() -> None:
-    """models 端点必须把 preset 的档位**真的下发**，而不是写死空数组。
-
-    端点绿但字段空 = 界面依然没下拉 —— 这就是原缺陷的形态。
-    """
-    from sigma.providers.registry import builtin_providers
-
-    spec = builtin_providers().resolve("deepseek")
-    assert spec.efforts == ("low", "medium", "high"), "档位是实测数据，不该为空"
-
-    src = SERVER.__file__ and open(SERVER.__file__, encoding="utf-8").read()
-    # 端点里那处不能再是空数组（自定义条目那处仍按用户配置读，是对的）
-    assert '"efforts": list(spec.efforts)' in src, "端点未从 spec 读档位"
-    assert '"effortStyle": spec.effort_style' in src, "端点未下发随附方式"
 
 
-def test_g95_execution_params_follows_spec_effort_style(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """preset 分支的随附方式取自 spec，不写死 reasoning_effort。
-
-    写死的话，智谱系preset（thinking 风格）即便声明了档位也发不出去 ——
-    症状是「档位选了、行为没变」，最难察觉的一种假功能。
-    """
-    from sigma.providers.registry import builtin_providers
-
-    registry = builtin_providers()
-    # 用一个声明了 thinking 风格的 spec 验证随附方式真的被读
-    spec = registry.resolve("zhipu")
-    assert spec.effort_style == "reasoning_effort", "zhipu 未实测，保持默认风格"
-
-    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
-    monkeypatch.setenv("SIGMA_API_KEY", "sk-test-not-real")
-    monkeypatch.setenv("SIGMA_PRESET", "deepseek")
-
-    # deepseek 走 reasoning_effort 风格
-    _bu, _key, _model, _proto, extra = SERVER._execution_params(effort_hint="high")
-    assert extra == {"reasoning_effort": "high"}
-
-    # 空档位 → None（请求字节与无档位完全一致，不得凭空多一个字段）
-    _bu, _key, _model, _proto, extra_none = SERVER._execution_params(effort_hint="")
-    assert extra_none is None
 
 
-def test_g96_effort_extra_body_both_styles() -> None:
-    """两种随附方式的线格式都必须对（OpenAI 字符串 / 智谱对象）。"""
-    assert SERVER._effort_extra_body("reasoning_effort", "high") == {
-        "reasoning_effort": "high"
-    }
-    assert SERVER._effort_extra_body("thinking", "enabled") == {
-        "thinking": {"type": "enabled"}
-    }
-    # 空白档位等同于没有（不能发出 {"reasoning_effort": ""}）
-    assert SERVER._effort_extra_body("reasoning_effort", "   ") is None
 
 
-def test_models_endpoint_payload_carries_efforts(
-    http_server: tuple[str, Path]
-) -> None:
-    """端到端：真的起服务打 /models，deepseek 条目必须带三档。
-
-    函数层绿不够 —— 端点组装层才决定前端拿不拿得到。
-    """
-    base, _root = http_server
-    code, models = _get(base, "/api/v1/models")
-    assert code == 200 and isinstance(models, list)
-    by_name = {m["name"]: m for m in models}
-    assert "deepseek" in by_name, f"preset 未下发：{sorted(by_name)}"
-    assert by_name["deepseek"]["efforts"] == ["low", "medium", "high"]
-    # 未实测的厂商：空数组 → 前端不显示档位下拉（如实，而不是给假档位）
-    for name in ("moonshot", "zhipu", "dashscope", "ollama", "anthropic"):
-        if name in by_name:
-            assert by_name[name]["efforts"] == [], f"{name} 应无档位"
 
 
 # ============ G94-G96：档位链路（2026-10-02） ============
@@ -1547,3 +1364,98 @@ def test_g97_create_task_web_coerced_to_bool() -> None:
                 srv._TASKS.pop(payload["id"], None)
     finally:
         srv._MODELS_REGISTRY_PATH = original
+
+
+# ============ G98：静态资源 MIME（2026-10-02） ============
+#
+# 起因：背景图从 PNG(1902KB) 换成 WebP(48KB) 后，HTTP 端实测
+# ``Content-Type: application/octet-stream``——服务端那张 MIME 表是
+# **硬编码白名单**，漏了 .webp。危害不是"不好看"：严格 MIME 校验的场合
+# （nosniff 头、部分代理、某些资源管线）会**拒收**，
+# 症状是背景静默不出现 ⇒ **压缩白做**。
+#
+# 为什么用 HTTP 端到端而不是查源码字符串：
+# 查源码能被"重构后换写法"骗过，也能被"字典里有这一行"骗过
+# （字符串存在性 ≠ 运行时生效）。真起服务取 header 才是判据。
+
+
+@pytest.fixture
+def dist_http_server(tmp_path: Path) -> Iterator[tuple[str, Path]]:
+    """起一个带真实 dist 目录的服务器（只放测需要的资源）。"""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(
+        '<html><body>x</body></html>', encoding="utf-8"
+    )
+    # 最小合法文件内容；断言只关心 header，不校验字节解码
+    payloads = {
+        "bg-guofeng-CKLqumMD.webp": b"RIFF\x00\x00\x00\x00WEBPVP8 ",
+        "a.png": b"\x89PNG\r\n\x1a\n",
+        "a.jpg": b"\xff\xd8\xff",
+        "a.svg": b"<svg/>",
+        "a.woff2": b"wOF2",
+    }
+    for name, blob in payloads.items():
+        (dist / "assets" / name).write_bytes(blob)
+
+    server = SERVER.make_server(
+        host="127.0.0.1",
+        port=0,
+        sessions_root=tmp_path / "sessions",
+        workspace=tmp_path,
+        dist_dir=dist,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    yield base, dist
+    server.shutdown()
+    server.server_close()
+
+
+def _content_type(base: str, path: str) -> str:
+    with urllib.request.urlopen(f"{base}{path}", timeout=10) as resp:
+        return resp.headers.get("Content-Type", "")
+
+
+def test_g98_webp_served_as_image_webp(dist_http_server: tuple[str, Path]) -> None:
+    """.webp 必须是 image/webp，不能退回 octet-stream。
+
+    背景图就是 .webp。这条红了 = 背景静默不显示（严格 MIME 校验时）。
+    """
+    base, _dist = dist_http_server
+    got = _content_type(base, "/assets/bg-guofeng-CKLqumMD.webp")
+    assert got == "image/webp", f".webp 的 Content-Type 应为 image/webp，实得 {got!r}"
+
+
+def test_g98_all_asset_mime_types(dist_http_server: tuple[str, Path]) -> None:
+    """一张表覆盖全部已登记类型——**新增资源类型必须在这里登记**。
+
+    参数化而非单个断言：漏一种类型时能**指名道姓**地红，
+    而不是只报一句"有个不对"。
+    """
+    base, _dist = dist_http_server
+    expected = {
+        "/assets/bg-guofeng-CKLqumMD.webp": "image/webp",
+        "/assets/a.png": "image/png",
+        "/assets/a.jpg": "image/jpeg",
+        "/assets/a.svg": "image/svg+xml",
+        "/assets/a.woff2": "font/woff2",
+    }
+    for path, want in expected.items():
+        got = _content_type(base, path)
+        assert got == want, f"{path} 的 Content-Type 应为 {want}，实得 {got!r}"
+
+
+def test_g98_unknown_suffix_falls_back_to_octet_stream(
+    dist_http_server: tuple[str, Path],
+) -> None:
+    """未登记的类型仍退回 octet-stream（不要把默认改成 *通配*）。
+
+    给了 image/* 或 application/octet-stream 之外的通配，
+    等于让**任何**上传进来的文件都能被当成可执行内容伺服。
+    """
+    base, dist = dist_http_server
+    (dist / "assets" / "a.bin").write_bytes(b"\x00\x01")
+    got = _content_type(base, "/assets/a.bin")
+    assert got == "application/octet-stream", f"未登记类型应退回 octet-stream，实得 {got!r}"
