@@ -47,12 +47,29 @@ class ProviderSpec:
     provider 实现（它保持在依赖图的最底层），"名字 → 类"的分派由调用方
     （``cli/_make_provider``）做。带默认值 ``"openai-compat"``，因此
     既有五条 spec 与全部既有调用点零改动。
+
+    **档位（2026-10-02 补）**：``efforts`` 声明这个 provider **支持哪几档**
+    （空 = 不支持，调用方据此隐藏档位选择器），``effort_style`` 声明随附方式
+    （``reasoning_effort`` OpenAI 风格 / ``thinking`` 智谱风格）。
+    两者都是**厂商事实**而非可调参数 —— 所以放进 spec，而不是让每个调用方
+    各记一份：工作台 models 端点、CLI、评测都读同一份。
+
+    ⚠ **不要凭印象填**（2026-10-02 实测打脸过一次）：DeepSeek 的
+    ``deepseek-chat`` 确实三档（实测推理链low=1051 / medium=1804 /
+    high=2243 字符，真梯度），但 ``deepseek-reasoner`` **不支持分档**
+    （low=1491 与 high=1519 几乎无差，恒定推理，只能 ``none`` 开关）。
+    更坑的是 **HTTP 200 不能证明档位被接受** —— DeepSeek 对
+    ``reasoning_effort`` 不校验，任何值都 200 OK。唯一判据是量推理链长度。
     """
 
     name: str
     base_url: str
     default_model: str
     protocol: Literal["openai-compat", "anthropic"] = "openai-compat"
+    #: 支持的档位（空 = 该 provider 不支持档位，UI 不显示档位选择器）。
+    efforts: tuple[str, ...] = ()
+    #: 档位随附方式：OpenAI 风格 ``reasoning_effort`` / 智谱风格 ``thinking``。
+    effort_style: Literal["reasoning_effort", "thinking"] = "reasoning_effort"
 
 
 class UnknownProvider(KeyError):
@@ -128,11 +145,21 @@ def builtin_providers() -> ProviderRegistry:
     """
     registry = ProviderRegistry()
     for spec in (
+        # deepseek 的档位是**实测得来**的，不是照文档抄的（见 ProviderSpec
+        # docstring 的警告）。注意它只对 default_model（deepseek-chat）成立：
+        # 用户把 modelId 换成 deepseek-reasoner 时**分档失效**（恒定推理），
+        # 那种情况属于「模型设置里的自定义条目」，由用户自己填 none 或留空。
         ProviderSpec(
             name="deepseek",
             base_url="https://api.deepseek.com/v1",
             default_model="deepseek-chat",
+            efforts=("low", "medium", "high"),
         ),
+        # 以下五条**没有实测数据**，一律留空 efforts —— UI 于是不显示档位
+        # 选择器。宁可少一个功能，也不给一个「能选但没效果」的假档位：
+        # 厂商未公开承诺的档位值在这里是猜的，而猜错的档位比没有档位更坏
+        # （用户会以为调了其实没调）。要补请先按 ProviderSpec docstring
+        # 的方法实测（量推理链长度，不是看 HTTP 状态码）。
         ProviderSpec(
             name="moonshot",
             base_url="https://api.moonshot.cn/v1",

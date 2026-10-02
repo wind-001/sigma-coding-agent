@@ -130,6 +130,61 @@ class TestBuiltins:
         fields = {f.name for f in dataclasses.fields(ProviderSpec)}
         # ``protocol`` 是 P3 详规明确要求增加的字段（线协议名，用于
         # cli/_make_provider 分派实现类），不是凭据——字段集钉住
-        # 防的是"顺手塞字段"，这里是计划内的第 4 个。
-        assert fields == {"name", "base_url", "default_model", "protocol"}
+        # 防的是"顺手塞字段"。
+        # 2026-10-02 计划内新增第 5、6 个：``efforts`` / ``effort_style``
+        #（档位是**厂商事实**，放spec 才能让工作台端点、CLI、评测读同一份；
+        #放调用方就变成每处各记一份、必然漂移）。仍不是凭据。
+        assert fields == {
+            "name",
+            "base_url",
+            "default_model",
+            "protocol",
+            "efforts",
+            "effort_style",
+        }
         assert not any("key" in f or "token" in f for f in fields)
+
+
+class TestEfforts:
+    """档位字段（2026-10-02）。
+
+    起因是用户报「能选模型、选不了档位」——根因两条：preset 侧无处可取
+    （本类此前没有档位概念）、端点侧写死空数组。两条都在这里钉住。
+    """
+
+    def test_defaults_empty_means_no_effort_ui(self) -> None:
+        """默认空= 该 spec 不支持档位，调用方据此隐藏档位选择器。"""
+        spec = _spec("x")
+        assert spec.efforts == ()
+        assert spec.effort_style == "reasoning_effort"
+
+    def test_deepseek_preset_has_real_three_tiers(self) -> None:
+        """deepseek preset 是**实测**得来的三档，不是照文档抄的。
+
+        实测（2026-10-02，deepseek-chat，量reasoning_content 长度）：
+        low=1051 / medium=1804 / high=2243 字符 —— 真梯度。
+        """
+        spec = builtin_providers().resolve("deepseek")
+        assert spec.efforts == ("low", "medium", "high")
+
+    def test_unmeasured_presets_have_no_efforts(self) -> None:
+        """**没实测过的厂商必须留空** —— 猜的档位是假功能。
+
+        档位「能选但没效果」比没有档位更坏：用户以为调了其实没调。
+        这条断言的作用是：将来有人想给 moonshot/zhipu 补档位时，
+        必须先按 ProviderSpec docstring 的方法实测（量推理链长度），
+        并同步改这里的期望值 —— 而不是顺手填一个。
+        """
+        registry = builtin_providers()
+        for name in ("moonshot", "zhipu", "dashscope", "ollama", "anthropic"):
+            assert registry.resolve(name).efforts == (), (
+                f"{name} 的 efforts 应留空（无实测数据）"
+            )
+
+    def test_efforts_is_tuple_so_spec_stays_hashable_and_frozen(self) -> None:
+        """``efforts`` 是 tuple 不是 list —— spec 是 frozen dataclass，
+        里面放 list 会让「不可变」只在浅层成立，且可哈希性丢失。"""
+        spec = _spec("x")
+        assert isinstance(spec.efforts, tuple)
+        with pytest.raises(Exception):
+            spec.efforts = ("low",)  # type: ignore[misc]
