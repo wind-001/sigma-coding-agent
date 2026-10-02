@@ -163,6 +163,18 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
     if (task.status !== 'running') setStopRequested(false)
   }, [task.status])
 
+  // `sending` 只该覆盖「POST 已发出、载荷未到」这一瞬(星辰 2026-10-02
+  // 实测"停止和发送按钮全部失效")。send() 内含 deltas 轮询直到**整轮结束**,
+  // 此前若让 sending 一直为 true:
+  //   - 停止按钮 disabled={sending} → 整轮执行期点不动(实测 166 轮/3.7 小时
+  //     全程无效,用户唯一的中断手段被焊死);
+  //   - 发送按钮 composeReady 含 !sending → 运行中无法排队。
+  // 载荷一到(task.status 变 running)就交棒给 isRunning —— 按钮启用与否
+  // 该由"后端真的在跑"决定,而不是由"本地 promise 还没落地"决定。
+  useEffect((): void => {
+    if (task.status === 'running') setSending(false)
+  }, [task.status])
+
   const project = state.projects.find((p): boolean => p.id === task.projectId)
   const projectName: string = project?.name ?? '未知工作区'
   const statusMeta = STATUS_META[task.status]
@@ -557,7 +569,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               <button
                 type="button"
                 className="wb-composer__stop"
-                disabled={sending || stopRequested}
+                disabled={stopRequested}
                 onClick={(): void => {
                   setStopRequested(true)
                   void actions.stopTask(task.id)
