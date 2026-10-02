@@ -43,7 +43,7 @@ from sigma.providers.messages import (
 )
 from sigma.sessions.store import JsonlStore
 from sigma.sessions.tree import SessionTree
-from sigma.events.lifecycle import TextChunk, ThinkingChunk, ToolEnd, ToolStart
+from sigma.events.lifecycle import MessageInjected, TextChunk, ThinkingChunk, ToolEnd, ToolStart
 
 _TS = "2026-10-01T10:00:00.000"
 
@@ -666,10 +666,34 @@ def test_stream_collector_structured_pieces(monkeypatch: pytest.MonkeyPatch) -> 
     collector.on_event(ThinkingChunk(text="想一想"))
     collector.on_event(ToolStart(name="bash", arguments={"command": "pwd"}, call_id="c1"))
     collector.on_event(ToolEnd(name="bash", ok=True, preview="D:\\", message=message))
-    assert [piece["k"] for piece in pieces] == ["text", "thinking", "tool_start", "tool_end"]
+    assert [piece["k"] for piece in pieces[:4]] == [
+        "text",
+        "thinking",
+        "tool_start",
+        "tool_end",
+    ]
     assert pieces[0] == {"k": "text", "t": "我先看一下目录。"}
     assert pieces[2]["name"] == "bash" and "pwd" in pieces[2]["args"]
     assert pieces[3]["ok"] is True and pieces[3]["preview"] == "D:\\"
+    # 注入即时上屏(星辰 2026-10-02"点立即后面板要及时渲染"):steering/
+    # 排队的 UserMessage 注入推 user 块;[ 开头的是系统条(note 块)。
+    collector.on_event(
+        MessageInjected(
+            message=LlmMessageWrapper(
+                timestamp=_TS, message=UserMessage(content="继续下一部分", timestamp=_TS)
+            )
+        )
+    )
+    collector.on_event(
+        MessageInjected(
+            message=LlmMessageWrapper(
+                timestamp=_TS,
+                message=UserMessage(content="[任务清单提醒] 核对一次", timestamp=_TS),
+            )
+        )
+    )
+    assert pieces[-2] == {"k": "user", "t": "继续下一部分"}
+    assert pieces[-1] == {"k": "note", "t": "[任务清单提醒] 核对一次"}
     # 换新缓冲区(新一轮开始)后,事件写进**新**缓冲——跨轮不串
     pieces2: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -678,7 +702,7 @@ def test_stream_collector_structured_pieces(monkeypatch: pytest.MonkeyPatch) -> 
         {"t1": {"pieces": pieces2, "lock": threading.Lock(), "done": False, "error": None}},
     )
     collector.on_event(TextChunk(text="第二轮"))
-    assert len(pieces) == 4 and [p["t"] for p in pieces2] == ["第二轮"]
+    assert len(pieces) == 6 and [p["t"] for p in pieces2] == ["第二轮"]
     # 缓冲不存在(轮间隙/已清理):事件无处可写,不抛
     monkeypatch.setattr(SERVER, "_DELTAS", {})
     collector.on_event(TextChunk(text="孤儿事件"))

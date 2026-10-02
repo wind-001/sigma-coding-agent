@@ -31,6 +31,21 @@ export function piecesToLiveEvents(pieces: TaskDeltaPiece[]): TaskEvent[] {
     } else if (piece.k === 'thinking') {
       if (text !== '') flush()
       thinking += piece.t ?? ''
+    } else if (piece.k === 'user') {
+      // 注入即时上屏(星辰 2026-10-02):「立即」/排队的用户消息,一注入
+      // 就以用户气泡出现在直播区,不等轮结束的最终载荷。
+      flush()
+      events.push({
+        id: `__live-u${n++}`,
+        kind: 'message',
+        role: 'user',
+        text: piece.t ?? '',
+        at: '',
+      })
+    } else if (piece.k === 'note') {
+      // 系统条(任务清单提醒/子任务回报/停滞提醒)——与回放的 note 同款。
+      flush()
+      events.push({ id: `__live-n${n++}`, kind: 'note', text: piece.t ?? '', at: '' })
     } else if (piece.k === 'tool_start') {
       flush()
       events.push({

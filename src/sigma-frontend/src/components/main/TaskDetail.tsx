@@ -143,7 +143,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
         .catch((): void => undefined)
     }
     poll()
-    const timer = setInterval(poll, 1000)
+    const timer = setInterval(poll, 500)
     return (): void => {
       cancelled = true
       clearInterval(timer)
@@ -414,6 +414,20 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
                       className="wb-queue__now"
                       title="立即打断注入(下一轮模型调用前生效)"
                       onClick={(): void => {
+                        // 乐观移除(星辰 2026-10-02"点立即后队列项要消失"):
+                        // 不等 1s 队列轮询,本地立即摘掉这一条(按 index,
+                        // 与后端 drop_queued 同一下标);注入的消息经 deltas
+                        // 的 user 块即时上屏。
+                        setQueues((prev) =>
+                          prev === null
+                            ? prev
+                            : {
+                                ...prev,
+                                followups: prev.followups.filter(
+                                  (_: string, i: number): boolean => i !== item.index,
+                                ),
+                              },
+                        )
                         void actions.steerTask(task.id, item.text)
                         void actions.removeQueued(task.id, 'followup', item.index)
                       }}

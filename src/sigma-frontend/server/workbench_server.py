@@ -47,6 +47,7 @@ from sigma.config.settings import resolve_api_key
 from sigma.events.lifecycle import (
     ApprovalDecision,
     HookEvent,
+    MessageInjected,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
@@ -708,7 +709,7 @@ class _StreamCollector(BaseHook):
         self._task_id = task_id
 
     def events(self) -> tuple[type[HookEvent], ...]:
-        return (TextChunk, ThinkingChunk, ToolStart, ToolEnd)
+        return (TextChunk, ThinkingChunk, ToolStart, ToolEnd, MessageInjected)
 
     def on_event(self, event: HookEvent) -> None:
         piece: dict[str, Any] | None = None
@@ -729,6 +730,20 @@ class _StreamCollector(BaseHook):
                 "ok": bool(event.ok),
                 "preview": _clip(event.preview, 220),
             }
+        elif isinstance(event, MessageInjected):
+            # 注入即时上屏(星辰 2026-10-02"点立即后面板上要及时渲染"):
+            # steering/信箱/提醒注入此前只在轮结束的最终载荷可见——直播
+            # 区看不到。UserMessage 注入推块:「[」开头是系统条(任务清单
+            # 提醒/子任务回报/停滞提醒),否则是用户说的话(steering/排队)。
+            inner = getattr(event.message, "message", None)
+            content = getattr(inner, "content", None)
+            if not isinstance(inner, UserMessage) or not isinstance(content, str):
+                piece = None
+            else:
+                piece = {
+                    "k": "note" if content.startswith("[") else "user",
+                    "t": _clip(content, 500),
+                }
         if piece is None:
             return
         with _DELTAS_LOCK:

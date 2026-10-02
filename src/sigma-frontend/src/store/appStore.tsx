@@ -195,10 +195,14 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       }
       // 第一时间渲染(星辰 2026-10-02):提问气泡在 **按 Enter 的瞬间** 上屏,
       // 不等任何网络往返。submitDraft 已预插则跳过(id 相同去重)。
+      // ⚠ 任务已在 running → 本条会走**排队**分支(后端 queued)——不插
+      // 乐观气泡:它的显示位是排队区,注入后经 deltas 的 user 块上屏;
+      // 两处都插会重复两条一模一样的提问(实测)。
+      const willQueue = existing?.status === 'running'
       const alreadyOptimistic = existingEvents.some(
         (e) => e.id === '__user-pending' && e.text === trimmed,
       )
-      if (existing !== undefined && !alreadyOptimistic) {
+      if (existing !== undefined && !alreadyOptimistic && !willQueue) {
         dispatch({
           type: 'taskReplaced',
           task: { ...existing, status: 'running', events: [...existingEvents, userBubble] },
@@ -226,9 +230,10 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       const hasPendingUser = startedEvents.some(
         (e) => e.role === 'user' && e.text === trimmed,
       )
-      const eventsWithUser: TaskEvent[] = hasPendingUser
-        ? startedEvents
-        : [...startedEvents, userBubble]
+      const eventsWithUser: TaskEvent[] =
+        hasPendingUser || willQueue
+          ? startedEvents
+          : [...startedEvents, userBubble]
       dispatch({ type: 'taskReplaced', task: { ...started, events: eventsWithUser } })
       // 排队分支(星辰 2026-10-02):任务运行中发消息不再 409,后端直接进
       // followup 队列(queued=true)。当前轮的流式轮询已在别处进行,这里

@@ -224,7 +224,7 @@ export interface WorkbenchBudget {
 
 /** 流式增量**结构化块**:直播区分块渲染的原料(文本/思考/工具块,星辰 2026-10-02)。 */
 export interface TaskDeltaPiece {
-  k: 'text' | 'thinking' | 'tool_start' | 'tool_end'
+  k: 'text' | 'thinking' | 'tool_start' | 'tool_end' | 'user' | 'note'
   /** text/thinking 的文本增量 */
   t?: string
   /** 工具名(tool_start/tool_end) */
