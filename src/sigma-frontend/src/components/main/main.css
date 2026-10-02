@@ -50,7 +50,7 @@
    排除了嫌疑，那是查错了维度：**DOM 包含 ≠ 定位包含**。
    ============================================================ */
 .main {
-  background-image: url('../../assets/bg-guofeng.png');
+  background-image: url('../../assets/bg-guofeng.webp');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
