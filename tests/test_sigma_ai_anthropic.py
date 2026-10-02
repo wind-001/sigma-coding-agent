@@ -48,7 +48,7 @@ from sigma.providers.anthropic.protocol import (
     _parse_usage,
 )
 from sigma.providers.anthropic.sse import SseEventParser
-from sigma.providers.base import BaseProvider, CancelToken
+from sigma.providers.base import BaseProvider, CancelToken, SamplingParams
 from sigma.providers.errors import ErrorCode, ProviderError, ProviderErrorPayload
 from sigma.providers.events import (
     ErrorEvent,
@@ -1228,3 +1228,26 @@ def test_make_provider_dispatches_by_protocol() -> None:
     default_provider = _make_provider(Namespace(preset=None), "https://x", "k")
     assert isinstance(default_provider, OpenAICompatProvider)
     assert DEFAULT_PRESET == "deepseek"
+
+
+async def test_request_body_extra_body_merges_last() -> None:
+    """extra_body 通道与 openai 侧同判据:thinking 预算这类协议私有参数
+    由壳层拼好放进来,provider 最后合并;None 时不出现任何额外键。"""
+    provider, rec = _provider()
+    events = await _collect(
+        provider,
+        sampling=SamplingParams(extra_body={"thinking": {"type": "enabled"}}),
+    )
+    assert events  # 流正常走完
+    body = json.loads(rec.last_request.content)
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["model"] == "test-model"
+
+
+async def test_request_body_extra_body_none_is_inert() -> None:
+    provider, rec = _provider()
+    await _collect(provider, sampling=SamplingParams(temperature=0.5))
+    body = json.loads(rec.last_request.content)
+    assert "thinking" not in body
+    assert "reasoning_effort" not in body
+    assert body["temperature"] == 0.5

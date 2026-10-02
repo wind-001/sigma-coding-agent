@@ -71,6 +71,7 @@ from sigma.providers.messages import (
     ContentBlock,
     LlmMessage,
     TextBlock,
+    ThinkingBlock,
     ToolCallBlock,
     Usage,
     UserMessage,
@@ -516,6 +517,7 @@ class AgentLoop:
         run_turn 拿到的东西**看起来和正常一轮没有区别**。
         """
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
         text_signature: str | None = None
         # 分片累积交给协议层的装配器——**这里不再自己写一遍**。
         # 那套逻辑（按 index 归属、跨片拼接、JSON 失败原因）是 wire protocol 的知识，
@@ -545,6 +547,7 @@ class AgentLoop:
                 if event.text_signature is not None:
                     text_signature = event.text_signature
             elif isinstance(event, ThinkingDelta):
+                thinking_parts.append(event.thinking)
                 await self._emit(ThinkingChunk(text=event.thinking))
             elif isinstance(event, ToolCallDelta):
                 assembler.feed(event)
@@ -571,6 +574,12 @@ class AgentLoop:
             )
 
         blocks: list[ContentBlock] = []
+        # 思考块在最前（语义上思考先于作答）。出站转换对 openai 兼容端点
+        # 跳过该块（协议无此位置）、Anthropic 端点未开 extended thinking 时
+        # 丢弃留痕——本地留它只为了回放可见，协议安全性各自已闭环。
+        thinking = "".join(thinking_parts)
+        if thinking:
+            blocks.append(ThinkingBlock(thinking=thinking))
         text = "".join(text_parts)
         if text:
             blocks.append(TextBlock(text=text, text_signature=text_signature))

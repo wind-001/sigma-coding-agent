@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from sigma.config import settings
 from sigma.prompts.system_prompt import (
@@ -291,6 +291,7 @@ class InteractiveSession:
         system_prompt: str = SYSTEM_PROMPT,
         max_rounds: int = 20,
         temperature: float = 0.0,
+        extra_body: dict[str, Any] | None = None,
         extra_hooks: Sequence[BaseHook] = (),
         emit: Callable[[str], None] | None = None,
         session_id: str = "sigma-session",
@@ -326,6 +327,9 @@ class InteractiveSession:
         """
         self._provider = provider
         self._model = model
+        # 厂商私有参数通道(档位等,经 SamplingParams.extra_body 到请求体;
+        # 会话级冻结——中途换档位对新建任务生效,执行中的会话不重建)。
+        self._extra_body = extra_body
         self._session_id = session_id
         self._workspace_root = workspace_root
         # 子 agent 工厂要重建同款组装（见 _make_sub_agent_factory），
@@ -575,7 +579,7 @@ class InteractiveSession:
             session_id=session_id,
             workspace_root=workspace_root,
             max_rounds=max_rounds,
-            sampling=SamplingParams(temperature=temperature),
+            sampling=SamplingParams(temperature=temperature, extra_body=self._extra_body),
             signal=signal if signal is not None else NeverCancelled(),
             clock=self._clock,
             emit=emit,
@@ -756,6 +760,35 @@ class InteractiveSession:
             target.pop(index)
             return True
         return False
+
+    def edit_queued(
+        self, *, kind: Literal["steering", "followup"], index: int, text: str
+    ) -> bool:
+        """改写等待队列中一项的文本（工作台"排队项可编辑"，星辰 2026-10-02）。
+
+        与 :meth:`drop_queued` 同族：按显示下标、越界返回 False 不抛。
+        steering 改写只换 content——入队时间戳保持不变（它记录的是
+        "何时排队"，编辑不改排队时机）。并发边界同 drop_queued。
+        """
+        if kind == "steering":
+            target = self._steering
+            if not 0 <= index < len(target):
+                return False
+            old = target[index]
+            # 入队时间戳保持不变（记录"何时排队"）;包装/裸消息两种形态都接
+            stamp = old.timestamp
+            content_ts = (
+                old.message.timestamp if isinstance(old, LlmMessageWrapper) else stamp
+            )
+            target[index] = LlmMessageWrapper(
+                timestamp=stamp,
+                message=UserMessage(content=text, timestamp=content_ts),
+            )
+            return True
+        if not 0 <= index < len(self._followups):
+            return False
+        self._followups[index] = text
+        return True
 
     def reload_tools(self, source: str | None = None) -> list[ReloadReport]:
         """热重载扩展工具并重建常驻区（详规 §2/§3；SDK 公开方法，评测 B3 臂用）。

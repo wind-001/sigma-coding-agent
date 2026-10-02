@@ -47,6 +47,7 @@ from sigma.providers.events import (
     ErrorEvent,
     StopEvent,
     TextDelta,
+    ThinkingDelta,
     ToolCallDelta,
     UsageEvent,
 )
@@ -201,6 +202,11 @@ class OpenAICompatProvider(BaseProvider):
                 value = getattr(sampling, field)
                 if value is not None:
                     body[field] = value
+            # 厂商私有参数通道(SamplingParams docstring):最后合并,可覆盖
+            # 标准字段,也可表达 reasoning_effort/thinking 这类线格式不一的
+            # 参数——核心层不持厂商知识。
+            if sampling.extra_body:
+                body.update(sampling.extra_body)
 
         # usage 默认不返回，必须显式请求。这条是 B1.3 逼出来的签名参数的实际用途。
         if options is not None:
@@ -382,6 +388,14 @@ class OpenAICompatProvider(BaseProvider):
 
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}
+
+                        # 推理模型的思考增量（DeepSeek-R1 系 / GLM-4.5+ 等
+                        # openai 兼容线格式：``delta.reasoning_content``）。
+                        # 此前被静默丢弃——即使请求开了思考，思考内容也看不见
+                        # （星辰 2026-10-02"怎么没有思考链"）。无此字段的模型
+                        # 零影响（None → 不进分支，请求字节不变）。
+                        if delta.get("reasoning_content"):
+                            yield ThinkingDelta(thinking=str(delta["reasoning_content"]))
 
                         if delta.get("content"):
                             yield TextDelta(

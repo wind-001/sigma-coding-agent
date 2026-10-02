@@ -36,7 +36,14 @@ import httpx
 import pytest
 from sigma.providers.base import CancelToken, SamplingParams, StreamOptions
 from sigma.providers.errors import ErrorCode
-from sigma.providers.events import ErrorEvent, StopEvent, TextDelta, ToolCallDelta, UsageEvent
+from sigma.providers.events import (
+    ErrorEvent,
+    StopEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolCallDelta,
+    UsageEvent,
+)
 from sigma.providers.messages import (
     AssistantMessage,
     ImageBlock,
@@ -85,15 +92,23 @@ def _sse(*chunks: dict[str, Any], done: bool = True) -> bytes:
 def _chunk(
     *,
     content: str | None = None,
+    reasoning_content: str | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
     finish_reason: str | None = None,
     usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"choices": []}
-    if content is not None or tool_calls is not None or finish_reason is not None:
+    if (
+        content is not None
+        or reasoning_content is not None
+        or tool_calls is not None
+        or finish_reason is not None
+    ):
         delta: dict[str, Any] = {}
         if content is not None:
             delta["content"] = content
+        if reasoning_content is not None:
+            delta["reasoning_content"] = reasoning_content
         if tool_calls is not None:
             delta["tool_calls"] = tool_calls
         choice: dict[str, Any] = {"delta": delta}
@@ -536,6 +551,25 @@ async def test_stream_produces_expected_event_sequence() -> None:
     assert stops[0].stop_reason == "stop"
 
 
+async def test_stream_parses_reasoning_content_into_thinking_delta() -> None:
+    """推理模型的思考增量（``delta.reasoning_content``，DeepSeek-R1 系 /
+    GLM-4.5+ 线格式）翻译成 ThinkingDelta——此前被静默丢弃，请求开了
+    思考也看不见（星辰 2026-10-02）。普通模型无此字段零影响。"""
+    body = _sse(
+        _chunk(reasoning_content="让我想一想"),
+        _chunk(reasoning_content="2+2 等于 4"),
+        _chunk(content="2+2 等于 4"),
+        _chunk(finish_reason="stop"),
+    )
+    provider, _ = _provider(body=body)
+    events = await _collect(provider)
+
+    thinking = [e for e in events if isinstance(e, ThinkingDelta)]
+    assert [e.thinking for e in thinking] == ["让我想一想", "2+2 等于 4"]
+    texts = [e for e in events if isinstance(e, TextDelta)]
+    assert [e.text for e in texts] == ["2+2 等于 4"]
+
+
 async def test_tool_call_fragments_are_split_and_indexed() -> None:
     """工具调用分片按 ``index`` 归属，且 ``arguments_delta`` 是**原始片段**。
 
@@ -949,3 +983,31 @@ async def test_eof_without_finish_or_done_is_truncation_error() -> None:
     assert errors[0].error.code is ErrorCode.TRANSIENT
     assert "截断" in errors[0].error.message
     assert not [e for e in events if isinstance(e, StopEvent)]
+
+
+async def test_request_body_extra_body_merges_last() -> None:
+    """extra_body = 厂商私有参数的唯一通道:最后合并,可携带 reasoning_effort
+    /thinking 这类线格式不一的参数;None 时请求里不得出现任何额外键。"""
+    provider, rec = _provider()
+
+    events = await _collect(
+        provider,
+        sampling=SamplingParams(
+            temperature=0.2, extra_body={"reasoning_effort": "high"}
+        ),
+    )
+    assert isinstance(events[-1], StopEvent)
+    body = json.loads(rec.last_request.content)
+    assert body["reasoning_effort"] == "high"
+    # 标准字段仍在,extra_body 不挤掉它们
+    assert body["temperature"] == 0.2
+    assert body["stream_options"] == {"include_usage": True}
+
+
+async def test_request_body_extra_body_none_is_inert() -> None:
+    """extra_body=None(默认):请求字节与旧版完全一致——不能多出任何键。"""
+    provider, rec = _provider()
+    await _collect(provider, sampling=SamplingParams(temperature=0.2))
+    body = json.loads(rec.last_request.content)
+    assert "reasoning_effort" not in body
+    assert "thinking" not in body

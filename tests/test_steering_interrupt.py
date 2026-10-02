@@ -276,3 +276,17 @@ def test_followup_queue_basics(tmp_path: Path) -> None:
     assert session.pop_followup() == "第二条"
     assert session.pop_followup() == "第三条"
     assert session.has_followups() is False
+
+
+def test_edit_queued_followup_and_steering(tmp_path: Path) -> None:
+    """edit_queued(工作台"排队项可编辑"):按显示下标改写排队文本;
+    越界返回 False 不抛(与 drop_queued 同族);steering 改写只换 content。"""
+    session = _session(FakeProvider.from_rounds([_text_round("ok")]), tmp_path)
+    session.submit_followup("旧任务")
+    assert session.edit_queued(kind="followup", index=0, text="改好的任务") is True
+    assert session.pop_followup() == "改好的任务"
+    assert session.edit_queued(kind="followup", index=3, text="越界") is False
+    session.submit_steering("旧指导")
+    assert session.edit_queued(kind="steering", index=0, text="新指导") is True
+    drained = session._drain_steering()
+    assert [wrapper.message.content for wrapper in drained] == ["新指导"]

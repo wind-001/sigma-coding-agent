@@ -52,11 +52,19 @@ class SamplingParams:
     """采样参数。
 
     评测要控制变量，所以这几个参数必须能从上层传下来。
+
+    ``extra_body`` 是**厂商私有参数的唯一通道**（2026-10-02，工作台档位
+    功能引入）：reasoning effort 这类参数各家线格式不一（OpenAI 风格
+    ``reasoning_effort`` 字符串、智谱风格 ``thinking`` 对象），核心层不
+    持有任何厂商知识——壳层按模型条目自己声明的方式拼好 dict 放进来，
+    provider 在**全部标准字段之后**合并（可覆盖，亦可表达标准字段装不
+    下的私有参数）。None = 不附加任何额外字段，请求字节与旧版完全一致。
     """
 
     temperature: float | None = None
     max_tokens: int | None = None
     top_p: float | None = None
+    extra_body: dict[str, Any] | None = None
 
 
 @dataclass

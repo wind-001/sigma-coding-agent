@@ -210,6 +210,10 @@ class AnthropicProvider(BaseProvider):
                 value = getattr(sampling, name)
                 if value is not None:
                     body[name] = value
+            # 厂商私有参数通道(与 openai 侧同判据):最后合并,可表达
+            # thinking 预算这类协议私有参数——核心层不持厂商知识。
+            if sampling.extra_body:
+                body.update(sampling.extra_body)
 
         # ``options`` 的两个字段在 Anthropic 侧都没有对应物：
         # usage 恒随流返回（message_start / message_delta），无需 include_usage；
