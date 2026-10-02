@@ -11,6 +11,59 @@
   flex-direction: column;
 }
 
+/* ============================================================
+   古风桌面背景（星辰 2026-10-02）
+   ------------------------------------------------------------
+   诉求：整页铺水墨山水，但**不能遮挡文字输出**。
+
+   做法（三层，缺一不可）：
+   1. 图铺在 .main 自身（fixed 定位 → 不随内容滚动，滚长会话时
+      背景不跟着走，视觉稳定；contain 让水墨不被拉伸变形）；
+   2. **veil 层**（::before，fixed）——半透明白纱压在图上。这是
+      文字可读性的真正保障：助手气泡是「平铺正文、无底色」
+      （.wb-bubble 不设 background），图会直接透到字后面。
+      不靠给每个气泡加底色解决：那会让一串消息变成白砖墙，
+      反而更糟。veil 一次搞定，且不改动任何既有排版。
+   3. **text-shadow**（仅助手正文）——veil 之外再加一道保险，
+      万一 veil 被覆盖（覆盖层/滚动容器叠加）字仍然可读。
+      只给助手正文加，工具行/指标小字是弱信息不需要。
+
+   ⚠ 层叠教训（写下来防复发）：veil 是 `z-index: 0` 的**定位**元素，
+   而 `.main__center` / `.task-detail` 是 `z-index: auto` 的普通流内容——
+   auto 层级**低于** 0，veil 会盖住正文。所以内容层必须显式 `z-index: 1`
+   抬到 veil 之上（原注释写"无需提升"是错的，已被 CSS 规范否掉）。
+   veil 用 `pointer-events: none`，纯装饰不吃事件。
+
+   纯装饰：inset:0 铺满、fixed 不随内容滚动。
+   ============================================================ */
+.main {
+  background-image: url('../../assets/bg-guofeng.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+/* 白纱 veil：约 6 成不透明度盖住水墨的暗部（远山/枯枝），
+   把背景整体推到"极淡纹理"层级，正文对比度回到可读区间。 */
+.main::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: rgba(253, 253, 254, 0.62);
+}
+
+/* 内容层抬到 veil 之上（见上方层叠教训）。只给这两个主容器加，
+   内部组件靠父级继承层级，无需逐个提升。 */
+.main__center,
+.task-detail {
+  position: relative;
+  z-index: 1;
+}
+
+
 .main__center {
   margin: auto;
   width: min(860px, 90%);
@@ -348,8 +401,11 @@
    TaskDetail 任务详情页(详情态标题栏加渐隐底,避免滚动穿帮)
    ============================================================ */
 
+/* 渐隐底改为**半透明**（星辰 2026-10-02）：原来是实心 --bg-main，
+   有了背景图之后会在顶部挡出一条不透明白带，把水墨切断。改用与
+   .main::before 的 veil 同族的 rgba，白纱感一致、仍能遮住滚穿帮。 */
 .main--task .titlebar {
-  background: linear-gradient(to bottom, var(--bg-main) 60%, rgba(253, 253, 254, 0));
+  background: linear-gradient(to bottom, rgba(253, 253, 254, 0.85) 60%, rgba(253, 253, 254, 0));
 }
 
 .task-detail {
@@ -943,6 +999,12 @@
   color: var(--text-primary);
   padding: 2px 6px;
   max-width: 92%;
+  /* 古风背景第三层保险(星辰 2026-10-02):助手正文无底色,图会透到字后。
+     veil 之外再加一道极淡描边阴影——白纱万一被覆盖(覆盖层/滚动容器
+     叠加)字依然可读。数值刻意压得很轻,远看只是"字更实"而非"发光"。 */
+  text-shadow:
+    0 1px 2px rgba(255, 255, 255, 0.85),
+    0 0 6px rgba(255, 255, 255, 0.55);
 }
 
 /* 流式直播气泡:中间过程弱化(小字/浅色),完成后以正式气泡沉淀(星辰 2026-10-02) */
