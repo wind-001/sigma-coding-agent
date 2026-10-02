@@ -275,7 +275,12 @@ class SessionContext:
                 "**不要为了让实现通过而放宽预算**——那是把主张改掉以迁就实现。"
             )
 
-    def rebuild_with_tools(self, tools_schema: list[dict[str, Any]]) -> SessionContext:
+    def rebuild_with_tools(
+        self,
+        tools_schema: list[dict[str, Any]],
+        *,
+        system_prompt: str | None = None,
+    ) -> SessionContext:
         """以新工具 schema 重建一个上下文——**热重载的显式违约点**（详规 §3）。
 
         热重载必然改变 schema，在会话中直接换注册表会让
@@ -285,9 +290,21 @@ class SessionContext:
         树（连同全部历史）与压缩视图**原样移交**（树是同一个对象），
         其余常驻区参数逐项照抄，新实例构造时以新 schema 冻结指纹。
         旧实例就此废弃——此后一切读写都走新实例。
+
+        ``system_prompt``：**默认 None = 照抄旧提示词**，扩展热重载那条路
+        （只换工具、不换提示词）因此逐字节不变。
+        什么时候必须传：换工具表的同时提示词也要变——工作台的联网开关
+        （``InteractiveSession.set_web_tools``）就是这种情形。
+        **不传的后果是常驻区自相矛盾**：提示词里写着"有 web_search 这条
+        工具说明"而 schema 里没有（或反过来），模型看到的是一份互相打架
+        的工具面。"提示词与注册表同源"是 CLI 侧写下的纪律（见
+        ``cli/main.py`` 的 web_search_on 注释），这个参数是它在 SDK 侧的
+        落地点——不给，就只能靠每个调用方各自记得同步。
         """
         rebuilt = SessionContext(
-            system_prompt=self._system_prompt,
+            system_prompt=(
+                self._system_prompt if system_prompt is None else system_prompt
+            ),
             tools_schema=tools_schema,
             clock=self._clock,
             session_id=self._session_id,

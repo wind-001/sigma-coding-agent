@@ -92,6 +92,15 @@ SYSTEM_PROMPT = (
 )
 
 
+#: 记忆纪律段的**稳定首行标记**：换表重建提示词时用它反推"构造期有没有
+#: 记忆段"（见 InteractiveSession.set_web_tools）。为什么需要：system_prompt
+#: 是调用方传进来的成品字符串，本类不知道它是用什么开关拼的——按开关猜会错
+#: （裸常量 SYSTEM_PROMPT 恰等于 build_system_prompt(memory=False)，而
+#: enable_memory 默认 True，猜错就是常驻区悄悄多出≈186 字节）。
+#: 判定用整段的**首行**而不是全文：全文里含标点与措辞，改一次文案就失效。
+MEMORY_SECTION_MARK = "记忆纪律（跨会话记忆已开启）："
+
+
 def _memory_discipline_section() -> str:
     """跨会话记忆的"纪律段"（P5-批次3，memory=True 时追加，≈80 token）。
 
@@ -103,7 +112,7 @@ def _memory_discipline_section() -> str:
       常驻区变化=缓存失效），这句必须告诉模型，否则它会以为"写了没生效"。
     """
     return (
-        "\n\n记忆纪律（跨会话记忆已开启）：\n"
+        "\n\n" + MEMORY_SECTION_MARK + "\n"
         "- 值得写入 .sigma/memory/<slug>.md（首行 # 标题）：用户拍板、项目坑、"
         "失败尝试、环境事实；一次一篇，别写大杂烩。\n"
         "- 不值得写：一次性任务细节；与 AGENTS.md 矛盾的内容不写（它是第一权威）。\n"

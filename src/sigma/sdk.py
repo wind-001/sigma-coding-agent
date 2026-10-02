@@ -42,6 +42,7 @@ from sigma.config import settings
 from sigma.prompts.system_prompt import (
     ASK_USER_TOOL_LINE,
     LOAD_SKILL_TOOL_LINE,
+    MEMORY_SECTION_MARK as _MEMORY_SECTION_MARK,
     RESEARCH_FETCH_RULE,
     RESEARCH_RULES,
     SYSTEM_PROMPT,
@@ -269,6 +270,14 @@ def _real_clock() -> str:
     return stamps.now()
 
 
+#: ``enable_memory`` 的默认档（``InteractiveSession`` 的 ``--no-memory``
+#: 消融位）。**导出成常量是为了让"拼提示词"与"装配会话"引用同一个真值**：
+#: 调用方若各自写一个字面量 ``True``，两处就会漂移——而记忆纪律段与记忆索引
+#: 是同源的（``build_system_prompt(memory=...)`` vs 会话扫 ``.sigma/memory/``），
+#: 漂移的症状恰好是本批次修的那个病：索引在常驻区里摆着、提示词只字未提。
+DEFAULT_ENABLE_MEMORY = True
+
+
 class InteractiveSession:
     """交互式会话：**跨轮复用同一个 ``SessionContext``**（门槛 G35）。
 
@@ -336,6 +345,32 @@ class InteractiveSession:
         self._extra_body = extra_body
         self._session_id = session_id
         self._workspace_root = workspace_root
+        # 以下三个是**换表重建 loop 时要照抄的构造参数**（见 _build_loop /
+        # set_web_tools）。原先它们只活在 __init__ 的局部变量里，构造期用完即弃；
+        # 换表时要么存成实例成员、要么在原地留一份清单等着被照抄——两者都会
+        # 漏。存成成员是这里选的路：loop 的构造清单只有 _build_loop 一份。
+        #
+        # ⚠ ``_todo_steer_interval`` 在下面 enable_todo 那段里还会被改
+        # （No-todo 档要置 0），所以**这里不能赋值**——赋了会存下改之前的值，
+        # 换表重建时就把"该关的 steering提醒"又打开了。同理 SamplingParams
+        # 是不可变值类型，现在存与稍后存等价。
+        self._max_rounds = max_rounds
+        self._sampling = SamplingParams(temperature=temperature, extra_body=extra_body)
+        # 构造期**实际用的那份提示词**里，四个可选段各自在不在——
+        # 换表重建提示词时照抄这四个真值（见 set_web_tools）。
+        # 为什么反推而不是用开关猜：``system_prompt`` 是调用方传进来的
+        # **成品字符串**，本类不知道它是用什么开关拼的。猜的后果实测过：
+        # 裸常量 SYSTEM_PROMPT 恰等于 build_system_prompt(memory=False)，
+        # 而 enable_memory 默认 True——按开关猜就会在"关联网→再开→再关"
+        # 的往返里给常驻区悄悄长出 186 字节记忆纪律段。
+        # 判据：**工具表与提示词同源，而同源的依据是逐字节，不是推测**。
+        # 四个开关都是「加一段固定文本」，所以子串判定足够且精确。
+        self._prompt_flags: dict[str, bool] = {
+            "todo": TODO_TOOL_LINE in system_prompt,
+            "skills": LOAD_SKILL_TOOL_LINE in system_prompt,
+            "task": TASK_TOOL_LINE in system_prompt,
+            "memory": _MEMORY_SECTION_MARK in system_prompt,
+        }
         # 子 agent 工厂要重建同款组装（见 _make_sub_agent_factory），
         # 这几样先存起来——它们本来只为构造 AgentLoop 存在，现在多一个读者。
         self._emit = emit
@@ -371,6 +406,10 @@ class InteractiveSession:
                     "提示词侧用 build_system_prompt(todo=False) 保持同源。"
                 )
             todo_steer_interval = 0
+        # todo_steer_interval 的**最终值**在这里才落定（上面 enable_todo
+        # 那段可能改成 0），所以实例成员也在这时才赋值——换表重建 loop
+        # 照抄的就是这个值。见 __init__ 里那条"不能提前赋值"的注记。
+        self._todo_steer_interval = todo_steer_interval
         self._clock = _real_clock
         # 压缩策略：不传就用保守窗口的默认值（见 DEFAULT_CONTEXT_WINDOW_TOKENS）。
         # **默认开**而不是默认关：压缩是长会话能不能跑下去的前提，
@@ -579,25 +618,74 @@ class InteractiveSession:
             self._hooks.register(hook)
         if self._approval is not None:
             self._hooks.register_approval(self._approval)
-        self._loop = AgentLoop(
+        self._loop = self._build_loop(
             provider=provider,
             registry=self._registry,
-            model=model,
             session_id=session_id,
             workspace_root=workspace_root,
             max_rounds=max_rounds,
             guard_config=guard_config,
-            sampling=SamplingParams(temperature=temperature, extra_body=self._extra_body),
+            # 读实例成员而不是重建一份：SamplingParams 与 todo_steer_interval
+            # 都在构造早期定过（后者还会被 enable_todo 那段改成 0），
+            # 这里再 new 一次就是第二份真相。
+            sampling=self._sampling,
             signal=signal if signal is not None else NeverCancelled(),
+            hooks=self._hooks,
+            ask=self._ask,
+            todo_steer_interval=self._todo_steer_interval,
+        )
+
+    def _build_loop(
+        self,
+        *,
+        provider: BaseProvider,
+        registry: ToolRegistry,
+        session_id: str,
+        workspace_root: Path,
+        max_rounds: int | None,
+        guard_config: GuardConfig | None,
+        sampling: SamplingParams,
+        signal: CancelToken,
+        hooks: HookManager,
+        ask: Callable[[str, list[str], int | None], Awaitable[str]] | None,
+        todo_steer_interval: int,
+    ) -> AgentLoop:
+        """造loop。**构造期与换表重建期共用这一份参数清单**（2026-10-02）。
+
+        为什么抽出来：``set_web_tools`` 换联网工具时必须换 loop
+        （``AgentLoop`` 在构造期持有 registry 引用，见 ``event_loop.py``），
+        而原先那份调用写在 ``__init__`` 尾部、用的全是局部变量
+        （session_id / max_rounds / guard_config / signal / temperature…）。
+        在那里照抄第二份必然漏参——**漏一个不报错，只是静默行为漂移**：
+        漏 ``tool_lock`` 子 agent 直接瘫、漏 ``ask`` ask_user 退化成自动选项、
+        漏 ``hooks`` 持久化静默失效（消息只进内存不落盘）。
+        一份清单写两遍迟早对不上，所以只有一份。
+
+        参数从调用方传而不是读 ``self``：构造期那些值还在局部变量里，
+        刻意不让这条路径依赖"构造完成"的状态（重建期要读的是换表后的新值）。
+        真正需要跨两次调用共享的（``_tool_lock`` / ``_mailbox_*`` /
+        ``_checkpoint`` / ``_clock`` / ``_emit`` / ``steering_drain``）由本方法
+        从 ``self`` 取——它们本来就是实例状态。
+        """
+        return AgentLoop(
+            provider=provider,
+            registry=registry,
+            model=self._model,
+            session_id=session_id,
+            workspace_root=workspace_root,
+            max_rounds=max_rounds,
+            guard_config=guard_config,
+            sampling=sampling,
+            signal=signal,
             clock=self._clock,
-            emit=emit,
+            emit=self._emit,
             checkpoint=self._checkpoint,
             todo_steer_interval=todo_steer_interval,  # enable_todo=False 时已置 0
             tool_lock=self._tool_lock,
             mailbox_drain=self._mailbox_drain,
             mailbox_wait=self._mailbox_wait,
-            hooks=self._hooks,
-            ask=self._ask,
+            hooks=hooks,
+            ask=ask,
             steering_drain=self._drain_steering,
         )
 
@@ -824,6 +912,107 @@ class InteractiveSession:
         self._context = self._context.rebuild_with_tools(self._registry.schemas())
         self._persist_hook.rebind(self._context)
         return reports
+
+    def set_web_tools(
+        self,
+        *,
+        web_search: bool = False,
+        tavily_api_key: str | None = None,
+        web_fetch: bool = False,
+        firecrawl_api_key: str | None = None,
+    ) -> list[str]:
+        """换联网工具档位并重建常驻区与 loop（SDK 公开方法，工作台联网开关）。
+
+        **为什么必须重建三样，而不是改一个开关**
+
+        1. registry：``ToolRegistry`` **没有 ``unregister``**（工具只能加不能删），
+           所以关联网只能重建整张表。走 ``clone()``：工具实例共享、登记簿独立。
+        2. context：常驻区有逐字节指纹闸（:meth:`SessionContext.verify_resident_region`），
+           换 schema 不重建就当场抛。走 ``rebuild_with_tools`` 这条**显式违约点**
+           （与 ``reload_tools`` 同一处置），**并且必须同时传 system_prompt**——
+           提示词里写着 web_search 的工具说明而 schema 里没有（或反过来），
+           模型看到的是一份自相矛盾的工具面。
+        3. loop：``AgentLoop`` 在**构造期持有** registry 引用
+           （``runtime/event_loop.py``），换表不换 loop 的话它照样调旧表。
+
+        **默认关是调用方的口径，不是这里的**：本方法完全照传入的布尔值执行。
+        CLI 的口径是「有 key 就开」，工作台是「默认关、要显式开」
+        （星辰2026-10-02 拍板），两种都由调用方算好后传进来。
+
+        **key 参数默认为 None 而不是必填**：关联网的路径根本不需要 key，
+        而「关」是默认态——把它做成必填会让最常见的那条路径强制传一个
+        用不上的参数（实测踩到：``set_web_tools(web_search=False)`` 直接
+        TypeError）。开启时缺 key 才在这里抛，与 :func:`default_registry`
+        同一条判据、同一条文案。
+
+        返回变更后的工具名列表（供调用方回读确认，如实反映实际生效面）。
+        """
+        # 无论开关怎么变，**先把两个联网工具都从克隆里剔干净，再按需注册**。
+        # 分成"开/关两支"是错的：只开 web_fetch 时 clone 会把上一次
+        # 开启留下的 web_search 带过来，于是"工具表有 web_search、
+        # 提示词却没写"——门 test_prompt_and_registry_never_disagree
+        # 实测抓到过这个。同源纪律要求的是**逐项**对应，不是整体对应。
+        web_names = {WebSearchTool.name, WebFetchTool.name}
+        if web_search and not tavily_api_key:
+            raise ValueError(
+                "web_search=True 但没有 tavily_api_key。密钥应由调用方解析后传入"
+                "（sigma.config.settings.resolve_tavily_api_key），本层不自己去猜路径。"
+            )
+        if web_fetch and not firecrawl_api_key:
+            raise ValueError(
+                "web_fetch=True 但没有 firecrawl_api_key。密钥应由调用方解析后传入"
+                "（sigma.config.settings.resolve_firecrawl_api_key），本层不自己去猜路径。"
+            )
+        cloned = self._registry.clone(exclude=web_names)
+        if web_search:
+            cloned.register(web_search_tool(api_key=tavily_api_key or ""))
+        if web_fetch:
+            cloned.register(web_fetch_tool(api_key=firecrawl_api_key or ""))
+
+        # 提示词与注册表同源：工具表变了，工具行必须跟着变。
+        # ⚠ ``todo`` 与 ``memory`` 两个开关**必须照本会话的真实装配值**，
+        # 不能用 build_system_prompt 的默认值。踩过的坑：记忆纪律段
+        # （默认 memory=True）会在"关联网→再开→再关"的往返里悄悄长出
+        # 186 字节——症状是"常驻区 token 每次开关都涨一点"，看着像漂移，
+        # 实际是重建时用了与构造期不同的开关。裸常量 SYSTEM_PROMPT 恰好
+        # 等于 build_system_prompt(memory=False)，所以这里的真值是
+        # "记忆段当初有没有进常驻区"，由构造期记下的 _enable_memory 决定。
+        rebuilt_prompt = build_system_prompt(
+            web_search=web_search,
+            web_fetch=web_fetch,
+            # ⚠ 这四个开关的**真值不是本方法的入参**，也不是
+            # build_system_prompt 的默认值——默认值在这里常常就是错的那个。
+            # 实测踩过：往返一次常驻区多出 62 token，看着像漂移，实际是重建时
+            # 用了与构造期不同的开关（记忆纪律段被悄悄长出来）。
+            # 真值只有一个来源：**构造期实际用的那份提示词**（见
+            # __init__ 里 _prompt_flags 的赋值——它是从调用方传进来的
+            # system_prompt 反推的，不是从开关猜的）。
+            todo=self._prompt_flags["todo"],
+            skills=self._prompt_flags["skills"],
+            task=self._prompt_flags["task"],
+            memory=self._prompt_flags["memory"],
+        )
+        self._registry = cloned
+        self._context = self._context.rebuild_with_tools(
+            cloned.schemas(), system_prompt=rebuilt_prompt
+        )
+        self._persist_hook.rebind(self._context)
+        # 轮中断言用：换表只在轮边界做（调用方保证），loop 内部的 in-flight
+        # 状态不会被换掉。
+        self._loop = self._build_loop(
+            provider=self._provider,
+            registry=cloned,
+            session_id=self._session_id,
+            workspace_root=self._workspace_root,
+            max_rounds=self._max_rounds,
+            guard_config=self._guard_config,
+            sampling=self._sampling,
+            signal=self._user_signal if self._user_signal is not None else NeverCancelled(),
+            hooks=self._hooks,
+            ask=self._ask,
+            todo_steer_interval=self._todo_steer_interval,
+        )
+        return cloned.names()
 
     async def send(self, task: str) -> TurnResult:
         """发一条任务，跑完整轮。
