@@ -12,9 +12,17 @@ venv/
 .pytest_cache/
 
 # pytest 的临时根别在仓库里（沙箱/CI 里跑测试时会把 TMPDIR 指进来）
+# ⚠ 为什么要通配 `.pytest-tmp*` 而不是逐个列：
+#   --basetemp 的目录名是每次诊断自己起的（.pytest-tmp-diag / -inj / -full…），
+#   逐个列必然漏，漏的那个就以未跟踪文件的形式出现在 git status 里，
+#   久了会被误提交（里面是 shadow.git 仓库和几十兆测试产物）。
+#   通配的价值恰恰在"新起的名字也自动覆盖"。
+.pytest-tmp*/
 .ptb/
-.pytest-tmp/
-.pytest-tmp-base/
+
+# 助手/工具的临时工作目录（压图对比、一次性诊断脚本等）。
+# 命名规律是 .tmp-<用途>，与 .workbuddy/ 同类——不是项目产物。
+.tmp-*/
 
 # 手动试验用的演示工作区（scripts/make_demo_workspace.py 生成）
 demo/
