@@ -437,8 +437,9 @@ class AgentLoop:
                 message=UserMessage(
                     content=(
                         f"[任务清单提醒] 已连续 {self._todo_steer_interval} 轮未查看任务清单。"
-                        "在继续之前，先调用 todo(action=\"list\") 确认当前进度与下一步，"
-                        "防止长任务跑偏。"
+                        "若当前进度可能与清单脱节，用 todo(action=\"list\") 核对一次；"
+                        "状态流转为 pending → running → completed（不能跳步）。"
+                        "若清单与实际进度一致，无需任何操作，直接继续任务。"
                     ),
                     timestamp=self._clock(),
                 ),

@@ -281,6 +281,14 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               if (event.kind === 'thinking') {
                 return <ThinkingRow key={event.id} event={event} />
               }
+              if (event.kind === 'note') {
+                // 系统注入(如 todo 防跑偏提醒):不是用户说的话,灰条呈现
+                return (
+                  <div key={event.id} className="wb-sysnote">
+                    {event.text}
+                  </div>
+                )
+              }
               if (event.role === 'user') {
                 return (
                   <div key={event.id} className="wb-row wb-row--user">

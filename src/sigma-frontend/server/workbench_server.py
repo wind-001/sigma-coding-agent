@@ -1192,12 +1192,26 @@ def _events_from_history(history: list[Any]) -> list[dict[str, Any]]:
     for message in history:
         at = message.timestamp
         if isinstance(message, LlmMessageWrapper) and isinstance(message.message, UserMessage):
+            content_str = str(message.message.content)
+            if content_str.startswith("[任务清单提醒]"):
+                # loop 注入的防跑偏提醒是**系统消息**，不是用户说的话——
+                # 渲染成用户气泡会让"我没发过这条"的困惑(星辰 2026-10-02)。
+                # 展示层按前缀识别为 note(灰条),审计事实(JSONL)不动。
+                events.append(
+                    {
+                        "id": f"e{len(events)}",
+                        "kind": "note",
+                        "text": _clip(content_str, 4000),
+                        "at": at,
+                    }
+                )
+                continue
             events.append(
                 {
                     "id": f"e{len(events)}",
                     "kind": "message",
                     "role": "user",
-                    "text": _clip(str(message.message.content), 4000),
+                    "text": _clip(content_str, 4000),
                     "at": at,
                 }
             )

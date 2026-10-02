@@ -1076,6 +1076,19 @@
   margin: 10px 0 4px;
 }
 
+/* 系统注入条(loop 防跑偏提醒等):非用户发言,灰条弱呈现(星辰 2026-10-02) */
+.wb-sysnote {
+  align-self: center;
+  max-width: 88%;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-sidebar);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  margin: 4px 0;
+}
+
 .wb-endcap__rule {
   flex: 1;
   height: 1px;
