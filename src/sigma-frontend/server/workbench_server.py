@@ -673,7 +673,12 @@ def _queue_op(task_id: str, op: str, body: dict[str, Any]) -> tuple[int, dict[st
         session.submit_followup(text)
         return 200, {"ok": True, "queued": True}
     kind = str(body.get("kind") or "followup")
-    index = int(body.get("index") or -1)
+    # ⚠ `body.get("index") or -1` 是陷阱(星辰 2026-10-02 实测):0 是 falsy,
+    # 队列**第一项**的下标会被吞成 -1 → drop_queued 越界返回 False →
+    # 「立即」/删除/编辑对首项一律失效,而 2..n 正常(症状:只有第一条删不掉)。
+    # 显式判 None,不做真值兜底。
+    raw_index = body.get("index")
+    index = int(raw_index) if raw_index is not None else -1
     if op == "queue-edit":
         edited = session.edit_queued(
             kind="steering" if kind == "steering" else "followup", index=index, text=text

@@ -752,6 +752,50 @@ def test_http_queue_edit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert code == 409
 
 
+def test_queue_op_index_zero_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """下标 0 必须原样透传(星辰 2026-10-02 实测"follow-up 按钮无效"根因)。
+
+    ``body.get("index") or -1`` 把首项下标 0 当falsy 吞成 -1 →
+    drop_queued 越界返回 False → 「立即」/删除/编辑**对队列第一项一律
+    失效**,而第 2..n 项正常。症状极具迷惑性:按钮点了没反应、消息却
+    真的注入成功了(steer 走的是另一条路,不看 index)。
+
+    这条断言必须打到**删除路径**上——旧测试只把 index=0 用在 400/409
+    早返回分支,真删除断言用的是 index=1(真值),bug 正好落在缝隙里。
+    """
+
+    class _IndexRecordingSession:
+        def __init__(self) -> None:
+            self.seen: list[tuple[str, int]] = []
+
+        def drop_queued(self, *, kind: str, index: int) -> bool:
+            self.seen.append((kind, index))
+            return True
+
+        def edit_queued(self, *, kind: str, index: int, text: str) -> bool:
+            self.seen.append((kind, index))
+            return True
+
+    fake = _IndexRecordingSession()
+    monkeypatch.setattr(SERVER, "_SESSIONS", {"t-0": fake})
+
+    # 删除首项:index=0 必须原样到达
+    code, body = SERVER._queue_op("t-0", "queue-remove", {"kind": "followup", "index": 0})
+    assert code == 200 and body["ok"] is True
+    # 编辑首项:同一条解析路径,同样必须是 0
+    code, body = SERVER._queue_op("t-0", "queue-edit", {"kind": "followup", "index": 0, "text": "改过"})
+    assert code == 200 and body["ok"] is True
+    # steering 首项同理(另一条队列,同一个 index 字段)
+    code, body = SERVER._queue_op("t-0", "queue-remove", {"kind": "steering", "index": 0})
+    assert code == 200 and body["ok"] is True
+    assert fake.seen == [("followup", 0), ("followup", 0), ("steering", 0)]
+
+    # 反向断言:字段**缺失**才回落 -1(而不是把显式 0 也吞掉)
+    code, body = SERVER._queue_op("t-0", "queue-remove", {"kind": "followup"})
+    assert code == 200 and body["ok"] is True
+    assert fake.seen[-1] == ("followup", -1)
+
+
 def _pending_entry(task_id: str, entry_id: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
     """往全局审批表塞一条**挂起**的审批(模拟 confirm 模式下等人工的工具)。"""
     entry: dict[str, Any] = {
