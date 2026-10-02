@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from sigma.providers.base import NeverCancelled
+from sigma.providers.base import InterruptToken, NeverCancelled
 from sigma.agent.types import ToolContext
 from sigma.tools.builtin.bash import BashTool
 
@@ -68,6 +69,40 @@ async def test_bash_timeout_kills_command(tmp_path: Path) -> None:
     assert "超时" in result.content[0].text
     assert result.details["timed_out"] is True
     assert elapsed < 15, f"超时处理耗时 {elapsed:.1f}s：进程树没被及时杀掉（Windows 上疑似孙进程存活拖住了 wait）"
+
+
+@pytest.mark.asyncio
+async def test_bash_respects_cancel_token(tmp_path: Path) -> None:
+    """取消语义(星辰 2026-10-02"停止按钮必须有用"):InterruptToken 置位后
+    **正在跑的命令必须被杀掉并立即返回**,否则协作式中断要等当前命令的
+    超时走完——实测 tar 挂死时停止/排队全部被堵(按钮"全部失效")。
+
+    断言耗时上限的理由同 timeout 测试:杀树不及时 = 假绿。
+    """
+    tool = BashTool()
+    token = InterruptToken()
+    ctx = ToolContext(session_id="test", workspace_root=tmp_path, signal=token)
+    threading.Timer(1.0, token.cancel).start()  # 1s 后模拟用户点停止
+    start = time.monotonic()
+    result = await _run(tool, ctx, command="sleep 30", timeout_s=30)
+    elapsed = time.monotonic() - start
+
+    assert result.is_error
+    assert "中断" in result.content[0].text
+    assert result.details["interrupted"] is True
+    assert result.details["timed_out"] is False
+    assert elapsed < 10, f"取消后 {elapsed:.1f}s 才返回:挂起命令没被及时杀掉"
+
+
+@pytest.mark.asyncio
+async def test_bash_not_cancelled_runs_to_completion(tmp_path: Path) -> None:
+    """反向断言:未取消的令牌不改变正常路径——命令正常完成、无 interrupted 标记。"""
+    tool = BashTool()
+    result = await _run(tool, _ctx(tmp_path), command="echo ok")
+    assert result.is_error is False
+    assert "ok" in result.content[0].text
+    assert result.details["interrupted"] is False
+    assert result.details["timed_out"] is False
 
 
 @pytest.mark.asyncio

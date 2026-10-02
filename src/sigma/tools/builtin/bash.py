@@ -55,6 +55,7 @@ from pydantic import BaseModel, Field
 
 from sigma.tools.base import BaseTool
 from sigma.agent.types import ToolContext, ToolResult
+from sigma.providers.base import CancelToken
 from sigma.providers.messages import TextBlock
 from sigma.security.path_sandbox import PathEscapesWorkspace, resolve_write_path
 from sigma.tools.truncate import truncate_output
@@ -69,6 +70,14 @@ MAX_TIMEOUT_S = 1800
 #: 万一进程没能立刻退出，超时处理会自己变成新的挂起点（Windows 实测：
 #: 孙进程持有管道句柄时 ``wait()`` 会被拖到孙进程退出，见模块 docstring）。
 KILL_GRACE_S = 5
+
+
+async def _wait_for_cancel(token: CancelToken) -> None:
+    """轮询同步取消令牌直到置位(0.2s 粒度)。CancelToken 是线程安全的
+    同步接口(InterruptToken.cancel 从任意线程置位),没有异步等待面——
+    轮询是把"线程侧的打断"接进"asyncio 侧的工具执行"的最短桥。"""
+    while not token.is_cancelled():
+        await asyncio.sleep(0.2)
 
 
 async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
@@ -203,11 +212,33 @@ class BashTool(BaseTool):
                 is_error=True,
             )
 
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=params.timeout_s
-            )
-        except asyncio.TimeoutError:
+        cancelled = False
+        timed_out = False
+        comm_task = asyncio.ensure_future(proc.communicate())
+        timeout_task = asyncio.ensure_future(asyncio.sleep(params.timeout_s))
+        # 取消轮询(星辰 2026-10-02"停止按钮必须有用"):CancelToken 是同步
+        # 线程安全置位(InterruptToken.cancel 可从任意线程调),没有异步等待
+        # 面——轮询 is_cancelled,0.2s 粒度足够。此前 bash 完全不理会取消:
+        # 命令挂多久,协作式中断就得等多久(实测:tar 挂死 → 停止/排队
+        # 全被堵住,按钮"全部失效")。
+        cancel_task: asyncio.Future[None] | None = (
+            asyncio.ensure_future(_wait_for_cancel(ctx.signal))
+            if ctx.signal is not None
+            else None
+        )
+        waiters: list[asyncio.Future[Any]] = [comm_task, timeout_task]
+        if cancel_task is not None:
+            waiters.append(cancel_task)
+        _done, _pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+
+        interrupted = cancel_task is not None and cancel_task.done() and not timeout_task.done()
+        timed_out = timeout_task.done() and not interrupted
+        # 清理未触发的等待者,防任务泄漏
+        for waiter in (timeout_task, cancel_task):
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
+
+        if interrupted or timed_out:
             # 必须杀**整棵树**并回收子进程，否则留下僵尸（Windows 上孙进程
             # 持有管道句柄会把 wait 拖到天荒地老，见模块 docstring）。
             # 部分输出拿不回（见模块 docstring「超时时拿不回部分输出的原因」）
@@ -219,19 +250,29 @@ class BashTool(BaseTool):
                 # 正常不会走到（taskkill /F 实测 <1 s 生效）；真走到也得返回，
                 # 工具自己不能变成新的挂起点。
                 pass
+            if interrupted:
+                text = (
+                    "命令已被用户中断，已强制终止。\n"
+                    "本轮执行到此为止；用户稍后会给出新的指示。"
+                )
+            else:
+                text = (
+                    f"命令超时（超过 {params.timeout_s} s 未结束），已强制终止。\n"
+                    "命令可能在等待输入或永远不会结束——"
+                    "请检查后换一种不会挂起的写法。"
+                )
             return ToolResult(
-                content=[
-                    TextBlock(
-                        text=(
-                            f"命令超时（超过 {params.timeout_s} s 未结束），已强制终止。\n"
-                            "命令可能在等待输入或永远不会结束——"
-                            "请检查后换一种不会挂起的写法。"
-                        )
-                    )
-                ],
-                details={"command": params.command, "timeout_s": params.timeout_s, "timed_out": True},
+                content=[TextBlock(text=text)],
+                details={
+                    "command": params.command,
+                    "timeout_s": params.timeout_s,
+                    "timed_out": timed_out,
+                    "interrupted": interrupted,
+                },
                 is_error=True,
             )
+
+        stdout, stderr = comm_task.result()
 
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
@@ -249,6 +290,7 @@ class BashTool(BaseTool):
             "command": params.command,
             "exit_code": exit_code,
             "timed_out": False,
+            "interrupted": False,
             "cwd": str(cwd),
             "truncated": False,
         }
