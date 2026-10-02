@@ -4,6 +4,22 @@ import { useAppActions, useAppState } from '../../store/appStore'
 import type { ModelInfo, ModelSaveInput } from '../../api'
 import './overlays.css'
 
+/**
+ * 档位候选值（快捷填充用）。
+ *
+ * ⚠ 这些是**常见写法**，不是「这个模型一定支持」的断言 —— 核心层不持
+ * 厂商知识（见本组件 docstring）。用户点它只是省掉手打，不代替核实。
+ *
+ * OpenAI 风格的 low/medium/high 是 2026-10-02 对 DeepSeek **实测**确认的
+ * 真三档（推理链 1051/1804/2243 字符，有梯度）；`none` 对应「关掉推理」，
+ * 对 deepseek-reasoner 这类恒定推理的模型是**唯一**有意义的选择。
+ * 智谱风格的 enabled/disabled 用于 thinking 对象。
+ */
+const EFFORT_PRESETS: Readonly<Record<string, readonly string[]>> = {
+  reasoning_effort: ['low,medium,high', 'none', 'minimal'],
+  thinking: ['enabled,disabled'],
+}
+
 /** 空表单(添加);编辑时由条目填充,apiKey 恒空(服务端不回传,留空=保留) */
 function emptyForm(): ModelSaveInput {
   return {
@@ -165,15 +181,40 @@ export default function ModelSettings(): JSX.Element {
               </div>
               <div className="models-form__row models-form__row--pair">
                 <div>
-                  <label className="models-form__label">档位值(逗号分隔,留空 = 无档位)</label>
+                  <label className="models-form__label">
+                    档位值(逗号分隔,留空 = 无档位)
+                  </label>
                   <input
                     className="models-form__input"
                     value={effortsText}
-                    placeholder="例如:开启,关闭 或 low,medium,high"
+                    placeholder="例如:low,medium,high"
                     onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
                       setEffortsText(e.target.value)
                     }
                   />
+                  {/* 快捷填充：档位词表各家不同，手打容易错字。这里给的是
+                      **常见写法**而非断言——点它只是省手打，不代替核实。 */}
+                  <div className="models-form__quick">
+                    <span className="models-form__quick-label">常用：</span>
+                    {(EFFORT_PRESETS[form.effortStyle] ?? []).map(
+                      (preset: string): JSX.Element => (
+                        <button
+                          key={preset}
+                          type="button"
+                          className="models-form__quick-btn"
+                          onClick={(): void => setEffortsText(preset)}
+                        >
+                          {preset}
+                        </button>
+                      )
+                    )}
+                  </div>
+                  {/* 实测得来的提示，不是文档抄的。见 EFFORT_PRESETS 上方。 */}
+                  <p className="models-form__hint">
+                    OpenAI 风格：low/medium/high 是真三档（DeepSeek 实测有梯度）；
+                    <strong>reasoner 类模型（恒定推理）只认 none</strong>，填三档会
+                    「能选但没效果」。智谱风格用 enabled/disabled。
+                  </p>
                 </div>
                 <div>
                   <label className="models-form__label">随附方式</label>

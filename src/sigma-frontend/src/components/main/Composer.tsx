@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, Folder, Gauge, GitBranch, Plus, ShieldCheck } from 'lucide-react'
+import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, Folder, Gauge, GitBranch, Globe, Plus, ShieldCheck } from 'lucide-react'
 import Dropdown from './Dropdown'
 import FullAccessWarning from './FullAccessWarning'
 import { useAppActions, useAppState } from '../../store/appStore'
-import { ACCESS_OPTIONS, type ModelInfo, type Project } from '../../api'
+import { ACCESS_OPTIONS, WEB_OPTIONS, type ModelInfo, type Project } from '../../api'
 
 /** 分支下拉为装饰性选项(分支不入全局状态) */
 const BRANCH_OPTIONS: readonly string[] = ['main', 'dev']
@@ -76,6 +76,15 @@ export default function Composer(): JSX.Element {
     if (project !== undefined && project.id !== state.activeProjectId) {
       void actions.switchProject(project.id)
     }
+  }
+
+  const handleWebSelect = (label: string): void => {
+    const option = WEB_OPTIONS.find((o): boolean => o.label === label)
+    if (option === undefined) return
+    const next: boolean = option.id === 'on'
+    if (next === state.composerWeb) return
+    // 只是暂存选择，随 createTask 提交（首页还没有 taskId）
+    actions.setComposerOpt({ web: next })
   }
 
   const handleAccessSelect = (label: string): void => {
@@ -186,6 +195,31 @@ export default function Composer(): JSX.Element {
           items={ACCESS_OPTIONS.map((option): string => option.label)}
           value={accessLabel}
           onSelect={handleAccessSelect}
+          menuWidth={112}
+        />
+        {/* 联网搜索开关（2026-10-02 补）。
+            此前**只有会话页有**这个按钮，首页没有 —— 用户在新任务开始时
+            无法表达意图，只能建完任务再跳过去切，多数人不会想到。
+            语义与 TaskDetail 一致，但机制不同：此处**只暂存** composerWeb，
+            随 createTask 提交（首页尚无 taskId，热切不了）。 */}
+        <Dropdown
+          trigger={
+            <span
+              className={`composer__trigger-accent composer__web-trigger${
+                state.composerWeb ? ' composer__web-trigger--on' : ''
+              }`}
+              title="联网搜索:默认关闭,需 TAVILY_API_KEY。随新任务一起提交"
+            >
+              <Globe size={15} />
+              <span className="composer__select-value--sm">
+                {state.composerWeb ? '联网搜索' : '联网关闭'}
+              </span>
+              <ChevronDown size={14} />
+            </span>
+          }
+          items={WEB_OPTIONS.map((option): string => option.label)}
+          value={state.composerWeb ? '联网搜索' : '联网关闭'}
+          onSelect={handleWebSelect}
           menuWidth={112}
         />
         <div className="composer__spacer" aria-hidden="true" />

@@ -57,7 +57,7 @@ from sigma.hooks.base import ApprovalHook, BaseHook
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
 from sigma.observability.trace import trace_path_for
-from sigma.prompts.system_prompt import SYSTEM_PROMPT
+from sigma.prompts.system_prompt import build_system_prompt
 from sigma.providers.anthropic.provider import AnthropicProvider
 from sigma.providers.base import BaseProvider
 from sigma.providers.messages import (
@@ -70,7 +70,12 @@ from sigma.providers.messages import (
 from sigma.providers.openai.provider import OpenAICompatProvider
 from sigma.providers.registry import builtin_providers
 from sigma.providers.stamps import now as _now_stamp
-from sigma.sdk import InteractiveSession
+from sigma.sdk import (
+    DEFAULT_ENABLE_MEMORY,
+    InteractiveSession,
+    default_registry,
+    scan_skills,
+)
 from sigma.security.approval import analyze_call
 from sigma.sessions.sessions import (
     TRACE_SUFFIX,
@@ -149,6 +154,70 @@ ACCESS_MODES: dict[str, str] = {
 
 #: 写类工具(readonly/plan 模式拒绝的对象)。
 _WRITE_TOOLS = frozenset({"write", "edit", "bash", "multi_agent"})
+
+
+#: 联网工具的两个密钥(惰性解析一次;解析失败=没有,不抛)。
+#: 测试可替换 —— 与其他全局注入点同一处置。
+class _WebKeys:
+    tavily: str | None = None
+    firecrawl: str | None = None
+    resolved: bool = False
+
+    # 返回 ``type[_WebKeys]`` 而不是 ``_WebKeys``：classmethod 给的cls 就是类本身，
+    # 注解写实例会把 mypy 判成 return-value 错（实测踩过）。
+    @classmethod
+    def get(cls) -> type["_WebKeys"]:
+        if not cls.resolved:
+            from sigma.config.settings import (  # noqa: PLC0415 - 惰性:多数会话不开联网
+                resolve_firecrawl_api_key,
+                resolve_tavily_api_key,
+            )
+
+            # 解析不到就是 None(不是异常):key 是可选能力,缺它不该让服务起不来。
+            cls.tavily = resolve_tavily_api_key()[0] or None
+            cls.firecrawl = resolve_firecrawl_api_key()[0] or None
+            cls.resolved = True
+        return cls
+
+
+_WEB_KEYS = _WebKeys()
+
+#: 启动旗标(默认**关**——星辰 2026-10-02 拍板"加一个是否开启联网搜索的判断
+#: 按钮,默认不启动")。与 CLI 的 `web_search_on = not no_web_search and key`
+#: **方向相反**:CLI 是"有 key 就开",这里是"有key 也要显式开"。
+#: 由 main() 从命令行写入,默认 False。
+_STARTUP_FLAGS: dict[str, bool] = {"web_search": False, "web_fetch": False}
+
+
+def _web_flags(record: dict[str, Any]) -> tuple[bool, bool, str]:
+    """算这个会话的联网档位 → ``(web_search, web_fetch, 状态说明)``。
+
+    优先级:**任务记录 > 启动旗标**。记录里没有该字段(旧任务/纯磁盘会话)时
+    回落到启动旗标,也就是"默认关"。
+
+    三个理由,按重要性:
+    1. **默认关**(星辰拍板):key 存在≠ 开启。所以 key 只是**必要条件**。
+    2. **key 缺失与"用户没开"要分开说**:前者的处置是配 key,后者是点按钮。
+       混成一句"联网不可用"会把用户引向错误的动作。
+    3. ``web_fetch`` 跟着 ``web_search`` 一起开(同一个按钮统管),但仍各自
+       校验自己的 key —— 只配了 Tavily 的机器开搜索不精读,反之亦然
+       (与 CLI 同一条判据)。
+    """
+    want = record.get("web")
+    if want is None:
+        want = _STARTUP_FLAGS.get("web_search", False)
+    want_search = bool(want)
+    want_fetch = bool(want) and _STARTUP_FLAGS.get("web_fetch", False)
+    keys = _WebKeys.get()
+    web_search = want_search and bool(keys.tavily)
+    web_fetch = want_fetch and bool(keys.firecrawl)
+    if want_search and not keys.tavily:
+        note = "已请求开启,但没配 TAVILY_API_KEY"
+    elif not want_search:
+        note = "未开启(默认关,需点界面开关或--web-search)"
+    else:
+        note = "已开启(Tavily)"
+    return web_search, web_fetch, note
 
 
 def _registry_read() -> dict[str, Any]:
@@ -606,6 +675,73 @@ def _set_task_access(
     return 200, {"ok": True, "access": mode}
 
 
+def _set_task_web(
+    primary: Path, task_id: str, body: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    """切换联网开关(星辰 2026-10-02拍板:**默认不启动**,要显式开)。
+
+    **生效时机是"下次执行",不是立即热切**——与 ``_set_task_access`` 不同,
+    差别不是随意选的:access 改的是 gate 上的一个 ``str`` 属性
+    (``approve()`` 逐调用读它),而联网要换 ``AgentLoop`` 持有的 registry
+    (``runtime/event_loop.py`` 在构造期就存了引用)。轮中换 loop 会丢
+    in-flight 状态(loop 是无状态的,消息视图是 ``run_turn`` 启动时的快照)。
+
+    所以这里的处置是**把存活会话摘掉**,下次发消息时按新档重新装配——
+    树、历史、压缩视图由 SDK 的 ``rebuild``路径原样移交(``_SESSIONS``
+    里存的是会话,树在 store 里),丢的只有 steering/follow-up 队列。
+    **队列丢了必须让用户知道**(返回 ``pendingDropped``),否则界面上
+    "排队的消息"会静默消失。
+
+    会话正**在跑**时不摘:在跑的轮已经持有旧表,中途换 registry 与 loop
+    都不安全(见上)。这一档如实回 ``applied=False`` + 原因,让 UI 提示
+    "本轮跑完后生效"。
+    """
+    raw = body.get("enabled")
+    if not isinstance(raw, bool):
+        return 400, {"detail": "enabled 必须是布尔"}
+    with _TASKS_LOCK:
+        record = _TASKS.get(task_id)
+        if record is None:
+            # 纯磁盘会话(本进程没跑过):补最小底稿,让后续装配读到新档位。
+            _TASKS[task_id] = {
+                "id": task_id,
+                "projectId": _session_project_id(primary, task_id),
+                "title": "",
+                "web": raw,
+            }
+        else:
+            record["web"] = raw
+    # 如实算一遍"最终会不会真开":用户点了开但没配 key ≠ 开了。
+    web_search, web_fetch, note = _web_flags({"web": raw})
+    applied = False
+    pending = 0
+    reason = "已记录,下次执行按新档装配"
+    with _SESSIONS_LOCK:
+        session = _SESSIONS.get(task_id)
+    if session is not None:
+        if session.turn_running:
+            reason = "本轮正在跑,跑完后下次执行生效"
+        else:
+            pending = len(session.pending_steering()) + len(session.pending_followups())
+            with _SESSIONS_LOCK:
+                _SESSIONS.pop(task_id, None)
+            applied = True
+            reason = "已重建工具表,下一声消息生效"
+    else:
+        applied = True
+        reason = "已记录,下次执行按新档装配"
+    return 200, {
+        "ok": True,
+        "web": raw,
+        "webSearch": web_search,
+        "webFetch": web_fetch,
+        "note": note,
+        "applied": applied,
+        "reason": reason,
+        "pendingDropped": pending,
+    }
+
+
 def _delete_task(sessions_root: Path, task_id: str) -> tuple[int, dict[str, Any]]:
     """删除会话(审计安全版):JSONL 与 trace **移入回收站**(_TRASH_DIR,
     不直接 unlink——删除可恢复,审计事实仍在盘上);内存草稿记录、流式缓冲、
@@ -821,7 +957,10 @@ def _execution_params(
                 api_key,
                 spec.default_model,
                 spec.protocol,
-                _effort_extra_body("reasoning_effort", effort_hint),
+                # 随附方式取自spec（厂商事实），不再在此处写死
+                # "reasoning_effort" —— 写死的话，智谱系 preset 即便
+                # 声明了 thinking 也发不出去。
+                _effort_extra_body(spec.effort_style, effort_hint),
             )
     chained, _source = resolve_api_key()
     api_key = chained or ""
@@ -839,7 +978,8 @@ def _execution_params(
         api_key,
         model,
         spec.protocol,
-        _effort_extra_body("reasoning_effort", effort_hint),
+        # 同上：走 spec 声明的随附方式，不写死。
+        _effort_extra_body(spec.effort_style, effort_hint),
     )
 
 
@@ -893,13 +1033,45 @@ def _get_or_create_session(
     with _GATES_LOCK:
         _GATES[task_id] = gate
     approval: ApprovalHook = gate
-    system_prompt = SYSTEM_PROMPT + (
-        ("\n\n" + _PLAN_INSTRUCTION) if access == "plan" else ""
+
+    # 联网工具(星辰 2026-10-02 修的缺陷:此前整页**零提及**,agent 于是答
+    # "我没有联网工具"——它说的是实话,工具表里真的没有 web_search)。
+    # 口径与 CLI 相反,**按星辰拍板:默认关**,要显式开(按钮或启动旗标)。
+    # key 缺失不是"静默不开":横幅与按钮文案都要说清是哪一种。
+    web_on, fetch_on, web_note = _web_flags(record)
+    skills_scan, _skill_index = scan_skills(repo)
+    # 提示词与注册表**同源**（同批修）:此前用裸常量 SYSTEM_PROMPT,于是三件事
+    # 同时出错——① 联网工具行永远不在;② 记忆纪律段永远不在(enable_memory
+    # 默认 True,索引扫了却没渲染,记忆功能形同虚设);③ 技能工具行也不在
+    # (技能索引在常驻区里摆着,load_skill 却没被告知)。三条都是同一个病:
+    # 拼提示词时没看注册表。
+    system_prompt = build_system_prompt(
+        web_search=web_on,
+        web_fetch=fetch_on,
+        skills=bool(skills_scan.skills),
+        # 记忆纪律段与``enable_memory`` 同源。引用SDK 的常量而不是写字面量:
+        # 拼提示词与装配会话引同一个真值,两处不会漂移(漂移症状 =
+        # 索引在常驻区摆着、提示词只字未提)。
+        memory=DEFAULT_ENABLE_MEMORY,
+    )
+    system_prompt += ("\n\n" + _PLAN_INSTRUCTION) if access == "plan" else ""
+    registry = default_registry(
+        web_search=web_on,
+        tavily_api_key=_WEB_KEYS.tavily,
+        web_fetch=fetch_on,
+        firecrawl_api_key=_WEB_KEYS.firecrawl,
+        skills=skills_scan.skills,
     )
     session = InteractiveSession(
         provider=provider,
         workspace_root=repo,
         model=model,
+        # ⚠ 这三行是本批次修的**根因**:此前这里一个都没传,
+        # 于是 InteractiveSession 落到 sdk 侧的兜底`default_registry(todo=...)`
+        # ——而它的web_search 默认False。结果工具表里根本没有 web_search,
+        # agent 说"我没有联网工具"是**实话**,不是幻觉。
+        # 装配与提示词同源,两处必须一起改(否则常驻区自相矛盾)。
+        registry=registry,
         system_prompt=system_prompt,
         # max_rounds 走默认 None = 无上限:主任务由模型自己收敛(星辰
         # 2026-10-02 拍板);打断/信箱/审批仍是退出通道,强制中断随时可用。
@@ -937,6 +1109,15 @@ def _create_task(body: dict[str, Any]) -> dict[str, Any]:
         "access": str(body.get("access") or ""),
         "model": str(body.get("model") or ""),
         "effort": str(body.get("effort") or ""),
+        # 联网开关随建任务一起落记录（2026-10-02 补）。
+        # 此前**只读不回写**：_draft_payload 会读 record["web"]，
+        # 但创建时没写 ⇒ 首页 Composer 传什么都会被这条"缺字段=False"吃掉，
+        # 症状是「开关能点、开了没效果」——假功能。
+        # 已知限制：这里用 bool() 宽容解析（与其他字段同款），所以
+        # 字符串 "false" 会被当成开。热切那条路径（_set_task_web）是
+        # 严格 isinstance(raw, bool) 校验——**两者口径刻意不同**：
+        # 建任务是首载、调用方唯一是自己；热切是用户手点，脏值该被拒。
+        "web": bool(body.get("web") or False),
         "status": "draft",
         "createdAt": _now_stamp(),
     }
@@ -954,6 +1135,9 @@ def _draft_payload(record: dict[str, Any]) -> dict[str, Any]:
         "description": str(record.get("description") or ""),
         "status": "draft",
         "access": str(record.get("access") or ""),
+        # 联网开关(布尔,与 access/effort 同款"下次执行的参数")。
+        # 缺字段= False:默认关(星辰 2026-10-02 拍板)。
+        "web": bool(record.get("web") or False),
         "model": str(record.get("model") or ""),
         "effort": str(record.get("effort") or ""),
         "createdAt": created,
@@ -1164,6 +1348,7 @@ def _merged_task_payload(
     elif record is not None:
         payload["access"] = str(record.get("access") or "")
         payload["effort"] = str(record.get("effort") or "")
+        payload["web"] = bool(record.get("web") or False)
     return payload
 
 
@@ -1181,6 +1366,7 @@ def _all_task_payloads(primary: Path, sessions_root: Path) -> list[dict[str, Any
             payload = disk[rid]
             payload["access"] = str(record.get("access") or "") or payload["access"]
             payload["effort"] = str(record.get("effort") or "") or payload["effort"]
+            payload["web"] = bool(record.get("web") or False)
         else:
             payload = _draft_payload(record)
         if rid in _RUNNING:
@@ -1414,6 +1600,10 @@ def _task_payload(
         "access": "",
         "model": model,
         "effort": "",
+        # web 同access:是"下一次执行"的参数,只读回放没有这个语义。
+        # 写死 False 而不是省略字段——前端要按同一个形状读(省略会让
+        # undefined 漏进按钮的初始态)。
+        "web": False,
         "createdAt": created,
         "updatedAt": updated,
         "events": events,
@@ -1745,11 +1935,15 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     {
                         "id": name,
                         "name": name,
-                        "efforts": [],
+                        # preset 的档位**来自 spec**（厂商事实，实测得来），
+                        # 不是这里现编的。留空=该 preset 不支持档位，前端
+                        # 据 efforts.length>0 隐藏档位选择器。
+                        "efforts": list(spec.efforts),
                         "custom": False,
                         "modelId": spec.default_model,
                         "baseUrl": spec.base_url,
                         "protocol": spec.protocol,
+                        "effortStyle": spec.effort_style,
                     }
                 )
             self._send_json(200, payloads)
@@ -1829,6 +2023,18 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 *_set_task_access(self.workspace, parts[3], self._read_json_body())
             )
             return
+        # /tasks/{id}/web:联网开关(星辰 2026-10-02,**默认不启动**)。
+        # 与上面 access 的差别在生效时机:那边是热替换闸(一个 str 属性),
+        # 这边要重建工具表与 loop,所以是"下次执行生效"。
+        if (
+            len(parts) == 5
+            and parts[:3] == ["api", "v1", "tasks"]
+            and parts[4] == "web"
+        ):
+            self._send_json(
+                *_set_task_web(self.workspace, parts[3], self._read_json_body())
+            )
+            return
         # /tasks/{id}/stop:外部强制中断(协作式,块边界停)。
         if (
             len(parts) == 5
@@ -1891,6 +2097,7 @@ def _task_payload_for_id(
             if record is not None:
                 payload["access"] = str(record.get("access") or "") or payload["access"]
                 payload["effort"] = str(record.get("effort") or "") or payload["effort"]
+                payload["web"] = bool(record.get("web") or False)
             return payload
     with _TASKS_LOCK:
         record = dict(_TASKS[session_id]) if session_id in _TASKS else None
@@ -1927,7 +2134,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dist", default=None, help="前端构建产物目录,默认 src/sigma-frontend/dist"
     )
+    # 联网工具:**默认关**(星辰 2026-10-02 拍板)。与 CLI 方向相反——
+    # CLI 是"配了 key 就开",这里是"配了 key 也要显式开"(--web-search 或界面开关)。
+    # 不给这两个旗标时启动横幅会明说"未开启",免得又一次出现
+    # "agent 说没有联网工具"而没人知道为什么。
+    parser.add_argument(
+        "--web-search",
+        action="store_true",
+        help="启动时开启联网搜索(需 TAVILY_API_KEY)。默认关",
+    )
+    parser.add_argument(
+        "--web-fetch",
+        action="store_true",
+        help="启动时同时开启网页精读(需 FIRECRAWL_API_KEY)。默认关",
+    )
     args = parser.parse_args(argv)
+    _STARTUP_FLAGS["web_search"] = args.web_search
+    _STARTUP_FLAGS["web_fetch"] = args.web_fetch
 
     here = Path(__file__).resolve()
     sessions_root = (
@@ -1946,6 +2169,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  会话目录  {sessions_root}")
     print(f"  工作区    {workspace}")
     print(f"  前端产物  {dist_dir}{'(存在)' if dist_dir.is_dir() else '(未构建)'}")
+    # 联网工具状态:与 CLI 同口径**如实打印**(此前工作台完全没有这一行,
+    # 于是"agent 说没有联网工具"这件事在界面上毫无线索)。
+    _s, _f, _note = _web_flags({})
+    keys = _WebKeys.get()
+    print(f"  联网      {_note}")
+    if not keys.tavily:
+        print("            (没有 TAVILY_API_KEY——配了才能开)")
+    if not keys.firecrawl:
+        print("            (没有 FIRECRAWL_API_KEY——网页精读不可用)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

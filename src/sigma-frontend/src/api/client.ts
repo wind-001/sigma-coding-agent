@@ -55,6 +55,9 @@ export interface Task {
   statusDetail?: string
   /** 审批模式,取值为 ACCESS_OPTIONS 的 id */
   access: string
+  /** 联网搜索开关。**默认 false**(星辰 2026-10-02:默认不启动,要显式开)。
+   *  语义是"下一次执行"的参数,不是立即生效——服务端要重建工具表与 loop。 */
+  web: boolean
   model: string
   effort: string
   createdAt: string
@@ -78,6 +81,15 @@ export interface CreateTaskInput {
   model: string
   /** 执行档位:sigma 暂无 reasoning effort 管线,前端已不传(服务端按空串落记录) */
   effort?: string
+  /**
+   * 联网搜索开关（可选，默认 false）。
+   *
+   * ⚠ 这是**建任务时**的一次性参数，与 ``Task.web``（任务创建后可热切的
+   * 状态）同名字但不同环节：首页 Composer 发任务时还没有 taskId，
+   * 只能随createTask 一起提交；任务建好后走 ``setTaskWeb(taskId)``。
+   * 缺它 ⇒ 新任务一律「联网关闭」，用户在首页没有开关可用。
+   */
+  web?: boolean
 }
 
 export interface TaskFilter {
@@ -141,6 +153,16 @@ export const ACCESS_OPTIONS: readonly AccessOption[] = [
   { id: 'full', label: '完全访问' },
   { id: 'auto', label: '自动审批' },
   { id: 'confirm', label: '手动确认' },
+]
+
+/** 联网开关的两档文案。与 ACCESS_OPTIONS 同款形状(下拉而非勾选框)。
+ *
+ *  **默认「联网关闭」**——星辰 2026-10-02 拍板"加一个是否开启联网搜索的
+ *  判断按钮,默认不启动"。与 CLI 相反:CLI 是"配了 key 就开",这里是
+ *  "配了 key 也要显式开"(工具 schema 是常驻成本,每轮都付)。 */
+export const WEB_OPTIONS: readonly AccessOption[] = [
+  { id: 'on', label: '联网搜索' },
+  { id: 'off', label: '联网关闭' },
 ]
 
 export const STATUS_META: Record<TaskStatus, { label: string; color: string }> = {
@@ -316,6 +338,22 @@ export interface SigmaApiClient {
   decideApproval?(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
   /** 权限模式中途切换(human-in-the-loop):热替换审批闸,下一声工具调用生效。 */
   setTaskAccess?(taskId: string, access: string): Promise<void>
+  /** 联网开关切换(默认关,要显式开)。
+   *
+   *  **不是立即生效**——服务端要重建工具表与 AgentLoop,只在轮边界安全。
+   *  返回值如实告知几件事,UI 要显示而不是假装"已生效"：
+   *  ``note`` 区分"已开启" / "没配 TAVILY_API_KEY" / "未开启"(处置方式不同);
+   *  ``applied=false`` 表示本轮正在跑、跑完后才生效;
+   *  ``pendingDropped>0`` 表示重建时丢了这么多排队项(必须让用户看见)。 */
+  setTaskWeb?(taskId: string, enabled: boolean): Promise<{
+    web: boolean
+    webSearch: boolean
+    webFetch: boolean
+    note: string
+    applied: boolean
+    reason: string
+    pendingDropped: number
+  }>
   /** 外部强制中断(协作式:在跑工具完成后于块边界停,状态已持久化可续跑)。
    *  interrupted=false 表示后端本就没在跑(滞留状态已被纠正)。 */
   stopTask?(taskId: string): Promise<{ interrupted: boolean }>

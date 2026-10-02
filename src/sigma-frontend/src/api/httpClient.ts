@@ -221,6 +221,24 @@ export class HttpSigmaClient implements SigmaApiClient {
     })
   }
 
+  async setTaskWeb(
+    taskId: string,
+    enabled: boolean,
+  ): Promise<{
+    web: boolean
+    webSearch: boolean
+    webFetch: boolean
+    note: string
+    applied: boolean
+    reason: string
+    pendingDropped: number
+  }> {
+    return this.request(`/tasks/${taskId}/web`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    })
+  }
+
   async stopTask(taskId: string): Promise<{ interrupted: boolean }> {
     return this.request<{ interrupted: boolean }>(`/tasks/${taskId}/stop`, {
       method: 'POST',

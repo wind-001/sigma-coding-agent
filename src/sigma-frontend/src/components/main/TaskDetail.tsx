@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Activity, ArrowLeft, ArrowUp, ChevronDown, Database, Gauge, Pencil, Send, ShieldCheck, Square, X } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowUp, ChevronDown, Database, Gauge, Globe, Pencil, Send, ShieldCheck, Square, X } from 'lucide-react'
 import {
   ACCESS_OPTIONS,
   apiClient,
   STATUS_META,
+  WEB_OPTIONS,
   type ModelInfo,
   type Task,
   type TaskEvent,
@@ -184,6 +185,19 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const accessLabel: string =
     ACCESS_OPTIONS.find((option): boolean => option.id === task.access)?.label ?? '完全访问'
   const isFullAccess: boolean = accessLabel === '完全访问'
+  // 联网档位(星辰 2026-10-02,默认关)。tooltip 要说清三件事:
+  // 默认关、要 TAVILY_API_KEY、**下次执行才生效**(不是立即)。
+  // 少一条就会有人以为"点了没反应"是坏了。
+  const webOn: boolean = task.web === true
+  const webLabel: string = webOn ? '联网搜索' : '联网关闭'
+
+  const handleWebSelect = (label: string): void => {
+    const option = WEB_OPTIONS.find((o): boolean => o.label === label)
+    if (option === undefined) return
+    const next: boolean = option.id === 'on'
+    if (next === webOn) return
+    void actions.setTaskWeb(task.id, next)
+  }
 
   const handleAccessSelect = (label: string): void => {
     const option = ACCESS_OPTIONS.find((o): boolean => o.label === label)
@@ -549,6 +563,27 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               value={accessLabel}
               onSelect={handleAccessSelect}
               menuWidth={128}
+            />
+            {/* 联网搜索(星辰 2026-10-02,默认关)。与权限按钮同一形状、紧挨着放——
+                两个都是"这声消息用什么口径跑"的开关,放在一处比分散两处好记。
+                刻意用 Dropdown 而不是勾选框:勾选框表达"我勾了=已生效",
+                而这个**下次执行才生效**(服务端要重建工具表与 loop),
+                下拉式的"切到某一档"不含"已即时生效"的暗示。 */}
+            <Dropdown
+              trigger={
+                <span
+                  className={`wb-composer__web${webOn ? ' wb-composer__web--on' : ''}`}
+                  title="联网搜索:默认关闭,需 TAVILY_API_KEY。切换在下次执行时生效"
+                >
+                  <Globe size={13} aria-hidden="true" />
+                  {webLabel}
+                  <ChevronDown size={12} aria-hidden="true" />
+                </span>
+              }
+              items={WEB_OPTIONS.map((option): string => option.label)}
+              value={webLabel}
+              onSelect={handleWebSelect}
+              menuWidth={112}
             />
             <div className="wb-composer__spacer" aria-hidden="true" />
             {/* 模型 / 档位(参考设计右侧)。复用 Composer 的既有做法:

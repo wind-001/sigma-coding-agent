@@ -274,6 +274,19 @@
   color: var(--text-muted);
 }
 
+/* 联网开关（首页 Composer）。
+   开启色用**蓝**而不是红/金：红会被读成"危险"，金已被「完全访问」占用
+   （那边是警示黄，见上）。与 TaskDetail 的 .wb-composer__web--on 同色系，
+   同一语义在两处必须是同一个颜色，否则用户会以为是两回事。 */
+.composer__web-trigger {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.composer__web-trigger--on {
+  color: #2563eb;
+}
+
 .composer__body {
   padding: 8px 16px 0;
 }
@@ -1044,6 +1057,24 @@
 
 .wb-composer__access--full {
   color: #b8860b;
+}
+
+/* 联网开关(星辰 2026-10-02,默认关)。与 access 同款形状——两个是同一类
+   东西(这声消息用什么口径跑),所以共用一套视觉语言,只靠开启态的颜色区分。
+   开启色用蓝而不是红/金:红会被当成"危险",金已被"完全访问"占用,
+   而联网本身不危险(它只是多一项常驻成本)。 */
+.wb-composer__web {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.wb-composer__web--on {
+  color: #2563eb;
 }
 
 .wb-bubble--live .rt-p {

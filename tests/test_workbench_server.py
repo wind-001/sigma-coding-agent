@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import tempfile
 import threading
 import time
 import urllib.error
@@ -984,3 +985,565 @@ def test_execution_params_model_hint(
     assert model == "custom-model-x"  # env 覆盖生效
     _url, _key, model, _protocol, _extra = SERVER._execution_params("zhipu")
     assert model == "glm-4-flash"  # 显式选择压过 env
+
+
+# ==========================================================================
+# 联网开关(星辰 2026-10-02;详规 docs/plans/工作台联网开关-详规.md)
+#
+# 为什么这批门长这样:缺陷本身是**装配层少传了一个参数**,
+# 而少传参数在Python 里不报错——只是安静地少两个工具。
+# 所以门必须覆盖**装配路径**(跑 _get_or_create_session 看真工具表),
+# 而不是只测 default_registry 本身(那只能证明函数没坏)。
+# ==========================================================================
+
+
+def _web_session(
+    tmp_path: Path,
+    sessions_root: Path,
+    *,
+    web: bool | None,
+    tavily: str | None = "tvly-test-key",
+) -> Any:
+    """按当前装配路径真造一个会话,返回它(不给假 registry——那正是本缺陷
+    藏身的地方:手写 registry 就绕过了出问题的装配代码)。"""
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("ok"))
+    monkey.setattr(SERVER._WebKeys, "tavily", tavily)
+    monkey.setattr(SERVER._WebKeys, "firecrawl", None)
+    monkey.setattr(SERVER._WebKeys, "resolved", True)
+    task_id = "t-web"
+    with SERVER._TASKS_LOCK:
+        SERVER._TASKS[task_id] = {"id": task_id, "access": "full"}
+        if web is not None:
+            SERVER._TASKS[task_id]["web"] = web
+    with SERVER._SESSIONS_LOCK:
+        SERVER._SESSIONS.pop(task_id, None)
+    session = SERVER._get_or_create_session(task_id, tmp_path, "full", sessions_root)
+    session.__dict__["_test_monkey"] = monkey  # 保持patch 生效直到用例结束
+    return session
+
+
+def test_g91_web_tools_registered_only_when_on(
+    tmp_path: Path,
+) -> None:
+    """G91:装配路径真的按档位给工具表(默认关 / 显式开 / 没 key 不开)。"""
+    sessions_root = tmp_path / "sessions"
+
+    # 默认(记录里没有 web 字段)→ 关
+    off = _web_session(tmp_path, sessions_root, web=None)
+    assert "web_search" not in off._registry.names(), (
+        "默认必须关(星辰 2026-10-02:默认不启动)。有 key 也不开。"
+    )
+    assert "web_search" not in off._context._system_prompt
+
+    # 显式开 → 工具在
+    on = _web_session(tmp_path, sessions_root, web=True)
+    assert "web_search" in on._registry.names(), (
+        "记录里 web=True 时必须注册——本缺陷就是这里少传了参数,"
+        "导致 agent 答'我没有联网工具'(它说的是实话)"
+    )
+    off.__dict__["_test_monkey"].undo()
+    on.__dict__["_test_monkey"].undo()
+
+
+def test_g92_prompt_and_registry_same_source(tmp_path: Path) -> None:
+    """G92:提示词与注册表同源——两者要么都有 web_search,要么都没有。
+
+    这是本批次的核心纪律(CLI 侧写下的"提示词与注册表同源")在SDK 侧的落点。
+    断言两侧同时成立,**不是只查一侧**:只查注册表会漏掉"工具在、提示词不提"
+    (模型不知道自己能调);只查提示词会漏掉"提示词说能调、表里没有"
+    (模型去调一个不存在的工具)。两种症状都表现为"联网功能看起来是坏的"。
+    """
+    sessions_root = tmp_path / "sessions"
+    for web in (None, True, False):
+        session = _web_session(tmp_path, sessions_root, web=web)
+        names = session._registry.names()
+        in_table = "web_search" in names
+        in_prompt = "web_search" in session._context._system_prompt
+        assert in_table == in_prompt, (
+            f"web={web}:工具表有={in_table}、提示词有={in_prompt}——"
+            "两者必须同源,否则模型看到的工具面自相矛盾"
+        )
+        session.__dict__["_test_monkey"].undo()
+
+
+def test_g93_resident_region_ok_both_switches(tmp_path: Path) -> None:
+    """G93:开关两态下常驻区指纹与预算都过(名义门槛比没有更坏——要真跑)。
+
+    开启比关闭多≈600 token(工具行 + 调研纪律段),必须确认仍在 D4 的
+    总闸之内。这个断言的价值在于:预算不够时它会**当场抛**而不是
+    "跑跑看好像也行"。
+    """
+    sessions_root = tmp_path / "sessions"
+    for web in (False, True):
+        session = _web_session(tmp_path, sessions_root, web=web)
+        # 指纹:换表后必须重新冻结,否则下一轮 verify_resident_region 当场炸
+        session._context.verify_resident_region()
+        # 预算:超了当场抛 ResidentBudgetExceeded
+        session._context.verify_resident_budget()
+        assert session._context.resident_tokens <= 3500, (
+            f"web={web} 常驻区 {session._context.resident_tokens} 超 D4 总闸 3500"
+        )
+        session.__dict__["_test_monkey"].undo()
+
+
+def test_web_set_task_web_roundtrip(tmp_path: Path) -> None:
+    """开关端点:开→真开;关→真关;没 key 时如实说"不可用"而不是假装开。"""
+    code, body = SERVER._set_task_web(tmp_path, "t-rt", {"enabled": True})
+    assert code == 200 and body["web"] is True
+    assert body["pendingDropped"] == 0
+
+    # 没配key 时:用户点了开,但 webSearch 必须 False(note 说明原因)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(SERVER._WebKeys, "tavily", None)
+    monkey.setattr(SERVER._WebKeys, "resolved", True)
+    code, body = SERVER._set_task_web(tmp_path, "t-rt2", {"enabled": True})
+    assert code == 200
+    assert body["webSearch"] is False, "没 key 不能真的开"
+    assert "TAVILY" in body["note"], f"要说清是缺 key 而不是已开:{body['note']}"
+    monkey.undo()
+
+    # 非法入参
+    code, body = SERVER._set_task_web(tmp_path, "t-rt3", {"enabled": "yes"})
+    assert code == 400
+
+
+# ==========================================================================
+# 联网开关(星辰 2026-10-02;详规 docs/plans/工作台联网开关-详规.md)
+#
+# 为什么这批门长这样:缺陷本身是**装配层少传了一个参数**,
+# 而少传参数在Python 里不报错——只是安静地少两个工具。
+# 所以门必须覆盖**装配路径**(跑 _get_or_create_session 看真工具表),
+# 而不是只测 default_registry 本身(那只能证明函数没坏)。
+# ==========================================================================
+
+
+def _web_session(
+    tmp_path: Path,
+    sessions_root: Path,
+    *,
+    web: bool | None,
+    tavily: str | None = "tvly-test-key",
+) -> Any:
+    """按当前装配路径真造一个会话,返回它(不给假 registry——那正是本缺陷
+    藏身的地方:手写 registry 就绕过了出问题的装配代码)。"""
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("ok"))
+    monkey.setattr(SERVER._WebKeys, "tavily", tavily)
+    monkey.setattr(SERVER._WebKeys, "firecrawl", None)
+    monkey.setattr(SERVER._WebKeys, "resolved", True)
+    task_id = "t-web"
+    with SERVER._TASKS_LOCK:
+        SERVER._TASKS[task_id] = {"id": task_id, "access": "full"}
+        if web is not None:
+            SERVER._TASKS[task_id]["web"] = web
+    with SERVER._SESSIONS_LOCK:
+        SERVER._SESSIONS.pop(task_id, None)
+    session = SERVER._get_or_create_session(task_id, tmp_path, "full", sessions_root)
+    session.__dict__["_test_monkey"] = monkey  # 保持patch 生效直到用例结束
+    return session
+
+
+def test_g91_web_tools_registered_only_when_on(
+    tmp_path: Path,
+) -> None:
+    """G91:装配路径真的按档位给工具表(默认关 / 显式开 / 没 key 不开)。"""
+    sessions_root = tmp_path / "sessions"
+
+    # 默认(记录里没有 web 字段)→ 关
+    off = _web_session(tmp_path, sessions_root, web=None)
+    assert "web_search" not in off._registry.names(), (
+        "默认必须关(星辰 2026-10-02:默认不启动)。有 key 也不开。"
+    )
+    assert "web_search" not in off._context._system_prompt
+
+    # 显式开 → 工具在
+    on = _web_session(tmp_path, sessions_root, web=True)
+    assert "web_search" in on._registry.names(), (
+        "记录里 web=True 时必须注册——本缺陷就是这里少传了参数,"
+        "导致 agent 答'我没有联网工具'(它说的是实话)"
+    )
+    off.__dict__["_test_monkey"].undo()
+    on.__dict__["_test_monkey"].undo()
+
+
+def test_g92_prompt_and_registry_same_source(tmp_path: Path) -> None:
+    """G92:提示词与注册表同源——两者要么都有 web_search,要么都没有。
+
+    这是本批次的核心纪律(CLI 侧写下的"提示词与注册表同源")在SDK 侧的落点。
+    断言两侧同时成立,**不是只查一侧**:只查注册表会漏掉"工具在、提示词不提"
+    (模型不知道自己能调);只查提示词会漏掉"提示词说能调、表里没有"
+    (模型去调一个不存在的工具)。两种症状都表现为"联网功能看起来是坏的"。
+    """
+    sessions_root = tmp_path / "sessions"
+    for web in (None, True, False):
+        session = _web_session(tmp_path, sessions_root, web=web)
+        names = session._registry.names()
+        in_table = "web_search" in names
+        in_prompt = "web_search" in session._context._system_prompt
+        assert in_table == in_prompt, (
+            f"web={web}:工具表有={in_table}、提示词有={in_prompt}——"
+            "两者必须同源,否则模型看到的工具面自相矛盾"
+        )
+        session.__dict__["_test_monkey"].undo()
+
+
+def test_g93_resident_region_ok_both_switches(tmp_path: Path) -> None:
+    """G93:开关两态下常驻区指纹与预算都过(名义门槛比没有更坏——要真跑)。
+
+    开启比关闭多≈600 token(工具行 + 调研纪律段),必须确认仍在 D4 的
+    总闸之内。这个断言的价值在于:预算不够时它会**当场抛**而不是
+    "跑跑看好像也行"。
+    """
+    sessions_root = tmp_path / "sessions"
+    for web in (False, True):
+        session = _web_session(tmp_path, sessions_root, web=web)
+        # 指纹:换表后必须重新冻结,否则下一轮 verify_resident_region 当场炸
+        session._context.verify_resident_region()
+        # 预算:超了当场抛 ResidentBudgetExceeded
+        session._context.verify_resident_budget()
+        assert session._context.resident_tokens <= 3500, (
+            f"web={web} 常驻区 {session._context.resident_tokens} 超 D4 总闸 3500"
+        )
+        session.__dict__["_test_monkey"].undo()
+
+
+def test_web_set_task_web_roundtrip(tmp_path: Path) -> None:
+    """开关端点:开→真开;关→真关;没 key 时如实说"不可用"而不是假装开。"""
+    code, body = SERVER._set_task_web(tmp_path, "t-rt", {"enabled": True})
+    assert code == 200 and body["web"] is True
+    assert body["pendingDropped"] == 0
+
+    # 没配key 时:用户点了开,但 webSearch 必须 False(note 说明原因)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(SERVER._WebKeys, "tavily", None)
+    monkey.setattr(SERVER._WebKeys, "resolved", True)
+    code, body = SERVER._set_task_web(tmp_path, "t-rt2", {"enabled": True})
+    assert code == 200
+    assert body["webSearch"] is False, "没 key 不能真的开"
+    assert "TAVILY" in body["note"], f"要说清是缺 key 而不是已开:{body['note']}"
+    monkey.undo()
+
+    # 非法入参
+    code, body = SERVER._set_task_web(tmp_path, "t-rt3", {"enabled": "yes"})
+    assert code == 400
+
+
+def test_http_web_switch_roundtrip(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 层：POST /tasks/{id}/web 与回读（详规 §7.5 记的残留，此处补齐）。
+
+    函数层的门已经覆盖了「装配出的工具表对不对」，但**路由接错/字段名写错**
+    只有走HTTP 才暴露——而那正是"按钮点了没反应"的形态。
+    草稿（未落盘）也要能读到新档位，与 access 端点同要求。
+    """
+    base, _root = http_server
+    monkeypatch.setattr(SERVER._WebKeys, "tavily", "tvly-test")
+    monkeypatch.setattr(SERVER._WebKeys, "resolved", True)
+    try:
+        # 默认关
+        code, body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": False})
+        assert code == 200 and body["web"] is False
+        code, task = _get(base, "/api/v1/tasks/s-http")
+        assert code == 200 and task["web"] is False
+
+        # 开→真开（key 在）
+        code, body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": True})
+        assert code == 200 and body["web"] is True and body["webSearch"] is True
+        code, task = _get(base, "/api/v1/tasks/s-http")
+        assert code == 200 and task["web"] is True
+
+        # 非法入参：enabled 必须是布尔（传字符串不许被当成真）
+        code, _body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": "yes"})
+        assert code == 400
+
+        # 草稿（不在磁盘）也要能读到
+        code, created = _post(base, "/api/v1/tasks", {"title": "草稿"})
+        assert code == 200
+        code, body = _post(base, f"/api/v1/tasks/{created['id']}/web", {"enabled": True})
+        assert code == 200
+        code, task = _get(base, f"/api/v1/tasks/{created['id']}")
+        assert code == 200 and task is not None and task["web"] is True
+    finally:
+        SERVER._TASKS.pop("s-http", None)
+
+
+def test_http_web_switch_roundtrip(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 层：POST /tasks/{id}/web 与回读（详规 §7.5 记的残留，此处补齐）。
+
+    函数层的门已经覆盖了「装配出的工具表对不对」，但**路由接错/字段名写错**
+    只有走HTTP 才暴露——而那正是"按钮点了没反应"的形态。
+    草稿（未落盘）也要能读到新档位，与 access 端点同要求。
+    """
+    base, _root = http_server
+    monkeypatch.setattr(SERVER._WebKeys, "tavily", "tvly-test")
+    monkeypatch.setattr(SERVER._WebKeys, "resolved", True)
+    try:
+        # 默认关
+        code, body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": False})
+        assert code == 200 and body["web"] is False
+        code, task = _get(base, "/api/v1/tasks/s-http")
+        assert code == 200 and task["web"] is False
+
+        # 开→真开（key 在）
+        code, body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": True})
+        assert code == 200 and body["web"] is True and body["webSearch"] is True
+        code, task = _get(base, "/api/v1/tasks/s-http")
+        assert code == 200 and task["web"] is True
+
+        # 非法入参：enabled 必须是布尔（传字符串不许被当成真）
+        code, _body = _post(base, "/api/v1/tasks/s-http/web", {"enabled": "yes"})
+        assert code == 400
+
+        # 草稿（不在磁盘）也要能读到
+        code, created = _post(base, "/api/v1/tasks", {"title": "草稿"})
+        assert code == 200
+        code, body = _post(base, f"/api/v1/tasks/{created['id']}/web", {"enabled": True})
+        assert code == 200
+        code, task = _get(base, f"/api/v1/tasks/{created['id']}")
+        assert code == 200 and task is not None and task["web"] is True
+    finally:
+        SERVER._TASKS.pop("s-http", None)
+
+
+# ============ G94-G96：档位链路（2026-10-02） ============
+#
+# 起因：用户报「能选模型、选不了档位」。两条独立路径 ——
+#   ① preset 侧：ProviderSpec 当时没有档位字段，端点又写死 "efforts": []
+#      → 前端 efforts.length>0 判假 → 档位下拉**根本不渲染**；
+#   ② 随附方式：执行链三处写死 "reasoning_effort"，spec 声明 thinking 也发不出去。
+
+
+def test_g94_preset_efforts_come_from_spec_not_hardcoded() -> None:
+    """models 端点必须把 preset 的档位**真的下发**，而不是写死空数组。
+
+    端点绿但字段空 = 界面依然没下拉 —— 这就是原缺陷的形态。
+    """
+    from sigma.providers.registry import builtin_providers
+
+    spec = builtin_providers().resolve("deepseek")
+    assert spec.efforts == ("low", "medium", "high"), "档位是实测数据，不该为空"
+
+    src = SERVER.__file__ and open(SERVER.__file__, encoding="utf-8").read()
+    # 端点里那处不能再是空数组（自定义条目那处仍按用户配置读，是对的）
+    assert '"efforts": list(spec.efforts)' in src, "端点未从 spec 读档位"
+    assert '"effortStyle": spec.effort_style' in src, "端点未下发随附方式"
+
+
+def test_g95_execution_params_follows_spec_effort_style(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """preset 分支的随附方式取自 spec，不写死 reasoning_effort。
+
+    写死的话，智谱系preset（thinking 风格）即便声明了档位也发不出去 ——
+    症状是「档位选了、行为没变」，最难察觉的一种假功能。
+    """
+    from sigma.providers.registry import builtin_providers
+
+    registry = builtin_providers()
+    # 用一个声明了 thinking 风格的 spec 验证随附方式真的被读
+    spec = registry.resolve("zhipu")
+    assert spec.effort_style == "reasoning_effort", "zhipu 未实测，保持默认风格"
+
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    monkeypatch.setenv("SIGMA_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("SIGMA_PRESET", "deepseek")
+
+    # deepseek 走 reasoning_effort 风格
+    _bu, _key, _model, _proto, extra = SERVER._execution_params(effort_hint="high")
+    assert extra == {"reasoning_effort": "high"}
+
+    # 空档位 → None（请求字节与无档位完全一致，不得凭空多一个字段）
+    _bu, _key, _model, _proto, extra_none = SERVER._execution_params(effort_hint="")
+    assert extra_none is None
+
+
+def test_g96_effort_extra_body_both_styles() -> None:
+    """两种随附方式的线格式都必须对（OpenAI 字符串 / 智谱对象）。"""
+    assert SERVER._effort_extra_body("reasoning_effort", "high") == {
+        "reasoning_effort": "high"
+    }
+    assert SERVER._effort_extra_body("thinking", "enabled") == {
+        "thinking": {"type": "enabled"}
+    }
+    # 空白档位等同于没有（不能发出 {"reasoning_effort": ""}）
+    assert SERVER._effort_extra_body("reasoning_effort", "   ") is None
+
+
+def test_models_endpoint_payload_carries_efforts(
+    http_server: tuple[str, Path]
+) -> None:
+    """端到端：真的起服务打 /models，deepseek 条目必须带三档。
+
+    函数层绿不够 —— 端点组装层才决定前端拿不拿得到。
+    """
+    base, _root = http_server
+    code, models = _get(base, "/api/v1/models")
+    assert code == 200 and isinstance(models, list)
+    by_name = {m["name"]: m for m in models}
+    assert "deepseek" in by_name, f"preset 未下发：{sorted(by_name)}"
+    assert by_name["deepseek"]["efforts"] == ["low", "medium", "high"]
+    # 未实测的厂商：空数组 → 前端不显示档位下拉（如实，而不是给假档位）
+    for name in ("moonshot", "zhipu", "dashscope", "ollama", "anthropic"):
+        if name in by_name:
+            assert by_name[name]["efforts"] == [], f"{name} 应无档位"
+
+
+# ============ G94-G96：档位链路（2026-10-02） ============
+#
+# 起因：用户报「能选模型、选不了档位」。两条独立路径 ——
+#   ① preset 侧：ProviderSpec 当时没有档位字段，端点又写死 "efforts": []
+#      → 前端 efforts.length>0 判假 → 档位下拉**根本不渲染**；
+#   ② 随附方式：执行链三处写死 "reasoning_effort"，spec 声明 thinking 也发不出去。
+
+
+def test_g94_preset_efforts_come_from_spec_not_hardcoded() -> None:
+    """models 端点必须把 preset 的档位**真的下发**，而不是写死空数组。
+
+    端点绿但字段空 = 界面依然没下拉 —— 这就是原缺陷的形态。
+    """
+    from sigma.providers.registry import builtin_providers
+
+    spec = builtin_providers().resolve("deepseek")
+    assert spec.efforts == ("low", "medium", "high"), "档位是实测数据，不该为空"
+
+    src = SERVER.__file__ and open(SERVER.__file__, encoding="utf-8").read()
+    # 端点里那处不能再是空数组（自定义条目那处仍按用户配置读，是对的）
+    assert '"efforts": list(spec.efforts)' in src, "端点未从 spec 读档位"
+    assert '"effortStyle": spec.effort_style' in src, "端点未下发随附方式"
+
+
+def test_g95_execution_params_follows_spec_effort_style(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """preset 分支的随附方式取自 spec，不写死 reasoning_effort。
+
+    写死的话，智谱系preset（thinking 风格）即便声明了档位也发不出去 ——
+    症状是「档位选了、行为没变」，最难察觉的一种假功能。
+    """
+    from sigma.providers.registry import builtin_providers
+
+    registry = builtin_providers()
+    # 用一个声明了 thinking 风格的 spec 验证随附方式真的被读
+    spec = registry.resolve("zhipu")
+    assert spec.effort_style == "reasoning_effort", "zhipu 未实测，保持默认风格"
+
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    monkeypatch.setenv("SIGMA_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("SIGMA_PRESET", "deepseek")
+
+    # deepseek 走 reasoning_effort 风格
+    _bu, _key, _model, _proto, extra = SERVER._execution_params(effort_hint="high")
+    assert extra == {"reasoning_effort": "high"}
+
+    # 空档位 → None（请求字节与无档位完全一致，不得凭空多一个字段）
+    _bu, _key, _model, _proto, extra_none = SERVER._execution_params(effort_hint="")
+    assert extra_none is None
+
+
+def test_g96_effort_extra_body_both_styles() -> None:
+    """两种随附方式的线格式都必须对（OpenAI 字符串 / 智谱对象）。"""
+    assert SERVER._effort_extra_body("reasoning_effort", "high") == {
+        "reasoning_effort": "high"
+    }
+    assert SERVER._effort_extra_body("thinking", "enabled") == {
+        "thinking": {"type": "enabled"}
+    }
+    # 空白档位等同于没有（不能发出 {"reasoning_effort": ""}）
+    assert SERVER._effort_extra_body("reasoning_effort", "   ") is None
+
+
+def test_models_endpoint_payload_carries_efforts(
+    http_server: tuple[str, Path]
+) -> None:
+    """端到端：真的起服务打 /models，deepseek 条目必须带三档。
+
+    函数层绿不够 —— 端点组装层才决定前端拿不拿得到。
+    """
+    base, _root = http_server
+    code, models = _get(base, "/api/v1/models")
+    assert code == 200 and isinstance(models, list)
+    by_name = {m["name"]: m for m in models}
+    assert "deepseek" in by_name, f"preset 未下发：{sorted(by_name)}"
+    assert by_name["deepseek"]["efforts"] == ["low", "medium", "high"]
+    # 未实测的厂商：空数组 → 前端不显示档位下拉（如实，而不是给假档位）
+    for name in ("moonshot", "zhipu", "dashscope", "ollama", "anthropic"):
+        if name in by_name:
+            assert by_name[name]["efforts"] == [], f"{name} 应无档位"
+
+
+# ============ G97：首页联网开关（2026-10-02） ============
+#
+# 用户报「为什么新任务刚开始没显示联网开关」。两层根因：
+#   ① 前端：按钮只加在 TaskDetail（会话页），首页 Composer 没有 ——
+#      而首页才是**建任务的地方**。
+#   ② 后端：createTask 的 record **不写 web**，而 _draft_payload 会读它
+#      ⇒ 前端传了也被"缺字段=False"吃掉 ⇒「开关能点、开了没效果」。
+#
+# 注意本组测试**刻意走建任务路径**，而不是上一批的 setTaskWeb 热切路径 ——
+# 上一批全测「建完之后改」，恰好漏掉「建的时候能不能带上」。
+
+
+def test_g97_create_task_persists_web_flag() -> None:
+    """建任务时 web=true 必须真的落进 record（不是只在 payload 上好看）。"""
+    srv = SERVER
+    original = srv._MODELS_REGISTRY_PATH
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            srv._MODELS_REGISTRY_PATH = Path(td) / "models.json"
+            payload = srv._create_task({
+                "title": "T", "description": "d",
+                "access": "full", "model": "m", "web": True,
+            })
+            assert payload["web"] is True, "payload 应回显 web=true"
+            # 关键断言：record 内部也要落住 —— 原缺陷是「payload 读得到
+            # 但 record 没写」，之后热切/执行链都读不到。
+            assert srv._TASKS[payload["id"]]["web"] is True
+            srv._TASKS.pop(payload["id"], None)
+    finally:
+        srv._MODELS_REGISTRY_PATH = original
+
+
+def test_g97_create_task_defaults_web_off() -> None:
+    """不传 web 时默认**关**（拍板口径），且补了写入不等于变成默认开。"""
+    srv = SERVER
+    original = srv._MODELS_REGISTRY_PATH
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            srv._MODELS_REGISTRY_PATH = Path(td) / "models.json"
+            payload = srv._create_task({
+                "title": "T2", "description": "d",
+                "access": "full", "model": "m",
+            })
+            assert payload["web"] is False, "缺字段必须默认关"
+            srv._TASKS.pop(payload["id"], None)
+    finally:
+        srv._MODELS_REGISTRY_PATH = original
+
+
+def test_g97_create_task_web_coerced_to_bool() -> None:
+    """web 必须布尔化：0 / '' / None 都是关，1 / True 是开。
+
+    防的是 record 里存进非布尔值，之后 ``bool(record.get("web"))`` 之外的
+    消费方（如 JSON 契约、前端 === true 判断）行为不一致。
+    """
+    srv = SERVER
+    original = srv._MODELS_REGISTRY_PATH
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            srv._MODELS_REGISTRY_PATH = Path(td) / "models.json"
+            for raw, expected in ((1, True), (0, False), ("", False), (None, False)):
+                payload = srv._create_task({
+                    "title": "B", "description": "d",
+                    "access": "full", "model": "m", "web": raw,
+                })
+                assert payload["web"] is expected, f"web={raw!r} 应落成 {expected}"
+                assert isinstance(srv._TASKS[payload["id"]]["web"], bool)
+                srv._TASKS.pop(payload["id"], None)
+    finally:
+        srv._MODELS_REGISTRY_PATH = original

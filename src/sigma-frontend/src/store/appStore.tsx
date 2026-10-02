@@ -22,6 +22,15 @@ export interface AppState {
   composerModel: string
   /** 档位取值由所选模型条目声明;条目无档位时为 ''(前端隐藏下拉) */
   composerEffort: string
+  /**
+   * 联网搜索开关（首页 Composer 的暂存态，默认关）。
+   *
+   * ⚠ 与 ``Task.web`` 同一语义、不同环节：这里是「**还没建任务**时用户
+   * 的选择」，随 createTask 提交；建好后走 ``setTaskWeb(taskId)`` 热切。
+   * 少了这个字段，首页就**没有**联网开关可用——用户无法在建任务前表达意图，
+   * 只能建完任务再去会话页切（多数人不会想到）。
+   */
+  composerWeb: boolean
   paletteOpen: boolean
   overlay: OverlayKind
   /** 递增触发 Composer 聚焦 */
@@ -44,6 +53,7 @@ const initialState: AppState = {
   composerAccess: 'full',
   composerModel: '',
   composerEffort: '',
+  composerWeb: false,
   paletteOpen: false,
   overlay: null,
   focusComposerSignal: 0,
@@ -118,6 +128,8 @@ export interface AppActions {
   decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
   /** 权限模式中途切换:热替换审批闸,下一声工具调用生效 */
   setTaskAccess(taskId: string, access: string): Promise<void>
+  /** 联网开关(默认关):要重建工具表与 loop,**下次执行生效** */
+  setTaskWeb(taskId: string, enabled: boolean): Promise<void>
   /** 外部强制中断:协作式停止,块边界生效,状态可续跑 */
   stopTask(taskId: string): Promise<void>
   /** 导入工作区(选择目录) */
@@ -130,7 +142,13 @@ export interface AppActions {
   refreshAll(): Promise<void>
   setStatusFilter(filter: StatusFilter): void
   setActiveProjectId(projectId: string): void
-  setComposerOpt(patch: { access?: string; model?: string; effort?: string }): void
+  setComposerOpt(patch: {
+    access?: string
+    model?: string
+    effort?: string
+    /** 联网开关（首页 Composer 暂存态，随 createTask 提交） */
+    web?: boolean
+  }): void
   /** 模型设置:新增/更新自定义条目(apiKey 留空 = 保留原值) */
   saveModelConfig(input: ModelSaveInput): Promise<void>
   /** 模型设置:移除自定义条目 */
@@ -318,6 +336,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             access: s.composerAccess,
             model: s.composerModel,
             effort: s.composerEffort,
+            // 首页 Composer 的联网选择随建任务一起提交（此处还没有 taskId，
+            // 无法走 setTaskWeb 热切）。漏这一行 ⇒ 首页开关怎么点都没用。
+            web: s.composerWeb,
           })
           // 提问气泡第一时间上屏:创建瞬间预插(send 里按 id 去重不会重复)
           dispatch({
@@ -361,6 +382,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             access: s.composerAccess,
             model: s.composerModel,
             effort: s.composerEffort,
+            // 首页 Composer 的联网选择随建任务一起提交（此处还没有 taskId，
+            // 无法走 setTaskWeb 热切）。漏这一行 ⇒ 首页开关怎么点都没用。
+            web: s.composerWeb,
           })
           dispatch({ type: 'taskAdded', task })
           patch({ view: 'task', selectedTaskId: task.id })
@@ -432,6 +456,28 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
           }
           const label = ACCESS_OPTIONS.find((option) => option.id === access)?.label ?? access
           return `权限已切换为「${label}」,下一声工具调用生效`
+        })
+      },
+      async setTaskWeb(taskId: string, enabled: boolean): Promise<void> {
+        const setter = apiClient.setTaskWeb
+        if (setter === undefined) return
+        await runOrToast(async (): Promise<string> => {
+          const result = await setter(taskId, enabled)
+          const landed = await apiClient.getTask(taskId)
+          if (landed !== null) {
+            dispatch({ type: 'taskReplaced', task: landed })
+          }
+          // ⚠ 拼文案只用**服务端给的字段**，不在前端另算一套"能不能开"。
+          // 前端算的那套必然与服务端的判据漂移（key 解析只有那边做），
+          // 症状就是"按钮显示已开启、agent 说没有工具"——本批次修的就是这个。
+          const parts: string[] = [result.note]
+          if (result.pendingDropped > 0) {
+            // 排队项被丢了必须说:否则界面上"排队的消息"静默消失(元纪律:丢弃必须可见)
+            parts.push(`已丢弃 ${result.pendingDropped} 条排队项`)
+          } else if (!result.applied) {
+            parts.push('本轮跑完后生效')
+          }
+          return parts.join(' · ')
         })
       },
       async stopTask(taskId: string): Promise<void> {
@@ -546,6 +592,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         if (p.access !== undefined) next.composerAccess = p.access
         if (p.model !== undefined) next.composerModel = p.model
         if (p.effort !== undefined) next.composerEffort = p.effort
+        if (p.web !== undefined) next.composerWeb = p.web
         // 换模型时档位跟随:新条目声明里没有当前档位 → 落到末档(最高档语义)。
         if (p.model !== undefined) {
           const entry = s.models.find((m) => m.name === p.model)

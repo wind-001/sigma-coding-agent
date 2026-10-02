@@ -2,10 +2,16 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23131313'/%3E%3Ctext x='16' y='23' font-family='Arial' font-size='20' font-weight='700' fill='%23fff' text-anchor='middle'%3EZ%3C/text%3E%3C/svg%3E"
-    />
+    <!-- 站点图标:彩虹闪电(原为内联 SVG 的深色方块 + 字母 Z)。
+         走 Vite 资源引用而非 data URI,原因有三:
+         1. data URI 只能给一个尺寸,高分屏 tab 会拉糊;
+         2. 源图 1536x1536,base64 编码约 200KB,塞进 HTML 会拖慢首屏解析;
+         3. 走资源后 Vite 会生成带 hash 的文件名,可被 immutable 长缓存。
+         16 是 tab 栏实际下限(必须给,否则小尺寸下拉糊成色块),
+         32 给高分屏,180 是 iOS apple-touch-icon(不支持 SVG)。 -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/src/assets/logo-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/src/assets/logo-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/src/assets/logo-180.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>sigma</title>
   </head>

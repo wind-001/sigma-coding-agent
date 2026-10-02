@@ -5,6 +5,19 @@
 
 :root {
   --overlay-z: 200;
+  /* ---- 模态层：遮罩与它的面板成对出现，面板必须高于遮罩 ----
+     这两个值是**成对契约**，不是各自独立的 tunable：
+     遮罩（.fs-picker-mask / .wb-warn-mask）铺满视口吃掉一切点击，
+     面板只有站在它之上才收得到事件。改任何一个都要同时看另一个。
+
+     ⚠ 层叠教训三（2026-10-02 修的 bug）：.models-panel 原写 z-index:60，
+     低于遮罩的 90 → 面板**看得见、点不动**（视觉上"界面灰暗、点啥都没反应"）。
+     那个 60 是从侧栏下拉菜单（sidebar.css 的 .sidebar__filter-menu）
+     抄来的数字，抄错了体系——侧栏下拉是页内绝对定位，模型设置是全屏模态，
+     两者不在同一层。教训：**魔数跨体系抄写必然出事，把关系写成 token**。
+     新增模态一律用 var(--modal-z)，不要再写裸数字。 */
+  --modal-mask-z: 90;
+  --modal-z: 95;
   --overlay-mask-bg: rgba(15, 18, 25, 0.28);
   --overlay-subtle: #f7f8fa;
   --overlay-ink: #131313;
@@ -642,7 +655,7 @@
   position: fixed;
   inset: 0;
   background: rgba(15, 18, 25, 0.4);
-  z-index: 90;
+  z-index: var(--modal-mask-z);
 }
 
 .fs-picker {
@@ -658,7 +671,7 @@
   border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: var(--shadow-card);
-  z-index: 95;
+  z-index: var(--modal-z);
 }
 
 .fs-picker__header {
@@ -788,7 +801,7 @@
   border-radius: 14px;
   box-shadow: 0 12px 48px rgba(229, 72, 77, 0.18);
   padding: 18px 20px 16px;
-  z-index: 95;
+  z-index: var(--modal-z);
 }
 
 .wb-warn__title {
@@ -867,7 +880,11 @@
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: 0 18px 48px rgba(15, 18, 25, 0.18);
-  z-index: 60;
+  /* 本面板与 .fs-picker 在 App.tsx 里是同一个 state.overlay 槽位的
+     互斥兄弟、共用 .fs-picker-mask 遮罩，故必须与 .fs-picker 同层。
+     原为裸数字 60（抄 sidebar.css 的页内下拉菜单，抄错体系），
+     低于遮罩 90 → 面板能看见但收不到点击。见 :root 的层叠教训三。 */
+  z-index: var(--modal-z);
 }
 
 .models-panel__header-actions {
@@ -929,6 +946,48 @@
   gap: 10px;
 }
 
+/* 档位快捷填充 + 实测提示（2026-10-02：档位选不了的那条路径） */
+.models-form__quick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.models-form__quick-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.models-form__quick-btn {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-main);
+  font-size: 12px;
+  /* 等宽：档位值是逐字对照 API 文档敲的，字形差异要能一眼看出 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.models-form__quick-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.models-form__hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.models-form__hint strong {
+  color: var(--text-secondary);
+}
+
 .models-form__label {
   font-size: 12px;
   color: var(--text-secondary);
@@ -946,8 +1005,7 @@
 
 .models-form__input:focus {
   outline: none;
-  border-color: var(--border-strong);
-}
+  border-color: var(--border-strong);}
 
 .models-form__error {
   font-size: 12px;

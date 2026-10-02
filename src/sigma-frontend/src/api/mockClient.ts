@@ -52,6 +52,9 @@ function seedDb(): MockDb {
 
   const base = {
     access: 'full',
+    // 默认**关**(星辰 2026-10-02)。mock 也要照这个默认,否则
+    // "mock 里是开的、真后端是关的"会让按钮的初始态撒谎。
+    web: false,
     model: 'GLM-5.3-Flash',
     effort: '最高',
   }
@@ -178,6 +181,11 @@ export class MockSigmaClient implements SigmaApiClient {
       description: input.description,
       status: 'draft',
       access: input.access,
+      // 新会话默认**关**(与真后端同口径,星辰 2026-10-02)。
+      // mock 里默认开会让人以为"默认就是开的",去真后台找不到开关。
+      // 但用户在首页 Composer 显式打开时要**尊重**——写死false 会让 mock
+      // 与真后端分叉（一个听开关一个不听），那是更难查的一类不一致。
+      web: input.web ?? false,
       model: input.model,
       effort: input.effort ?? '',
       createdAt: at,
