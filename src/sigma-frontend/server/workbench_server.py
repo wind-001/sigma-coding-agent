@@ -838,10 +838,8 @@ def _get_or_create_session(
         workspace_root=repo,
         model=model,
         system_prompt=system_prompt,
-        # 30 而非 20:长任务实测 20 轮必截断(星辰 2026-10-02"中途不执行了"
-        # 的直接诱因之一;此前扫描的拐点建议就是 25-30)。截断现在能被
-        # trace 如实判出(见 _trace_path 漂移修复),配合续跑不算丢工作。
-        max_rounds=30,
+        # max_rounds 走默认 None = 无上限:主任务由模型自己收敛(星辰
+        # 2026-10-02 拍板);打断/信箱/审批仍是退出通道,强制中断随时可用。
         extra_body=extra_body,
         tree=tree,
         session_id=task_id,

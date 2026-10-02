@@ -27,6 +27,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from itertools import count
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from pydantic import ValidationError
@@ -141,7 +142,7 @@ class AgentLoop:
         model: str,
         session_id: str = "sigma-session",
         workspace_root: Any = None,
-        max_rounds: int = 100,
+        max_rounds: int | None = None,
         sampling: SamplingParams | None = None,
         signal: CancelToken | None = None,
         clock: Callable[[], str] | None = None,
@@ -275,7 +276,14 @@ class AgentLoop:
             if self._hooks is not None:
                 await self._hooks.emit(event)
 
-        for round_index in range(1, self._max_rounds + 1):
+        # max_rounds=None = 无上限:轮循环由模型自己收敛(不再调工具才退出),
+        # 打断/信箱/审批照常是退出通道;设整数则是调用方的预算策略
+        # (子 agent 三档、评测预算),耗尽仍走 stopped 语义。
+        for round_index in (
+            range(1, self._max_rounds + 1)
+            if self._max_rounds is not None
+            else count(1)
+        ):
             # 协作式打断检查点:每轮开始。在跑的工具会先完成(见 InterruptToken),
             # 这里保证"不再发起下一次模型调用"。
             effective_signal.raise_if_cancelled()
@@ -401,7 +409,7 @@ class AgentLoop:
             status="stopped",
             messages=produced,
             text=last_text,
-            rounds=self._max_rounds,
+            rounds=round_index,
             usage=total_usage,
             reason=f"达到 max_rounds={self._max_rounds}",
         )

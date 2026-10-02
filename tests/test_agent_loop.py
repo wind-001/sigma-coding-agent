@@ -567,6 +567,30 @@ async def test_max_rounds_returns_stopped_not_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_max_rounds_none_runs_until_model_converges() -> None:
+    """max_rounds=None(无上限):连续四个工具轮也不截断,直到模型给出
+    纯文本轮才 completed——轮数上限从硬截断改为可选策略,主任务由
+    模型自己收敛(星辰 2026-10-02)。"""
+    loop, _, _ = _make_loop(
+        [
+            _tool_call_round('{"message": "1"}'),
+            _tool_call_round('{"message": "2"}'),
+            _tool_call_round('{"message": "3"}'),
+            _tool_call_round('{"message": "4"}'),
+            _text_round("全部完成"),
+        ],
+        tools=[EchoTool()],
+        max_rounds=None,
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "completed"
+    assert result.rounds == 5
+    assert result.text == "全部完成"
+
+
+@pytest.mark.asyncio
 async def test_no_tool_call_completes_in_one_round() -> None:
     """模型直接给文本、不调工具 → 一轮结束。"""
     loop, _, _ = _make_loop([_text_round("直接回答")])

@@ -289,7 +289,9 @@ class InteractiveSession:
         model: str,
         registry: ToolRegistry | None = None,
         system_prompt: str = SYSTEM_PROMPT,
-        max_rounds: int = 20,
+        # None = 无上限:主任务由模型自己收敛(不再调工具才退出),打断/信箱/
+        # 审批仍是退出通道;需要预算策略的调用方(子 agent 三档/评测)显式传 int。
+        max_rounds: int | None = None,
         temperature: float = 0.0,
         extra_body: dict[str, Any] | None = None,
         extra_hooks: Sequence[BaseHook] = (),
