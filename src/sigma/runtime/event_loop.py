@@ -57,6 +57,13 @@ from sigma.hooks.base import (
 )
 from sigma.tools.registry import ToolRegistry
 from sigma.agent.types import ToolContext, ToolResult, TurnResult
+from sigma.runtime.loop_guard import (
+    CallFacts,
+    GuardConfig,
+    LoopGuard,
+    normalize_args,
+    result_fingerprint,
+)
 from sigma.providers import stamps
 from sigma.providers.base import CancelToken, NeverCancelled, SamplingParams
 from sigma.providers.events import (
@@ -155,6 +162,7 @@ class AgentLoop:
         hooks: HookManager | None = None,
         ask: Callable[[str, list[str], int | None], Awaitable[str]] | None = None,
         steering_drain: Callable[[], list[AgentMessage]] | None = None,
+        guard_config: "GuardConfig | None" = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -162,6 +170,8 @@ class AgentLoop:
         self._session_id = session_id
         self._workspace_root = workspace_root
         self._max_rounds = max_rounds
+        self._guard_config = guard_config
+        self.last_guard: LoopGuard | None = None
         self._sampling = sampling
         self._signal = signal
         # 影子 git checkpoint（D5 的 L2）。**None = 没有**——回放与旧测试路径
@@ -261,6 +271,10 @@ class AgentLoop:
         effective_signal = signal if signal is not None else (
             self._signal if self._signal is not None else NeverCancelled()
         )
+        # 循环护栏（LoopControl 批次 1）：硬熔断/软检测的判定器，见 loop_guard.py。
+        # last_guard 保留到下一轮 run_turn——护栏运行日志（verdicts）供上层取用。
+        guard = LoopGuard(self._guard_config)
+        self.last_guard = guard
 
         async def record(message: AgentMessage, event: HookEvent) -> None:
             """produced 追加 + 钩子事件派发的**唯一收口**（P4-批次5）。
@@ -318,6 +332,11 @@ class AgentLoop:
             await record(wrapped, AssistantProduced(message=wrapped))
             last_text = _text_of(assistant)
             total_usage = _add_usage(total_usage, assistant.usage)
+            # 护栏回填用的本轮 token（Usage 可能缺席——fake/部分错误路径）
+            round_prompt = assistant.usage.prompt_tokens if assistant.usage is not None else 0
+            round_completion = (
+                assistant.usage.completion_tokens if assistant.usage is not None else 0
+            )
 
             # **错误必须透传成 status="error"**（2026-09-24 review 修复）。
             # 在此之前 ErrorEvent 只被记进 assistant.error_message，控制流完全
@@ -341,6 +360,23 @@ class AgentLoop:
                 return errored
 
             if not calls:  # 第 8 步：模型不再要工具 → 尝试收尾
+                # 护栏判定（LoopControl 批次 1）：纯文本轮也过 token/墙钟/轮数闸
+                # ——“不调工具地空转”同样是失控形态；停滞软检测对它不生效
+                # （窗口只收工具轮）。
+                verdict = guard.end_round(
+                    round_index, prompt_tokens=round_prompt, completion_tokens=round_completion
+                )
+                if verdict.action == "stop":
+                    stopped = TurnResult(
+                        status="stopped",
+                        messages=produced,
+                        text=last_text,
+                        rounds=round_index,
+                        usage=total_usage,
+                        reason=verdict.reason,
+                    )
+                    await self._emit(_turn_end(stopped))
+                    return stopped
                 # 这一轮它什么工具都没调，自然也没碰 todo——计一笔。
                 # （跨 send 累计正是 steering 的意义：跑偏发生在很多轮之后。）
                 self._todo_stall += 1
@@ -368,7 +404,7 @@ class AgentLoop:
                 return finished
 
             # 第 5、6 步：校验参数并执行完整批次
-            results = await self._execute_batch(calls, signal=effective_signal)
+            results = await self._execute_batch(calls, signal=effective_signal, guard=guard)
             self._count_todo_touch(calls)
 
             # 第 7 步：逐个追加工具结果。
@@ -378,6 +414,15 @@ class AgentLoop:
                     # 拼装失败的调用：构造一条说明性结果，让模型知道
                     # **它上一次的调用没有被接受**（否则它会以为自己已经调过了）
                     # 观测上也要发一条失败——否则终端在这一步什么都不会显示
+                    # 护栏回填：拼装失败也算一次失败调用（同签名/连续错误闸适用）
+                    guard.observe_call(
+                        CallFacts(
+                            name=item.name or "(unparsed)",
+                            args_signature=item.raw_arguments[:256],
+                            result_signature=result_fingerprint(item.parse_error),
+                            ok=False,
+                        )
+                    )
                     failure = _failure_message(item, self._clock())
                     # 时机：每一个工具结果落定（unparsed 的合成结果也算）。
                     # 渲染与持久化是同一时机的两个订阅者——一个事件两队人马。
@@ -403,6 +448,42 @@ class AgentLoop:
                         message=result_message,
                     ),
                 )
+                # 护栏回填：成功/失败都进软检测窗口；同签名硬闸只数失败
+                # （评审必修 3：成功调用的原地踏步归 S1 软检测）。
+                guard.observe_call(
+                    CallFacts(
+                        name=item.name or "?",
+                        args_signature=normalize_args(item.arguments or {}),
+                        result_signature=result_fingerprint(_first_text(result)),
+                        ok=not result.is_error,
+                    )
+                )
+
+            # 护栏判定（LoopControl 批次 1）：本轮全部调用回填完毕。
+            verdict = guard.end_round(
+                round_index, prompt_tokens=round_prompt, completion_tokens=round_completion
+            )
+            if verdict.action == "stop":
+                # 优雅停止：不抛异常（异常会绕过树持久化），reason 进
+                # statusDetail → 前端收尾行。现场恢复走 continue/rollback。
+                stopped = TurnResult(
+                    status="stopped",
+                    messages=produced,
+                    text=last_text,
+                    rounds=round_index,
+                    usage=total_usage,
+                    reason=verdict.reason,
+                )
+                await self._emit(_turn_end(stopped))
+                return stopped
+            if verdict.action == "nudge" and verdict.nudge_text is not None:
+                # 软熔断第一段：nudge 作为尾部 user 消息注入（steering 同模式——
+                # 不进常驻区、不改前缀，D4 缓存不破）。模型下一轮看到后自纠。
+                nudge = LlmMessageWrapper(
+                    timestamp=self._clock(),
+                    message=UserMessage(content=verdict.nudge_text, timestamp=self._clock()),
+                )
+                await record(nudge, MessageInjected(message=nudge))
 
         # 轮数耗尽：不是错误，但要显式告诉调用方和用户
         stopped = TurnResult(
@@ -647,7 +728,11 @@ class AgentLoop:
     # ------------------------------------------------------------------
 
     async def _execute_batch(
-        self, calls: list[AssembledCall], *, signal: CancelToken
+        self,
+        calls: list[AssembledCall],
+        *,
+        signal: CancelToken,
+        guard: LoopGuard | None = None,
     ) -> list[ToolResult]:
         """执行一批工具调用。
 
@@ -737,9 +822,17 @@ class AgentLoop:
         if self._hooks is not None:
             approved: list[_Planned] = []
             for plan in planned:
-                decision = await self._hooks.approve_tool(
-                    plan.tool.name, plan.call.arguments, plan.call.id
-                )
+                # 审批等待不计墙钟（评审必修 5，实现侧方案）：护栏 pause/resume。
+                # 人在审批框前思考多久都不算失控——失控是"没人在场时烧"。
+                if guard is not None:
+                    guard.pause()
+                try:
+                    decision = await self._hooks.approve_tool(
+                        plan.tool.name, plan.call.arguments, plan.call.id
+                    )
+                finally:
+                    if guard is not None:
+                        guard.resume()
                 # 观测（P5-批次1）：批准与拒绝都留痕——"allowlist 命中放行"
                 # 此前完全不可见，拒绝只有工具结果里的间接影子。
                 # 事件不带 arguments：reason 已含命中信息，参数落盘是

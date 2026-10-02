@@ -60,6 +60,7 @@ from sigma.hooks.base import (
     HookManager,
 )
 from sigma.runtime.event_loop import AgentLoop
+from sigma.runtime.loop_guard import GuardConfig
 from sigma.tools.registry import ReloadReport, ToolRegistry
 from sigma.skills.scanner import (
     SKILLS_DIRNAME,
@@ -292,6 +293,7 @@ class InteractiveSession:
         # None = 无上限:主任务由模型自己收敛(不再调工具才退出),打断/信箱/
         # 审批仍是退出通道;需要预算策略的调用方(子 agent 三档/评测)显式传 int。
         max_rounds: int | None = None,
+        guard_config: GuardConfig | None = None,
         temperature: float = 0.0,
         extra_body: dict[str, Any] | None = None,
         extra_hooks: Sequence[BaseHook] = (),
@@ -341,6 +343,9 @@ class InteractiveSession:
         # 每个会话自建 HookManager（持久化钩子绑定本会话上下文），
         # 共享钩子逐个注册进每一条会话的总线——子 agent 的渲染可见性同源。
         self._extra_hooks = tuple(extra_hooks)
+        # 循环护栏配置（LoopControl 批次 2 下发通道）：None = loop 默认值。
+        # 子 agent 工厂用它传"禁用软检测"的配置（见 _make_sub_agent_factory）。
+        self._guard_config = guard_config
         # L3 审批钩子(决策型,P3-批次2):None = 不注册 = 默认放行
         # (评测/子 agent 不接审批,行为与没有 L3 之前一致)。
         self._approval = approval
@@ -581,6 +586,7 @@ class InteractiveSession:
             session_id=session_id,
             workspace_root=workspace_root,
             max_rounds=max_rounds,
+            guard_config=guard_config,
             sampling=SamplingParams(temperature=temperature, extra_body=self._extra_body),
             signal=signal if signal is not None else NeverCancelled(),
             clock=self._clock,
@@ -660,6 +666,12 @@ class InteractiveSession:
                 # 轮数预算由派发方按难度档位给（low/medium/high）——
                 # 子会话不自定预算（见 SubAgentRounds 的取值依据）。
                 max_rounds=max_rounds,
+                # 子 agent 护栏全关（评审拍板"子 agent 不变"）：三档预算的
+                # 消耗口径必须由 max_rounds 唯一裁决（P4 重派闭环依赖 cap），
+                # 软检测的 nudge/stop 与硬闸的提前打断都会改变"low=10 轮"
+                # 的口径（实测：空账本 todo list 是 error 结果，3 次即被
+                # 同签名闸截断）。护栏仅记录 verdicts 供观测。
+                guard_config=GuardConfig.disabled(),
                 extra_hooks=self._extra_hooks,
                 approval=self._approval,
                 ask=self._ask,
