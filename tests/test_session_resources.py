@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -191,3 +192,146 @@ def test_budget_is_never_exceeded(tmp_path: Path, budget: int) -> None:
     result = load_project_instructions(path, max_tokens=budget)
 
     assert result.tokens <= budget, f"上限 {budget} 被突破：{result.tokens}"
+
+
+# ==========================================================================
+# 截断的两条不变量（2026-10-02 补）
+#
+# 这两条原先只是**隐含**在 test_truncation_prefers_line_boundary 里，
+# 且那条测试**自己会漂**：它用 `split("\n\n[项目说明已截断", 1)` 取正文，
+# 而标记有两档（长/短），短标记的文案是 `[...AGENTS.md 已截断，全文见 …]`
+# —— 那个 split 匹配不到，于是 parts[0] 是**含标记的全文**，断言拿它比
+# endswith 必红。实测：同一份文件，路径短（tmp_path 60 字符）选长标记→绿，
+# 路径长（84 字符）选短标记→红。**测试的成败取决于临时目录名多长。**
+#
+# 根因不在测试，在 ``truncate_to_tokens``：它用 ``marker(kept=0)`` 预留
+# 长度，但真正构造 marker 时用 ``estimate_text(body)``，正文回退到行边界后
+# 这个值会变 ⇒ 标记长度变 ⇒ 余量常只剩个位数字符 ⇒ 整档标记被跳过。
+# ⇒ 同一个 AGENTS.md 有时给详细标记、有时只给一句"全文见"，
+#    **行为随文件路径长度漂移**。详细标记里才有"丢弃约 N token"与 read 指引。
+#
+# 所以下面两条把不变量显式钉住，且**不依赖标记文案**——
+# 判据用"正文末行是否完整"而不是"找某段固定文字"。
+# ==========================================================================
+
+_MARKER_RE = re.compile(r"\n\n\[[^\]]*已截断")
+_SHORT_MARKER_RE = re.compile(r"\n\[\.\.\.[^\]]*已截断")
+
+
+def _split_body(text: str) -> tuple[str, bool]:
+    """返回 (正文, 是否用长标记)。短标记时正文取标记前的全段。
+
+    这里**不硬编码长标记文案**——文案是实现细节，改一次就红一次，
+    而要保的不变量（正文不落半行、长标记不退化）与文案无关。
+    短标记的识别用 ``[...`` 前缀，那是它的**语义**（省略号=信息缺失）。
+    """
+    match = _MARKER_RE.search(text)
+    if match is not None:
+        return text[: match.start()], True
+    short = _SHORT_MARKER_RE.search(text)
+    if short is not None:
+        return text[: short.start()], False
+    # 两种都匹配不上 = 没截断或格式变了。**不要静默当短标记**——
+    # 那会让"标记格式改了"伪装成"检查通过"。
+    raise AssertionError(f"文本里既没长标记也没短标记，格式可能变了：尾部 {text[-80:]!r}")
+
+
+def test_truncation_body_never_lands_mid_line(tmp_path: Path) -> None:
+    """**任何文件路径下，正文都不能落在半行上。**
+
+    扫**很长的**路径而不是只测一两个点：真实触发条件是
+    ``len(marker) 逼近预算``（标记里内嵌完整文件路径），路径越长标记越长。
+    实测退化点在 pathlen≈2286 起（正文被挤到 7–29 字符，触到下限）。
+    只测 60–140 那段会**整段漏掉**——门绿而缺陷在，正是最坏的情况。
+
+    注入验证：
+      · 还原 ``if newline > cap // 2`` → 本条红
+      · 删掉 shrink 那一道 → 本条红（pathlen≥2286 那 3 档）
+    """
+    body_text = _long_text()
+    root = tmp_path
+    checked = 0
+    # 几何要点：**每层目录名的长度决定能扫到多长的路径**，而退化点
+    # 在 pathlen≈2286（正文被挤到 7–29 字符，触到 MIN_BODY_CHARS 下限）。
+    # tmp_path 本身约 60–85 字符，每层 "/longdirname" 加 12 字符，
+    # 200 层 ≈ 2485 ⇒ 覆盖退化点。层数少扫不到就是**门绿而缺陷在**。
+    for pad in (0, 1, 2, 4, 8, 16, 32, 64, 100, 140, 180, 200):
+        directory = root
+        for _ in range(pad):
+            directory = directory / "longdirname"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / AGENTS_MD_FILENAME
+        path.write_text(body_text, encoding="utf-8")
+
+        result = load_project_instructions(path)
+        if not result.truncated:
+            # 路径极长时原文没超预算属正常，但**绝不能**静默跳过这一档：
+            # 门必须知道自己检查了什么。
+            assert estimate_text(body_text) <= DEFAULT_MAX_TOKENS, (
+                f"路径长 {len(str(path))} 时没触发截断，但原文已超预算 —— "
+                "扫描失效"
+            )
+            continue
+        body, used_long = _split_body(result.text)
+        if not used_long:
+            # 短标记档是**两难降级**（正文已被标记挤到装不下完整标记），
+            # 那时"保住一行"与"保住全部正文"不可兼得，此处优先后者。
+            # 它的退化单独由 test_truncation_marker_does_not_degrade_* 管，
+            # 两条门各管一件事，不要混。
+            continue
+        last = body.rstrip("\n").split("\n")[-1]
+        assert last == "" or last.endswith("。"), (
+            f"路径长 {len(str(path))} 时截断落在半行上：{last!r}"
+        )
+        checked += 1
+    assert checked >= 8, f"只测了 {checked} 档，扫描本身失效"
+
+
+def test_truncation_marker_does_not_degrade_with_long_path(tmp_path: Path) -> None:
+    """**文件路径变长时不能悄悄退到短标记。**
+
+    短标记只有一句"[...已截断，全文见 …]"，既没说丢了多少 token，
+    也没给 read 行动指引——"丢弃必须可见"这条纪律就没了。
+    而它退化的触发条件是**环境**（路径多长），不是内容，
+    也就是同一份 AGENTS.md 在不同机器上行为不同。
+    """
+    body_text = _long_text()
+    root = tmp_path
+    for pad in (0, 2, 4, 8, 16, 32, 64, 128, 200):
+        directory = root
+        for _ in range(pad):
+            directory = directory / "longdirname"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / AGENTS_MD_FILENAME
+        path.write_text(body_text, encoding="utf-8")
+
+        result = load_project_instructions(path)
+        if not result.truncated:
+            continue
+        _body, used_long = _split_body(result.text)
+        assert used_long, (
+            f"路径长 {len(str(path))} 时退到了短标记 —— "
+            "丢弃量与 read 指引都丢了，'丢弃必须可见'失效"
+        )
+
+
+def test_truncation_respects_budget_after_shrinking(tmp_path: Path) -> None:
+    """砍正文换标记档之后，**总量仍必须 ≤ 预算**。
+
+    防止"为了保住详细标记"把预算撑破——那等于把 D4 主张悄悄改了。
+    """
+    body_text = _long_text()
+    for pad in (0, 8, 64, 200):
+        directory = tmp_path
+        for _ in range(pad):
+            directory = directory / "longdirname"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / AGENTS_MD_FILENAME
+        path.write_text(body_text, encoding="utf-8")
+
+        result = load_project_instructions(path)
+        assert result.truncated
+        assert result.tokens <= DEFAULT_MAX_TOKENS, (
+            f"路径长 {len(str(path))} 时总量 {result.tokens} 超过预算 "
+            f"{DEFAULT_MAX_TOKENS}"
+        )

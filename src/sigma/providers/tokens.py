@@ -40,6 +40,16 @@ CHARS_PER_TOKEN: float = 3.0
 # 每条消息的固定开销（role、分隔符等），经验值。
 PER_MESSAGE_OVERHEAD: int = 4
 
+# 截断时为"把正文砍短几行以腾出标记空间"设的上限。
+# 理由：probe（marker(kept=0)）只是长度**上界**的近似，真构造时标记长度会变，
+# 余量常只剩个位数字符 ⇒ 整档标记被跳过、退到短标记（详见 truncate_to_tokens）。
+# 砍 12 行约 400–500 字符，足够吸收标记的长度抖动；再多就白丢正文了。
+MAX_SHRINK_LINES: int = 12
+
+# 正文回退到行边界后的最小长度（字符）。低于此值不再砍——
+# 否则"为了保住详细标记"会把正文砍到几乎不剩，得不偿失。
+MIN_BODY_CHARS: int = 32
+
 
 def estimate_text(text: str) -> int:
     """估算一段文本的 token 数。"""
@@ -187,8 +197,24 @@ def truncate_to_tokens(
 
         body = text[:cap]
         if prefer_line_boundary:
+            # 回退到行边界，但**不设比例下限**（2026-10-02 改）。
+            #
+            # 原实现是 `if newline > cap // 2:`。改它的理由**不是**"实测在这个
+            # 比例下会落半行"——我扫过 pathlen 60→4000、预算 200→900，
+            # `cap // 2` 在所有实测点都成立，那条路是**不可观测的**。
+            # 真正的理由是**它是个没有依据的魔数**：条件成立与否取决于
+            # "这一行恰好有多长"，而调用方无从预知。与其留一个
+            # "碰巧都对"的阈值，不如把语义写实——要么回退，要么不动。
+            #
+            # MIN_BODY_CHARS 这道下限是**要的**：cap 极小时回退会砍到
+            # body 几乎不剩，此时"少留一点"与"留一句断话"不可兼得，
+            # 优先保正文（"丢弃必须可见"由标记字段兜住）。
+            #
+            # ⚠ 回退后正文变短，标记里的"保留前 N token"必须用**回退后的
+            # 真实保留量**重算（下面那行已经是），否则正文与标记自相矛盾
+            # （说留 743 实际只留 400）。
             newline = body.rfind("\n")
-            if newline > cap // 2:
+            if newline != -1 and newline >= MIN_BODY_CHARS:
                 body = body[: newline + 1]
 
         composed = body + marker(original_tokens, estimate_text(body))
@@ -196,5 +222,33 @@ def truncate_to_tokens(
             return TruncatedText(
                 composed, True, estimate_text(composed), original_tokens
             )
+
+        # ── 装不下时的第二道（2026-10-02 加）──────────────────────────
+        # 上面用 ``probe = marker(original, 0)`` 预留，那**是这一形态的
+        # 长度上界**吗？**不是。** probe 的 kept=0 ⇒ 丢失量最大 ⇒ 文案最长，
+        # 看起来最安全；但真正构造 marker 时用的是 estimate_text(body)，
+        # 正文回退到行边界后这个值会变化，标记长度也跟着变。
+        # 实测余量常只剩 1–27 字符（预算 2400、标记 140–266），
+        # 路径一长或回退幅度一变就 ``len(composed) > budget`` ⇒
+        # **这一档标记被整条跳过**，退到短标记。
+        #
+        # 症状是「同一份 AGENTS.md，有时给详细标记、有时只给一句
+        # `全文见 …`，取决于文件路径多长」——行为随环境漂移，
+        # 而详细标记里才有"丢弃约 N token"和 read 指引。
+        #
+        # 修法不是放宽预算（那是改 D4 主张），而是**收紧 cap 再试一次**：
+        # 多砍掉几行正文换回标记档，代价是几条约定，
+        # 收益是"丢弃可见 + 行动指引"这条纪律不丢。
+        # 逐行收缩（每次一行）而不是猜一个魔数——猜的偏移量会再次失效。
+        for _ in range(MAX_SHRINK_LINES):
+            newline = body.rfind("\n", 0, len(body) - 1)
+            if newline < MIN_BODY_CHARS:
+                break
+            body = body[: newline + 1]
+            composed = body + marker(original_tokens, estimate_text(body))
+            if len(composed) <= budget_chars:
+                return TruncatedText(
+                    composed, True, estimate_text(composed), original_tokens
+                )
 
     return TruncatedText("", True, 0, original_tokens)

@@ -491,25 +491,320 @@ async def test_worker_heartbeat_really_extends_lease(tmp_path: Path) -> None:
 async def test_engine_heartbeat_keeps_long_task_alive(tmp_path: Path) -> None:
     """D1 的引擎侧:任务跑得比 lease TTL 久,靠 ``_heartbeat_loop`` 不被回收。
 
-    注入变红:删掉 ``engine._heartbeat_loop``(或不再 create_task 它)——
-    租约过期 → ``lease_tick`` 把任务打回 pending → 重派 → attempts 累积 →
-    最终 dead,断言(成功 + attempts==0)红。
+    注入变红:删掉 ``engine._heartbeat_loop``(或不再 create_task 它)。
+
+    ⚠ 这条测试曾是**假门**:实测 3 次里飘 1 次,而它的 docstring 声称
+    「删掉心跳会确定性变红」——**不稳定 = 不能证伪**。
+
+    飘的原因**有两个**,别只盯着一个(我第一版也只写下了第一个,后来被自己
+    的实测推翻,已改正):
+
+    ① 时序余量被压到定时器抖动量级(2026-10-02 已修)
+       名义心跳周期 = ttl/3 = 16.67 ms,每轮 lease 余量就是 16.7 ms;
+       实测 asyncio.sleep 落点正偏差 50.7 / 76.9 / 55.3 / 61.2 / 56.5 ms,
+       **是余量的 3–5 倍**(Windows 定时器粒度约 15.6 ms,再叠加
+       ``transaction`` 里的同步写盘与事件循环排队)。
+       ⇒ 放大到 ttl=1.0s(余量 333 ms = 抖动的 4.3 倍),
+       slow 的 2.5s 仍是 ttl 的 2.5 倍,判别力不变。代价 0.3s → 2.5s。
+
+    ② **IO 故障杀死心跳**(真缺陷,2026-10-02 已修,见
+       ``TeamEngine._heartbeat_loop`` 与 ``store._replace_with_retry``)
+       Windows 上 ``os.replace`` 偶发 ``PermissionError: [WinError 5]``,
+       40 轮引擎实跑(约 1000 次写盘)命中 1 次。旧实现的
+       ``_heartbeat_loop`` 只 ``except ValueError`` ⇒ 协程带异常猝死 ⇒
+       租约不再续 ⇒ 任务被误回收(attempts=1,state 仍 success——因为重派
+       后跑成功了,所以**只看 state 会漏判**,必须断言 attempts)。
+       顺手也修了 ``_worker_loop`` 与 ``_wait_converged`` 同样的猝死。
+
+    判别力守则:改完必须重验注入(删 ``_heartbeat_loop`` → 必须**确定性**红)。
+    只看到"全绿"不算数——那正是本条修复前的样子。
+
+    ⚠ 注入后的失败形态是 ``TimeoutError`` 而**不是** ``attempts==1``,
+    这不是判别力缺失,但必须写下来以免后人误判(2026-10-02 实测):
+    完全无心跳时任务被**反复**回收重派,而 ``scanner`` 的自动放弃只管
+    ``state == "fail"``(scanner.py:86),**lease 回收把任务打回 pending
+    ⇒ 绕过重试上限** ⇒ 实测 90 s 仍在重派、attempts 涨到 36、永不收敛。
+    所以"删心跳"必然以超时收场,而不是撞上下面那两条断言。
+
+    ⇒ 两条断言守的其实是**另一个**场景:**部分**心跳失败(IO 抖动那一次)
+    后任务被回收一次、重派后跑成功 ⇒ state=success 而 attempts=1。
+    那才是只看 state 会漏判、必须断言 attempts 的地方。
+    （那个"lease 回收绕过重试上限"的缺陷已单列,不在本条修复范围内。）
     """
 
     async def slow(worker_id: str, description: str, max_rounds: int) -> str:
-        await asyncio.sleep(0.3)  # 远长于 lease_ttl=0.05
+        await asyncio.sleep(2.5)  # 远长于 lease_ttl=1.0
         return "干完了"
 
     engine, store, _mailbox = _engine(
-        tmp_path, slow, goal="慢活", poll_s=0.02, lease_ttl=0.05
+        tmp_path, slow, goal="慢活", poll_s=0.02, lease_ttl=1.0
     )
-    await asyncio.wait_for(engine.run(), timeout=5.0)
+    await asyncio.wait_for(engine.run(), timeout=15.0)
     board = store.load(tmp_path)
     assert board is not None
     task = board.find("t1")
     assert task is not None
     assert task.state == "success", f"心跳没续上租约,任务被误回收:{task.state}"
     assert task.attempts == 0, "被误回收过的话 attempts 会 > 0"
+
+
+# ---------------------------------------------------------------------------
+# G99：IO 韧性（2026-10-02）——一次写盘抖动不许杀死任何引擎协程
+# ---------------------------------------------------------------------------
+#
+# 起因是一条**实测**的故障链，不是假想：
+#   Windows 上 os.replace 偶发 PermissionError: [WinError 5] 拒绝访问
+#   （杀软/索引服务/EPERM 竞争）——40 轮引擎实跑约 1000 次写盘命中 1 次。
+#   修复前的后果是**静默**的：
+#     ① _heartbeat_loop 只 except ValueError ⇒ 协程猝死 ⇒ 租约不续
+#        ⇒ 任务被误回收 ⇒ attempts 累积（state 仍是 success，重派后跑成功了，
+#        **只看 state 会漏判**）
+#     ② _worker_loop 猝死 ⇒ 任务永远卡 pending，run() 挂到超时
+#     ③ _wait_converged 猝死 ⇒ 没人再看板有没有非终态任务 ⇒ 永不收敛
+#        （全量测试里那条 store.py:86 PermissionError 就是从这里出去的）
+#
+# 这三条的共同形状：**保活机制被一次瞬时 IO 抖动打断，且无人知晓**。
+# 门的作用是钉死"抖动被吸收"这个行为，注入点是 monkeypatch _save / heartbeat。
+
+
+class TestIoResilience:
+    """每条门都报分母（检查了 N 次调用），N==0 一律按失败论。"""
+
+    @staticmethod
+    def _flaky(
+        monkeypatch: pytest.MonkeyPatch, target: Any, name: str, *, fail_times: int
+    ) -> list[str]:
+        """把 ``target.name`` 改成"前 fail_times 次抛 OSError,之后正常"。
+
+        返回调用记录列表——门必须能断言"确实被调用过 N 次"，
+        否则一个"从没被触发"的注入会伪装成通过。
+        """
+        real = getattr(target, name)
+        calls: list[str] = []
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            calls.append("x")
+            if len(calls) <= fail_times:
+                raise PermissionError(5, "拒绝访问")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(target, name, wrapper)
+        return calls
+
+    @staticmethod
+    def _fail_after(
+        monkeypatch: pytest.MonkeyPatch, *, skip: int, fail_times: int
+    ) -> list[str]:
+        """让 ``BoardStore._save`` 跳过前 ``skip`` 次正常，之后失败 ``fail_times`` 次。
+
+        ⚠ ``skip`` 不是凑的，它对应真实时序：``run()`` 的第一步是
+        ``LeadBoard.create``，那是**第 1 次**事务。持续写盘故障下引擎起不来
+        是正确行为（没有板就没法跑），所以 B 层要守的场景是
+        「**引擎已经跑起来之后**磁盘抖了一下」——注入必须落在那之后。
+
+        第一版门没做 skip，直接从第 1 次就失败，结果 ``run()`` 冒泡、
+        门红。那不是缺陷，是**门建模错了故障时序**。教训与压缩轮那条同源：
+        门的注入点 = 缺陷的实际起点，起点错了就是把别的缺陷测成红的。
+
+        ⚠ 另一个坑（第一版也踩了）：不能注入 ``os.replace``——那打到的是
+        A 层（``_replace_with_retry``），它会把瞬时失败吃进重试预算 ⇒
+        事务其实成功 ⇒ B 层一步没走 ⇒ 门绿而虚。所以注入在事务层。
+        """
+        real = BoardStore._save
+        calls: list[str] = []
+
+        def wrapper(self: Any, root: Path, board: Any) -> Any:
+            calls.append("x")
+            if len(calls) > skip and len(calls) <= skip + fail_times:
+                raise PermissionError(5, "拒绝访问")
+            return real(self, root, board)
+
+        monkeypatch.setattr(BoardStore, "_save", wrapper)
+        return calls
+
+    def test_save_retries_transient_replace_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 层：_save 的 os.replace 前两次失败必须被重试吃掉,且落盘内容正确。
+
+        注入变红：把 _replace_with_retry 换回裸 os.replace ⇒ 前两次
+        PermissionError 直接冒泡 ⇒ 本条红。
+        """
+        import sigma.team.store as store_mod
+
+        calls = self._flaky(
+            monkeypatch, store_mod.os, "replace", fail_times=2
+        )
+        store = BoardStore()
+        board = Board()
+        board.tasks.append(TeamTask(id="t1", title="活", state="running"))
+        store._save(tmp_path, board)
+
+        assert len(calls) == 3, f"应重试到第 3 次才成功,实际调了 {len(calls)} 次"
+        reloaded = store.load(tmp_path)
+        assert reloaded is not None and reloaded.find("t1") is not None, (
+            "重试成功但内容没落对——重试掩盖了真实故障"
+        )
+
+    def test_save_reraises_after_budget_exhausted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 层的另一半：重试**不能无限重试**。
+
+        真失败（磁盘满/只读目录）必须照旧冒泡，否则每个事务都卡 155 ms，
+        而"立刻报错"才是正确行为。断言异常类型与 errno 原样透出——
+        包一层自己的异常会让上层所有 except 失配。
+        """
+        import sigma.team.store as store_mod
+
+        calls = self._flaky(
+            monkeypatch, store_mod.os, "replace", fail_times=99
+        )
+        store = BoardStore()
+        with pytest.raises(PermissionError) as excinfo:
+            store._save(tmp_path, Board())
+        assert len(calls) == store_mod.REPLACE_ATTEMPTS, (
+            f"应恰好重试 {store_mod.REPLACE_ATTEMPTS} 次,"
+            f"实际 {len(calls)} 次（多了=拖慢真失败,少了=放弃太早）"
+        )
+        assert excinfo.value.errno == 5, "异常被包装过,errno 丢了"
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_survives_transient_io_fault(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B 层：心跳遇 OSError 必须**继续续**，不能退出。
+
+        注入变红：_heartbeat_loop 回到"只 except ValueError" ⇒ 前两次
+        PermissionError 冒泡 ⇒ 本条红。
+        """
+
+        async def _never(worker_id: str, description: str, rounds: int) -> str:
+            return "不会被调用"  # 本条直接调 _heartbeat_loop,不经 runner
+        engine, store, _ = _engine(tmp_path, _never, lease_ttl=0.3)
+        board = store.load(tmp_path) or Board()
+        board.tasks.append(
+            TeamTask(id="t1", title="慢活", state="running", assignee="w1",
+                     lease_deadline=1e9)
+        )
+        store._save(tmp_path, board)
+        wb = WorkerBoard(store, "w1", tmp_path, lease_ttl=0.3)
+
+        # 心跳第 1、2 次抛 OSError；第 3 次抛 ValueError（任务已不在 running）
+        # ——后者用来**干净地终止循环**，于是本条能同时证明两件事：
+        # 异常被吞了（没冒泡）且循环确实走到了第 3 次（没提前 return）。
+        real_hb = WorkerBoard.heartbeat
+        seen: list[str] = []
+
+        async def flaky(self: Any, task_id: str) -> Any:
+            seen.append(task_id)
+            if len(seen) <= 2:
+                raise PermissionError(5, "拒绝访问")
+            raise ValueError("任务已不在 running")
+
+        monkeypatch.setattr(WorkerBoard, "heartbeat", flaky)
+        await asyncio.wait_for(engine._heartbeat_loop(wb, "t1"), timeout=5.0)
+
+        assert len(seen) == 3, f"心跳只走了 {len(seen)} 次就该被前两次异常打断"
+        assert engine._io_faults == 1, (
+            f"IO 故障被吞了但没计数（{engine._io_faults}）——"
+            "又一次静默丢弃，违背『丢弃必须可见』"
+        )
+
+    @pytest.mark.asyncio
+    async def test_worker_loop_survives_io_fault_and_task_still_completes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B 层最严重的一处：worker 猝死 ⇒ 任务永远卡 pending。
+
+        注入变红：_worker_loop 去掉外层 except OSError ⇒ 首次写盘失败即猝死
+        ⇒ run() 挂死 ⇒ 本条在 wait_for 上红（TimeoutError）。
+
+        断言 attempts==0 是刻意的：worker 被打断后若发生**误回收**，
+        重派会跑成功、state 仍是 success，只看 state 会漏判（真踩过）。
+        """
+        import sigma.team.store as store_mod
+
+        async def slow(worker_id: str, description: str, max_rounds: int) -> str:
+            await asyncio.sleep(0.2)
+            return "干完了"
+
+        engine, store, _ = _engine(
+            tmp_path, slow, goal="慢活", poll_s=0.02, lease_ttl=0.5
+        )
+        # 前 3 次**事务**失败：足够打到 tick 事务与 try_claim 两处猝死点。
+        calls = self._fail_after(monkeypatch, skip=1, fail_times=3)
+
+        await asyncio.wait_for(engine.run(), timeout=20.0)
+        board = store.load(tmp_path)
+        assert board is not None
+        task = board.find("t1")
+        assert task is not None
+        assert len(calls) > 5, f"注入没被触发（只调了 {len(calls)} 次），门是空跑"
+        assert task.state == "success", f"worker 被打断后任务没收尾:{task.state}"
+        assert task.attempts == 0, "worker 被打断期间发生了误回收"
+
+    @pytest.mark.asyncio
+    async def test_convergence_supervisor_survives_io_fault(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B 层第三处：监督协程猝死 ⇒ 永不收敛（界面只显示"运行中"）。
+
+        这条正是全量测试里 store.py:86 PermissionError 的出处。
+        注入变红：_wait_converged 去掉 except OSError ⇒ run() 冒泡 ⇒ 红。
+        """
+        async def slow(worker_id: str, description: str, max_rounds: int) -> str:
+            await asyncio.sleep(0.1)
+            return "干完了"
+
+        engine, store, _ = _engine(
+            tmp_path, slow, goal="活", poll_s=0.02, lease_ttl=0.5
+        )
+        calls = self._fail_after(monkeypatch, skip=1, fail_times=4)
+
+        summary = await asyncio.wait_for(engine.run(), timeout=20.0)
+        assert len(calls) > 5, f"注入没被触发（只调了 {len(calls)} 次），门是空跑"
+        assert "全部任务已达终态" in summary, (
+            f"监督协程被打断后没收敛，返回的是：{summary!r}"
+        )
+        assert engine._io_faults > 0, "IO 故障被吸收了却没计数"
+
+    @pytest.mark.asyncio
+    async def test_io_fault_alert_goes_to_lead_mailbox(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """『丢弃必须可见』：故障必须**送达 lead 信箱**，不只是内部计数。
+
+        项目全局不装 logging，lead 信箱是 team 层唯一的用户可见通道。
+        两个方向都要验：
+        ①**同一故障点不刷屏**——worker-0 会被打中好几次，只该发 1 封;
+        ②**不同故障点不合并**——worker 与监督协程是两处独立故障点,
+          合并成一封就等于把其中一个藏起来。
+
+        ⚠ 我第一版把期望写成"恰好 1 封"，那是**错的期望**：
+        去重的粒度是**故障点**，不是全局。两处故障就该两封信。
+        """
+        async def slow(worker_id: str, description: str, max_rounds: int) -> str:
+            await asyncio.sleep(0.1)
+            return "干完了"
+
+        engine, store, mailbox = _engine(
+            tmp_path, slow, goal="活", poll_s=0.02, lease_ttl=0.5
+        )
+        calls = self._fail_after(monkeypatch, skip=1, fail_times=4)
+        await asyncio.wait_for(engine.run(), timeout=20.0)
+
+        assert len(calls) > 5, f"注入没被触发（只调了 {len(calls)} 次），门是空跑"
+        msgs = await mailbox.drain(tmp_path, LEAD)
+        alerts = [m for m in msgs if "IO 故障" in m.text]
+        assert alerts, "一封都没有——故障被静默丢弃了"
+
+        # 文案形如 "[IO 故障] <where>: <ExcType>: ..."，<where> 即去重键
+        where_of = [m.text.split("] ", 1)[1].split(":")[0] for m in alerts]
+        assert len(where_of) == len(set(where_of)), (
+            f"同一故障点发了多封，在刷屏：{where_of}"
+        )
+        assert store.load(tmp_path) is not None
 
 
 # ---------------------------------------------------------------------------

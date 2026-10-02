@@ -26,6 +26,7 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 from sigma.team.board import ABANDON, CANCEL, TeamTask, apply
 from sigma.team.lead_board import LeadBoard
@@ -48,6 +49,14 @@ class EngineConfig:
 
 
 _TERMINAL: frozenset[str] = frozenset({"success", "dead", "cancelled"})
+
+#: 连续 IO 故障多少次后往 lead 信箱告警（**告警，不是退出**）。
+#:
+#: 2 是算出来的，见 :meth:`TeamEngine._heartbeat_loop` 的 docstring：
+#: ``lease_deadline`` = 上次成功续租 + ttl，而重试间隔是 ttl/3，
+#: 所以第 2 次连续失败时最坏恰好把余量用尽。再晚就真被回收了，
+#: 那时告警已经晚了——用户看到的是"任务莫名重试"而不是"IO 坏了"。
+IO_FAULT_WARN_AT: Final[int] = 2
 
 
 class TeamEngine:
@@ -81,6 +90,12 @@ class TeamEngine:
         # ②-b:已通知过 lead 的失败。键 = (任务 id, attempts)——同一次失败被每轮
         # poll 反复看到不刷屏;重派后再失败会形成新键,**再通知一次**(那是新信息)。
         self._notified_failures: set[tuple[str, int]] = set()
+        # 2026-10-02:IO 故障计数与告警去重。`_on_io_fault` 永不抛,靠这两个
+        # 字段把"发生过几次"与"告警有没有真的送出去"都留在内存里可查——
+        # 静默计数器不够,而告警本身写盘也可能失败(见 _on_io_fault)。
+        self._io_faults = 0
+        self._io_alert_failures = 0
+        self._notified_io_faults: set[str] = set()
 
     # ------------------------------------------------------------------
 
@@ -156,14 +171,27 @@ class TeamEngine:
 
     async def _wait_converged(self) -> None:
         while not self._stopping:
-            async with self._store.transaction(self._root) as board:
-                dep_tick(board)
-                lease_tick(board, now=self._clock())
-                tasks = board.tasks
-                converged = bool(tasks) and all(
-                    task.state in _TERMINAL for task in tasks
-                )
-                fresh_failures = self._unnotified_failures(tasks)
+            try:
+                async with self._store.transaction(self._root) as board:
+                    dep_tick(board)
+                    lease_tick(board, now=self._clock())
+                    tasks = board.tasks
+                    converged = bool(tasks) and all(
+                        task.state in _TERMINAL for task in tasks
+                    )
+                    fresh_failures = self._unnotified_failures(tasks)
+            except asyncio.CancelledError:
+                raise
+            except OSError as exc:
+                # 2026-10-02 修:原实现这里没有防护,一次写盘 PermissionError
+                # 就让整个 run() 冒泡终止——全量测试里那条
+                # ``store.py:86 PermissionError`` 就是从这里出去的。
+                # 监督协程死了等于**没人再看板上还有没有非终态任务**,
+                # 团队永远不收敛,比 worker 猝死更隐蔽(连 attempts 都不涨,
+                # 界面只显示"运行中")。
+                await self._on_io_fault("收敛监督写盘失败", exc)
+                await asyncio.sleep(self._config.poll_s)
+                continue
             # 信箱 I/O 放事务**外**:持着板锁做文件 I/O 没必要,也会把 claim 卡住。
             if fresh_failures:
                 await self._notify_failures(fresh_failures)
@@ -211,6 +239,20 @@ class TeamEngine:
             )
 
     async def _worker_loop(self, worker_id: str) -> None:
+        """worker 常驻循环。**IO 故障不许杀死这个协程**（2026-10-02 修）。
+
+        这是最严重的一处猝死点：原实现里任一次写盘失败都会让协程带异常
+        终止，而它**不会重试**——任务就此永远卡在 pending，
+        ``_wait_converged`` 永远等不到收敛，``run()`` 挂到超时。
+        错误只在 asyncio 的 ``Task exception was never retrieved`` 里,
+        调用方(主 agent / 界面)什么都看不到。
+
+        防护包在**整个 while body** 外层而不是某一处调用点,因为猝死点有
+        三个:①line 237 的 tick 事务 ②``try_claim`` ③兜底里的 ``try_fail``
+        ——第三个尤其阴:它自己也要写盘,IO 坏了它抛的 OSError 会从
+        ``except`` 块里冒出来(而不是被同一层的 except 接住),照样猝死。
+        逐点加 except 必然漏,所以在循环外层兜。
+        """
         wb = WorkerBoard(
             self._store,
             worker_id,
@@ -219,47 +261,114 @@ class TeamEngine:
             clock=self._clock,
         )
         while not self._stopping:
-            async with self._store.transaction(self._root) as board:
-                dep_tick(board)
-                lease_tick(board, now=self._clock())
-            claimed = await wb.try_claim()
-            if claimed is None:
-                if self._converged:
-                    return
-                await asyncio.sleep(self._config.poll_s)
-                continue
-            description = (
-                f"团队任务 {claimed.id}:{claimed.title}。"
-                "这是共享任务板上分配给你的独立任务。"
-                "正常完成:直接回结论文本,引擎替你登记;"
-                "搞不定:用 team_board 的 board op=fail 写明原因"
-                "(装死要等 lease 超时才被回收,不划算)。"
-            )
-            lease = asyncio.create_task(self._heartbeat_loop(wb, claimed.id))
             try:
-                result = await self._runner(
-                    worker_id, description, self._config.max_rounds
+                async with self._store.transaction(self._root) as board:
+                    dep_tick(board)
+                    lease_tick(board, now=self._clock())
+                claimed = await wb.try_claim()
+                if claimed is None:
+                    if self._converged:
+                        return
+                    await asyncio.sleep(self._config.poll_s)
+                    continue
+                description = (
+                    f"团队任务 {claimed.id}:{claimed.title}。"
+                    "这是共享任务板上分配给你的独立任务。"
+                    "正常完成:直接回结论文本,引擎替你登记;"
+                    "搞不定:用 team_board 的 board op=fail 写明原因"
+                    "(装死要等 lease 超时才被回收,不划算)。"
                 )
-                # 幂等收尾:子 agent 拿到 worker 面(①-c)之后可以自己 finish/fail,
-                # 那时这里必须**跳过**而不是再收一次——重复收尾撞非法迁移,
-                # 异常还会被 except 分支放大成第二次,协程带异常死掉。
-                await wb.try_finish(claimed.id, result)
+                lease = asyncio.create_task(self._heartbeat_loop(wb, claimed.id))
+                try:
+                    result = await self._runner(
+                        worker_id, description, self._config.max_rounds
+                    )
+                    # 幂等收尾:子 agent 拿到 worker 面(①-c)之后可以自己 finish/fail,
+                    # 那时这里必须**跳过**而不是再收一次——重复收尾撞非法迁移,
+                    # 异常还会被 except 分支放大成第二次,协程带异常死掉。
+                    await wb.try_finish(claimed.id, result)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # worker_lost 的事件驱动通道:异常即认输
+                    await wb.try_fail(claimed.id, f"{type(exc).__name__}: {exc}")
+                finally:
+                    lease.cancel()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # worker_lost 的事件驱动通道:异常即认输
-                await wb.try_fail(claimed.id, f"{type(exc).__name__}: {exc}")
-            finally:
-                lease.cancel()
+            except OSError as exc:
+                # 板写不进去时引擎不该退出:任务还在 pending,退出等于
+                # 把它永远留在那儿。退避后重试,让瞬时占用过去就好。
+                await self._on_io_fault(f"worker {worker_id} 写盘失败", exc)
+                await asyncio.sleep(self._config.poll_s)
 
     async def _heartbeat_loop(self, wb: WorkerBoard, task_id: str) -> None:
-        """lease 自动续租:worker 存活期间引擎每 TTL/3 续一次——LLM 不可见。"""
+        """lease 自动续租:worker 存活期间引擎每 TTL/3 续一次——LLM 不可见。
+
+        **IO 故障不许杀死这个协程**（2026-10-02 修，见 ``_on_io_fault``）。
+        原实现只 ``except ValueError``，于是 :meth:`BoardStore._save` 抛
+        ``PermissionError``（Windows 上 ``os.replace`` 偶发 WinError 5）
+        时协程带异常终止——**静默地**。后果是链式的：心跳没了 ⇒ 租约不再
+        续 ⇒ ``lease_tick`` 判定超时 ⇒ 任务被误回收重派 ⇒ attempts 累积。
+        而用户在界面上看到的只是"任务莫名重试"，错误本身只出现在
+        asyncio 的 ``Task exception was never retrieved`` 里。
+
+        容忍度是算过的，不是拍的：``lease_deadline`` = **上次成功续租的时刻**
+        + ttl，不随失败重算，所以连续失败 N 次的最坏时刻是
+        ``N × ttl/3``。N=2 时正好等于 ttl ⇒ 余量归零。所以**能容忍 1 次
+        连续失败，第 2 次就有被回收的风险**——超过 :data:`IO_FAULT_WARN_AT`
+        就往 lead 信箱告警（去重，不刷屏），但**仍然继续续**，不退出。
+        宁可租约真的断掉（那会在 task.note 留痕），也不要心跳先死。
+        """
         ttl = self._config.lease_ttl
+        misses = 0
         while True:
             await asyncio.sleep(ttl / 3)
             try:
                 await wb.heartbeat(task_id)
             except ValueError:
                 return  # 任务已不在 running(被回收/取消)——心跳自然结束
+            except OSError as exc:
+                misses += 1
+                if misses >= IO_FAULT_WARN_AT:
+                    # 去重键**不带计数**（见 _on_io_fault）：带了就会
+                    # "连续 2 次""连续 3 次"各算一条新键 ⇒ 每轮重试刷一封信箱。
+                    await self._on_io_fault(f"心跳续租失败(任务 {task_id})", exc)
+            else:
+                misses = 0
+
+    async def _on_io_fault(self, where: str, exc: BaseException) -> None:
+        """记一次 IO 故障并（首次）往 lead 信箱告警。**永不抛**。
+
+        为什么走信箱而不是 ``logging``/``print``：项目全局不装 logging
+        （``grep import logging src/`` 只命中 node_modules），而 team 层
+        唯一的用户可见通道就是 lead 信箱——``_notify_failures`` 走的也是
+        它。主 agent 下一轮 inbox 即见，这与"丢弃必须可见"是同一条纪律。
+
+        告警本身也可能撞上同一个 IO 故障（写盘就是坏在那儿），所以这里
+        **吞掉一切**并在失败时留一个属性计数：宁可"告警没送出去"，
+        也不能让告警动作反过来杀死调用方（心跳/worker）——那才是本末倒置。
+
+        ``where`` 同时是去重键，所以它**不能带会变的部分**（次数、时间戳）：
+        带了就会每轮重试都算"新故障"，把 lead 信箱刷爆。变的部分放
+        :attr:`_io_faults` 累计计数里，需要时查引擎实例即可。
+        """
+        self._io_faults += 1
+        if where in self._notified_io_faults:
+            return
+        self._notified_io_faults.add(where)
+        try:
+            await self._mailbox.send(
+                self._root,
+                to=self._lead_id,
+                sender="system:engine",
+                text=(
+                    f"[IO 故障] {where}: {type(exc).__name__}: {exc}\n"
+                    "引擎已自动重试,任务不受影响;若同一故障反复出现,"
+                    "说明磁盘或权限有问题,建议检查工作区。"
+                ),
+            )
+        except Exception:  # noqa: BLE001 - 告警失败绝不能上抛(见 docstring)
+            self._io_alert_failures += 1
 
     async def _summarize(self, headline: str) -> str:
         board = self._store.load(self._root)
