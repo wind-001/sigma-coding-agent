@@ -1300,17 +1300,13 @@
   margin-top: 6px;
 }
 
-.wb-composer__hint {
-  flex: 1;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 运行指标:次要信息,必须比权限芯片小(星辰 2026-10-02) */
+/* 运行指标:次要信息,必须比权限芯片小(星辰 2026-10-02)
+   margin-left:auto 顶右——原先占位的是已删除的 .wb-composer__hint
+   (那段"审批确认/打断/排队经真实 sigma 队列"说明,星辰 2026-10-02
+   判为无用文案已删),它带 flex:1 撑开中间空间,删掉后若不补 auto,
+   指标会紧贴权限芯片左侧、右侧留白。 */
 .wb-composer__metrics {
+  margin-left: auto;
   font-size: 10.5px;
   color: var(--text-muted);
   white-space: nowrap;

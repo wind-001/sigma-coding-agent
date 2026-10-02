@@ -557,9 +557,6 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               onSelect={handleAccessSelect}
               menuWidth={128}
             />
-            <span className="wb-composer__hint">
-              审批确认 / 打断 / 排队经真实 sigma 队列 · 数据与 CLI 同一份(~/.sigma/sessions)
-            </span>
             {metrics !== null ? (
               <span className="wb-composer__metrics" title="本会话运行指标(观测层 timeline)">
                 {metrics}
