@@ -9,6 +9,7 @@ import {
   type TaskQueues,
   type TaskTimeline,
 } from '../../api'
+import { buildMetrics, wallSummary } from '../../lib/metrics'
 import { formatDateTime } from '../../lib/time'
 import { useAppActions, useAppState } from '../../store/appStore'
 import Dropdown from './Dropdown'
@@ -214,20 +215,8 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   }
 
   // 底部小字指标(图二信息 → 图三位置):有 timeline 才显示,没有不占位。
-  const metrics: string | null =
-    timeline === null
-      ? null
-      : [
-          `轮数 ${timeline.rounds.length}`,
-          `token ${timeline.totalPrompt}/${timeline.totalCompletion}`,
-          timeline.cacheRate !== null ? `缓存 ${Math.round(timeline.cacheRate * 100)}%` : null,
-          `工具错误 ${timeline.toolErrors}`,
-          timeline.wallSeconds !== null
-            ? `耗时 ${timeline.wallSeconds.toFixed(1)}s${timeline.wallApprox ? '≈' : ''}`
-            : null,
-        ]
-          .filter((part): part is string => part !== null)
-          .join(' · ')
+  // 结构化指标 + 口径见 lib/metrics.ts(抽出来是为了与 endcap 同口径、可单测)。
+  const metricItems = buildMetrics(timeline)
 
   const queuedItems: { kind: 'followup' | 'steering'; index: number; text: string }[] = [
     ...(queues?.steering ?? []).map(
@@ -341,13 +330,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               <span className="wb-endcap__rule" />
               <span className="wb-endcap__text">
                 ✓ 本轮执行完成
-                {timeline !== null
-                  ? ` · ${timeline.rounds.length} 轮${
-                      timeline.wallSeconds !== null
-                        ? ` · 耗时 ${timeline.wallSeconds.toFixed(1)}s${timeline.wallApprox ? '≈' : ''}`
-                        : ''
-                    }`
-                  : ''}
+                {timeline !== null ? ` · ${wallSummary(timeline)}` : ''}
                 ,可继续输入追问
               </span>
             </div>
@@ -557,10 +540,19 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               onSelect={handleAccessSelect}
               menuWidth={128}
             />
-            {metrics !== null ? (
-              <span className="wb-composer__metrics" title="本会话运行指标(观测层 timeline)">
-                {metrics}
-              </span>
+            {metricItems.length > 0 ? (
+              <div className="wb-metrics-bar" title="本会话运行指标(观测层 timeline)">
+                {metricItems.map((item) => (
+                  <span
+                    key={item.key}
+                    className={`wb-metric${item.tone === 'bad' ? ' wb-metric--bad' : ''}`}
+                    title={item.title}
+                  >
+                    <span className="wb-metric__label">{item.label}</span>
+                    <span className="wb-metric__value">{item.value}</span>
+                  </span>
+                ))}
+              </div>
             ) : null}
             {isRunning ? (
               <button

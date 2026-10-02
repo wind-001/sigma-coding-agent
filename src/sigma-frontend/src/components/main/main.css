@@ -1295,21 +1295,59 @@
 
 .wb-composer__foot {
   display: flex;
-  align-items: center;
+  /* 指标条是唯一的两行元素(标签/数值上下叠),整体贴底对齐,
+     否则 center 会让它和单行的权限芯片、发送按钮不在一条基线上。 */
+  align-items: flex-end;
   gap: 10px;
   margin-top: 6px;
 }
 
-/* 运行指标:次要信息,必须比权限芯片小(星辰 2026-10-02)
-   margin-left:auto 顶右——原先占位的是已删除的 .wb-composer__hint
-   (那段"审批确认/打断/排队经真实 sigma 队列"说明,星辰 2026-10-02
-   判为无用文案已删),它带 flex:1 撑开中间空间,删掉后若不补 auto,
-   指标会紧贴权限芯片左侧、右侧留白。 */
-.wb-composer__metrics {
+/* 运行指标条(星辰 2026-10-02 重排)
+   ------------------------------------------------------------------
+   原样式是一串 10.5px 灰字用「·」连起来,四个问题:
+   ①八位数 token(8907093)裸排,10px 小字里扫不出来;
+   ②耗时写 18096.1s(5 小时),等于让人心算;
+   ③「工具错误 20」是唯一该报警的信号,却和「缓存 97%」同色同权;
+   ④上下两行收尾行说「189 轮」、底栏说「轮数 189」,术语不一致。
+   改法:①数值缩写(见 lib/metrics.ts);②时长人化;
+        ③错误项独立标红;④口径抽到 lib/metrics.ts 与 endcap 共用。
+   排版:标签在下(11px 弱)、数值在上(12.5px 稍强)——让数字当主角,
+   标签退为注解,比「标签值·标签值」的点连串更容易扫读。 */
+.wb-metrics-bar {
   margin-left: auto;
-  font-size: 10.5px;
-  color: var(--text-muted);
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.wb-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
   white-space: nowrap;
+}
+
+.wb-metric__label {
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--text-muted);
+}
+
+.wb-metric__value {
+  font-size: 12.5px;
+  line-height: 1.2;
+  font-weight: 500;
+  color: var(--text-secondary);
+  /* 数字等宽:位数变化时不左右跳(轮次 9→10 不会推动相邻指标) */
+  font-variant-numeric: tabular-nums;
+}
+
+/* 唯一使用语义色的地方:工具错误非零。0 不标红——常态标红会让人麻木。 */
+.wb-metric--bad .wb-metric__value {
+  color: var(--danger);
 }
 
 /* 排队项行内编辑(星辰 2026-10-02) */
