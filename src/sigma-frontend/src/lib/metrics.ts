@@ -59,65 +59,140 @@ export interface MetricItem {
   label: string
   value: string
   /**
-   * 语义色:'bad' 只给真正需要报警的指标（当前只有工具错误）。
-   * 滥用颜色=没有颜色，所以默认一律 plain。
+   * 语义色:
+   * - 'bad'  真正需要报警（工具错误非零）——全站唯一的红。
+   * - 'weak' 次要读数（tok/s 这类长任务下必然很小的数）——弱化不隐藏。
+   * - 不设   = 常态信息。
+   * 滥用颜色 = 没有颜色。
    */
-  tone?: 'plain' | 'bad'
+  tone?: 'plain' | 'weak' | 'bad'
   /** tooltip：说明这个指标的口径，别让数字自解释。 */
   title: string
 }
 
+/** 一组指标：对应参考设计里「带一个图标 + 若干数值」的一块。 */
+export interface MetricGroup {
+  key: string
+  /** 组图标（lucide 组件名，由渲染层映射，这里只给语义 key）。 */
+  icon: 'activity' | 'database'
+  items: MetricItem[]
+}
+
+/** 工具调用总次数 = 各轮 tools 长度之和（"步"是用户能理解的单位）。 */
+function countSteps(timeline: TaskTimeline): number {
+  return timeline.rounds.reduce((sum: number, round) => sum + round.tools.length, 0)
+}
+
 /**
- * 底部指标列表。字段顺序 = 视觉顺序，按「规模 → 质量 → 时间」排，
- * 让人从左到右读下来是「跑了多少 → 有没有出错 → 花了多久」。
- *
- * ⚠ 单行排版（星辰 2026-10-02 定稿）：我第一版把标签和数值拆成
- * **上下两行**（标签在上、数值在下），想用行数做层次——结果视觉上
- * 像报销单，标签悬空、数值落地，读的时候视线要横扫再竖扫，很别扭。
- * **层次靠字重和颜色，不靠行数**：一行内 `标签 数值`，标签浅灰、
- * 数值半粗深色即可。底栏是横向扫描区，视线不会纵向移动。
- *
- * ⚠ 缓存命中率收进 tooltip（星辰定稿）：底栏只留「轮次 / token /
- * 工具错误 / 耗时」四个常看项。缓存命中率是**实现效率**指标，
- * 排查时要看，日常扫读时不需要占底栏一个位置。
+ * 输出速度 = completion token / 墙钟秒数。
+ * 用 completion 而非总量：入向 token 是被缓存喂进去的，不反映"生成速度"。
+ * 无耗时数据时返回 null（不编造 0）。
  */
-export function buildMetrics(timeline: TaskTimeline | null): MetricItem[] {
+function tokensPerSecond(timeline: TaskTimeline): number | null {
+  if (timeline.wallSeconds === null || timeline.wallSeconds <= 0) return null
+  if (timeline.totalCompletion <= 0) return null
+  return timeline.totalCompletion / timeline.wallSeconds
+}
+
+/**
+ * 指标分组（参考 DeepSeek 式底栏：两组，各带一个图标）。
+ *
+ * 分组依据是**读的时候想知道什么**，不是字段类型：
+ * - activity「执行过程」：跑了多久、跑了几步、出得多快 —— 回答"刚才干了什么"
+ * - database「token 消耗」：烧了多少 token、缓存省了多少 —— 回答"代价多大"
+ *
+ * ⚠ 单行排版（星辰 2026-10-02 定稿，判"两排丑"）：
+ * 同一组内用 `标签 值` 同行连读，**不人为换行**。层次靠字重和颜色，
+ * 不靠行数——底栏是横向扫描区，拆行会让视线横扫再竖扫。
+ */
+export function buildMetricGroups(timeline: TaskTimeline | null): MetricGroup[] {
   if (timeline === null) return []
   const cacheNote =
     timeline.cacheRate !== null
       ? `　缓存命中 ${Math.round(timeline.cacheRate * 100)}%（${timeline.totalCached}）`
       : ''
-  const items: MetricItem[] = [
+
+  const activity: MetricItem[] = [
     {
       key: 'rounds',
-      label: '轮次',
+      label: '轮',
       value: String(timeline.rounds.length),
       title: 'LLM 调用轮数(与 sigma 观测层 RoundView 同口径)',
     },
+  ]
+  const steps = countSteps(timeline)
+  if (steps > 0) {
+    activity.push({
+      key: 'steps',
+      label: '步',
+      value: String(steps),
+      title: '工具调用总次数（各轮 tools 累加）',
+    })
+  }
+  const tps = tokensPerSecond(timeline)
+  if (tps !== null) {
+    // wallSeconds 在 tps !== null 时必非 null(tps 的定义即含该前提),
+    // 但 TS 的收窄不跨函数边界。与其写非空断言(会被 lint 挡)或 `?? 0`
+    // (那是**编造一个数字**),不如让 tooltip 自己按可用字段拼。
+    const wallText =
+      timeline.wallSeconds !== null ? ` ÷ 墙钟 ${timeline.wallSeconds.toFixed(1)}s` : ''
+    activity.push({
+      key: 'tps',
+      label: 'tok/s',
+      value: tps >= 100 ? String(Math.round(tps)) : tps.toFixed(1),
+      tone: 'weak',
+      // ⚠ 口径提醒（实测踩过）：这个数**看起来总是很小**——参考设计
+      // 显示 269 tok/s，那是因为它的任务是几分钟的；sigma 长任务
+      // 跑到 5 小时 / 118K completion 就是个位数。**这不是渲染错误**。
+      // 若哪天在短任务上还是 5 以下，才说明分母口径错了。
+      // 用 completion 而非总量：入向 token 是被缓存喂进去的,不代表生成速度。
+      title: `输出速度 = completion ${timeline.totalCompletion}${wallText}。长任务摊薄后会显著偏低,不代表卡住`,
+    })
+  }
+  if (timeline.wallSeconds !== null) {
+    const wall = timeline.wallSeconds
+    // ⚠ 「≈」只在 wallApprox 时出现。以前这里恒定写 `≈`,又按
+    // wallApprox 追加「(估算值)」——不估算的时候也在说"约等于",
+    // 那是**把不确定伪装成确定**,与"丢弃必须可见"同源。
+    activity.push({
+      key: 'wall',
+      label: '耗时',
+      value: `${formatWall(wall)}${timeline.wallApprox ? '≈' : ''}`,
+      title: `墙钟耗时${timeline.wallApprox ? '（估算值，由消息时间戳推算，非精确计时）' : ''} ${wall.toFixed(1)}s`,
+    })
+  }
+
+  const cost: MetricItem[] = [
     {
       key: 'tokens',
       label: 'token',
-      value: `${formatTokens(timeline.totalPrompt)}↑ ${formatTokens(timeline.totalCompletion)}↓`,
-      title: `入 / 出 token 累计　prompt ${timeline.totalPrompt} · completion ${timeline.totalCompletion}${cacheNote}`,
+      value: formatTokens(timeline.totalPrompt + timeline.totalCompletion),
+      title: `入 / 出累计　prompt ${timeline.totalPrompt} · completion ${timeline.totalCompletion}${cacheNote}`,
     },
   ]
-  items.push({
-    key: 'toolErrors',
-    label: '工具错误',
-    value: String(timeline.toolErrors),
-    // 只有非零才是错误；0 是常态，不必标红——满屏红色会让人麻木。
-    tone: timeline.toolErrors > 0 ? 'bad' : 'plain',
-    title: '本会话工具调用失败次数（重试也计入）',
-  })
-  if (timeline.wallSeconds !== null) {
-    items.push({
-      key: 'wall',
-      label: '耗时',
-      value: `${formatWall(timeline.wallSeconds)}${timeline.wallApprox ? '≈' : ''}`,
-      title: `墙钟耗时 ≈ ${timeline.wallSeconds.toFixed(1)}s${timeline.wallApprox ? '（估算值，非精确计时）' : ''}`,
+  if (timeline.cacheRate !== null) {
+    cost.push({
+      key: 'cache',
+      label: '缓存命中',
+      value: `${Math.round(timeline.cacheRate * 100)}%`,
+      title: `缓存命中率 = cached / prompt（${timeline.totalCached} / ${timeline.totalPrompt}）`,
     })
   }
-  return items
+  if (timeline.toolErrors > 0) {
+    // 只有非零才出现：0 是常态，满屏红色只会让人麻木。
+    cost.push({
+      key: 'toolErrors',
+      label: '工具错误',
+      value: String(timeline.toolErrors),
+      tone: 'bad',
+      title: '本会话工具调用失败次数（重试也计入）',
+    })
+  }
+
+  return [
+    { key: 'activity', icon: 'activity', items: activity },
+    { key: 'cost', icon: 'database', items: cost },
+  ]
 }
 
 /** endcap 收尾行的「N 轮 · 耗时 X」——与底栏同口径，避免两处说法不一。 */

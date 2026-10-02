@@ -1302,28 +1302,49 @@
 
 /* 运行指标条(星辰 2026-10-02 重排，同行定稿)
    ------------------------------------------------------------------
-   原来是一串 10.5px 灰字用「·」连起来，四个可读性缺陷:
+   原来是一串 10.5px 灰字用「·」连起来,四个可读性缺陷:
    ①八位数 token(8907093)裸排,10px 小字里扫不出来;
    ②耗时写 18096.1s(5 小时),等于让人心算;
    ③「工具错误 20」是唯一该报警的信号,却和「缓存 97%」同色同权;
    ④上下两行收尾行说「189 轮」、底栏说「轮数 189」,术语不一致。
-   改法:①数值缩写(见 lib/metrics.ts);②时长人化;
-        ③错误项标红;④口径抽到 lib/metrics.ts 与 endcap 共用;
-        ⑤缓存命中率收进 tooltip(实现效率指标,日常扫读不需要)。
+   改法:①数值缩写(见 lib/metrics.ts);②时长人化;③错误项标红;
+        ④口径抽到 lib/metrics.ts 与 endcap 共用;⑤补「步数 / tok/s」。
 
    ⚠ **不要改回上下两行**(星辰 2026-10-02 判"丑"):
    我第一版把标签和数值拆成两行(标签上、数值下),想用行数做层次,
    结果像报销单——标签悬空、数值落地,视线要横扫再竖扫。
    **层次靠字重和颜色,不靠行数**:一行内「标签 数值」,标签浅灰、
-   数值半粗深色。底栏是横向扫描区,视线只做水平移动。
-   所以 .wb-metric 必须是 inline 布局——改 flex/column 会立刻变回两行。 */
-.wb-metrics-bar {
-  margin-left: auto;
+   数值半粗深色。指标行是横向扫描区,视线只做水平移动。
+   所以 .wb-metric 必须是 inline 布局——改 flex/column 会立刻变回两行。
+
+   ⚠ **指标在输入框外面**(星辰 2026-10-02 参照 DeepSeek 设计):
+   框内底栏要放权限芯片 + 模型 + 档位 + 停止 + 发送,再塞指标就
+   挤成一片,分不清哪些是控件、哪些是读数。挪到框下独立一行后,
+   框内只留控件,指标按「执行过程 / token 消耗」分两组带图标。
+
+   ⚠ 类名不要叫 .wb-metrics:看板区(main.css 746)已经占用这个名,
+   同名会互相覆盖 margin。同名不同用途是 CSS 里最难查的一类 bug。 */
+.wb-runstats {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  gap: 22px;
+  margin-top: 8px;
+  padding: 0 4px;
+  flex-wrap: wrap;
+}
+
+.wb-runstats__group {
+  display: inline-flex;
+  align-items: center;
   gap: 0;
-  min-width: 0;
-  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* 组图标:定尺寸 + 不参与收缩,否则 flex 压窄时 svg 会变形 */
+.wb-runstats__icon {
+  flex: none;
+  color: var(--text-muted);
+  margin-right: 9px;
 }
 
 /* inline 而非 flex:保持整条指标在同一行内自然流动,
@@ -1346,15 +1367,46 @@
 /* 数值是主角:比标签略大 + 半粗 + 更深的色。
    tabular-nums 防位数变化时不左右跳(轮次 9→10 不会推动相邻指标)。 */
 .wb-metric__value {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
 /* 唯一使用语义色的地方:工具错误非零。0 不标红——常态标红会让人麻木。 */
-.wb-metric__value--bad {
+.wb-metric--bad .wb-metric__value {
   color: var(--danger);
+}
+
+/* 次要读数(tok/s):弱化但不隐藏。真实值就长那样,
+   藏起来反而会让人以为有 bug;弱化是为了不跟主指标抢注意力。 */
+.wb-metric--weak {
+  opacity: 0.62;
+}
+
+/* 模型 / 档位芯片(框内右侧):与权限芯片同一视觉族,
+   但更弱一级——它是"这次用的什么",不是"下次要不要点"的开关。 */
+.wb-composer__spacer {
+  flex: 1;
+}
+
+.wb-composer__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.wb-composer__opt-value {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-composer__opt:hover {
+  color: var(--text-primary);
 }
 
 /* 排队项行内编辑(星辰 2026-10-02) */

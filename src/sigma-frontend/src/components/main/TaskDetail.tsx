@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUp, ChevronDown, Pencil, Send, ShieldCheck, Square, X } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowUp, ChevronDown, Database, Gauge, Pencil, Send, ShieldCheck, Square, X } from 'lucide-react'
 import {
   ACCESS_OPTIONS,
   apiClient,
   STATUS_META,
+  type ModelInfo,
   type Task,
   type TaskEvent,
   type TaskQueues,
   type TaskTimeline,
 } from '../../api'
-import { buildMetrics, wallSummary } from '../../lib/metrics'
+import { buildMetricGroups, wallSummary } from '../../lib/metrics'
 import { formatDateTime } from '../../lib/time'
 import { useAppActions, useAppState } from '../../store/appStore'
 import Dropdown from './Dropdown'
@@ -215,8 +216,17 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   }
 
   // 底部小字指标(图二信息 → 图三位置):有 timeline 才显示,没有不占位。
-  // 结构化指标 + 口径见 lib/metrics.ts(抽出来是为了与 endcap 同口径、可单测)。
-  const metricItems = buildMetrics(timeline)
+  // 分组结构 + 口径见 lib/metrics.ts(抽出来是为了与 endcap 同口径、可单测)。
+  const metricGroups = buildMetricGroups(timeline)
+
+  // 模型 / 档位(参考设计右侧)。口径与首页 Composer 完全一致:
+  // 当前选择不在 models 里时回落到首项(与 Composer.tsx 同一写法)。
+  const modelValue: string = state.models.some((m: ModelInfo): boolean => m.name === state.composerModel)
+    ? state.composerModel
+    : state.models[0]?.name ?? state.composerModel
+  // 档位取值由所选模型条目自己声明;条目无档位时为空 → 隐藏该下拉。
+  const effortOptions: string[] =
+    state.models.find((m: ModelInfo): boolean => m.name === modelValue)?.efforts ?? []
 
   const queuedItems: { kind: 'followup' | 'steering'; index: number; text: string }[] = [
     ...(queues?.steering ?? []).map(
@@ -540,19 +550,41 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               onSelect={handleAccessSelect}
               menuWidth={128}
             />
-            {metricItems.length > 0 ? (
-              <div className="wb-metrics-bar" title="本会话运行指标(观测层 timeline)">
-                {metricItems.map((item) => (
-                  <span key={item.key} className="wb-metric" title={item.title}>
-                    <span className="wb-metric__label">{item.label}</span>
-                    <span
-                      className={`wb-metric__value${item.tone === 'bad' ? ' wb-metric__value--bad' : ''}`}
-                    >
-                      {item.value}
-                    </span>
+            <div className="wb-composer__spacer" aria-hidden="true" />
+            {/* 模型 / 档位(参考设计右侧)。复用 Composer 的既有做法:
+                composerModel + composerEffort 已在 store,setComposerOpt
+                会带着"换模型时档位跟随"的口径,这里不重造。
+                与首页 Composer 共用同一份选择——两处是同一个状态。 */}
+            {state.models.length > 0 ? (
+              <Dropdown
+                trigger={
+                  <span className="wb-composer__opt" title="本会话使用的模型">
+                    <span className="wb-composer__opt-value">{modelValue}</span>
+                    <ChevronDown size={12} aria-hidden="true" />
                   </span>
-                ))}
-              </div>
+                }
+                items={state.models.map((model: ModelInfo): string => model.name)}
+                value={modelValue}
+                onSelect={(name: string): void => actions.setComposerOpt({ model: name })}
+                align="right"
+                menuWidth={220}
+              />
+            ) : null}
+            {effortOptions.length > 0 ? (
+              <Dropdown
+                trigger={
+                  <span className="wb-composer__opt" title="思考档位">
+                    <Gauge size={13} aria-hidden="true" />
+                    <span className="wb-composer__opt-value">{state.composerEffort}</span>
+                    <ChevronDown size={12} aria-hidden="true" />
+                  </span>
+                }
+                items={[...effortOptions]}
+                value={state.composerEffort}
+                onSelect={(effort: string): void => actions.setComposerOpt({ effort })}
+                align="right"
+                menuWidth={96}
+              />
             ) : null}
             {isRunning ? (
               <button
@@ -584,6 +616,40 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             </button>
           </div>
         </div>
+
+        {/* 运行指标:独立成行,在输入框**外面**(参考设计)。
+            放框内的教训:框内底栏要塞权限芯片/模型/档位/停止/发送,
+            再塞一串指标就变回"报销单"了——挤在边框里,人也分不清
+            哪些是控件、哪些是读数。挪到框外,输入框只留控件,
+            指标单独一行,分组带图标(参考设计的两组式)。 */}
+        {metricGroups.length > 0 ? (
+          <div className="wb-runstats" title="本会话运行指标(观测层 timeline)">
+            {metricGroups.map((group) => {
+              const Icon = group.icon === 'activity' ? Activity : Database
+              return (
+                <span key={group.key} className="wb-runstats__group">
+                  <Icon size={12.5} className="wb-runstats__icon" aria-hidden="true" />
+                  {group.items.map((item) => (
+                    <span
+                      key={item.key}
+                      className={`wb-metric${
+                        item.tone === 'bad'
+                          ? ' wb-metric--bad'
+                          : item.tone === 'weak'
+                            ? ' wb-metric--weak'
+                            : ''
+                      }`}
+                      title={item.title}
+                    >
+                      <span className="wb-metric__label">{item.label}</span>{' '}
+                      <span className="wb-metric__value">{item.value}</span>
+                    </span>
+                  ))}
+                </span>
+              )
+            })}
+          </div>
+        ) : null}
 
         {/* 完全访问的严厉警告(共享组件,勾选知情才可启用) */}
         {showFullWarn ? (
