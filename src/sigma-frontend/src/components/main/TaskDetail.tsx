@@ -343,7 +343,10 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           {task.status === 'failed' ? (
             <div className="wb-endcap wb-endcap--bad">
               <span className="wb-endcap__rule" />
-              <span className="wb-endcap__text">✕ 本轮执行失败,可重试或换个模型/档位再试</span>
+              <span className="wb-endcap__text">
+                ✕ 本轮未跑完{task.statusDetail ? `:${task.statusDetail}` : ',可重试或换个模型/档位再试'}
+                ,直接输入"继续"可接续执行
+              </span>
             </div>
           ) : null}
           {isRunning || sending ? (

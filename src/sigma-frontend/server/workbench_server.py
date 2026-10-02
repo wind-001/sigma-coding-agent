@@ -55,6 +55,7 @@ from sigma.events.lifecycle import (
 from sigma.hooks.base import ApprovalHook, BaseHook
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
+from sigma.observability.trace import trace_path_for
 from sigma.prompts.system_prompt import SYSTEM_PROMPT
 from sigma.providers.anthropic.provider import AnthropicProvider
 from sigma.providers.base import BaseProvider
@@ -578,7 +579,7 @@ def _delete_task(sessions_root: Path, task_id: str) -> tuple[int, dict[str, Any]
         record = _TASKS.pop(task_id, None)
     moved = False
     src = session_path(sessions_root, task_id)
-    trace = src.with_name(src.name + TRACE_SUFFIX)
+    trace = trace_path_for(sessions_root, task_id)
     if src.is_file() or trace.is_file():
         trash = _TRASH_DIR
         trash.mkdir(parents=True, exist_ok=True)
@@ -837,7 +838,10 @@ def _get_or_create_session(
         workspace_root=repo,
         model=model,
         system_prompt=system_prompt,
-        max_rounds=20,
+        # 30 而非 20:长任务实测 20 轮必截断(星辰 2026-10-02"中途不执行了"
+        # 的直接诱因之一;此前扫描的拐点建议就是 25-30)。截断现在能被
+        # trace 如实判出(见 _trace_path 漂移修复),配合续跑不算丢工作。
+        max_rounds=30,
         extra_body=extra_body,
         tree=tree,
         session_id=task_id,
@@ -1125,9 +1129,14 @@ def _load_tree(sessions_root: Path, session_id: str) -> SessionTree | None:
 
 
 def _trace_path(sessions_root: Path, session_id: str) -> Path | None:
-    """trace 与会话文件同目录、同名不同后缀(P5-批次1);不存在的返回 None。"""
-    path = session_path(sessions_root, session_id)
-    trace = path.with_name(path.name + TRACE_SUFFIX)
+    """trace 与会话文件同目录同名不同后缀(P5-批次1);不存在的返回 None。
+
+    路径构造**必须走核心的 trace_path_for**(jsonl.stem 拼后缀)——本模块
+    曾自抄一份 jsonl.name 拼接(多出一个 .jsonl),路径永远对不上号 →
+    hasTrace 恒 False → 轮数截断的轮被兜底判据误判成"执行完成"
+    (星辰实测 2026-10-02)。核心 docstring 警告的"抄一份必然漂移"
+    一字不差应验。"""
+    trace = trace_path_for(sessions_root, session_id)
     return trace if trace.is_file() else None
 
 
@@ -1303,7 +1312,7 @@ def _task_payload(
         session_path(sessions_root, session_id),
         _trace_path(sessions_root, session_id),
     )
-    status, _status_note = _derive_status(tree, timeline.status)
+    status, status_note = _derive_status(tree, timeline.status)
     # 描述 = 历史里第一条用户消息**原文**(带换行);preview 的 first_user_text
     # 是列表预览的归一化形态,只做兜底——标题"取首行"必须基于原文才成立。
     description = first_user_text or ""
@@ -1322,6 +1331,8 @@ def _task_payload(
         "title": _clip(description.split("\n")[0], 40) or "(空会话)",
         "description": _clip(description, 2000),
         "status": status,
+        # 状态说明(为何失败/截断):之前被丢弃,失败收尾行只能给泛泛文案。
+        "statusDetail": status_note,
         # access/effort 是"下一次执行"的参数,只读回放没有这个语义,留空;
         # model 是事实(来自最后一轮 provider 返回),如实给。
         "access": "",

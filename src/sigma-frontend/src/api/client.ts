@@ -51,6 +51,8 @@ export interface Task {
   title: string
   description: string
   status: TaskStatus
+  /** 状态说明(为何失败/截断,如"达到 max_rounds=30";派生自 trace/悬空调用) */
+  statusDetail?: string
   /** 审批模式,取值为 ACCESS_OPTIONS 的 id */
   access: string
   model: string
