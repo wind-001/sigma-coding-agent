@@ -1376,9 +1376,9 @@ def _cmd_goal(
         current = _GOALS.get(task_id) or str(record.get("goal") or "")
         return [f"当前目标:{current or '(未设置,用 /goal <文本> 设置)'}"], {}
     with _TASKS_LOCK:
-        record = _TASKS.get(task_id)
-        if record is not None:
-            record["goal"] = arg
+        record2 = _TASKS.get(task_id)
+        if record2 is not None:
+            record2["goal"] = arg
     _GOALS[task_id] = arg
     lines = [f"✓ 会话目标已设:{arg}"]
     if session is not None:
@@ -2304,6 +2304,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         # 静态 SPA(其余一切路径回 index.html,前端自己路由)。
         self._static(clean.lstrip("/"))
 
+    @property
+    def _listen_port(self) -> int:
+        """监听端口。server_address 的静态类型是联合(可能是 str),运行时恒为
+        (host, port) 元组——收窄后取 [1];异常形态回退配置默认 8301。"""
+        address = self.server.server_address
+        return int(address[1]) if isinstance(address, tuple) else 8301
+
     def _route_api(self, parts: list[str]) -> None:
         root = self.sessions_root
         # /system/ping
@@ -2426,12 +2433,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if parts == ["system", "status"]:
             self._send_json(
                 200,
-                _system_status(root, self.workspace, self.server.server_address[1]),
+                _system_status(root, self.workspace, self._listen_port),
             )
             return
         # /system/addresses:局域网访问地址(手机访问面板)。
         if parts == ["system", "addresses"]:
-            self._send_json(200, {"urls": _local_addresses(self.server.server_address[1])})
+            self._send_json(200, {"urls": _local_addresses(self._listen_port)})
             return
         # /system/trash:会话回收站清单(删除先入回收站,这里是 second chance)。
         if parts == ["system", "trash"]:
