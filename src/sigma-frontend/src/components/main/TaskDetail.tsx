@@ -17,6 +17,7 @@ import { useAppActions, useAppState } from '../../store/appStore'
 import Dropdown from './Dropdown'
 import FullAccessWarning from './FullAccessWarning'
 import RichText from './RichText'
+import SlashPalette, { useSlashItems, useSlashNav } from './SlashPalette'
 
 /** 十六进制颜色 → rgba 字符串(用于状态徽章底色的透明度) */
 function hexToRgba(hex: string, alpha: number): string {
@@ -88,6 +89,9 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   const [timeline, setTimeline] = useState<TaskTimeline | null>(null)
   const [queues, setQueues] = useState<TaskQueues | null>(null)
   const [composeText, setComposeText] = useState<string>('')
+  // ===== 斜杠命令面板(2026-10-03):数据源与键盘导航逻辑在 SlashPalette.tsx =====
+  const slashItems = useSlashItems()
+  const slash = useSlashNav(composeText, setComposeText, slashItems)
   const [sending, setSending] = useState<boolean>(false)
   /** 切到「完全访问」前必须过风险知情确认(共享组件,星辰 2026-10-02)。 */
   const [showFullWarn, setShowFullWarn] = useState<boolean>(false)
@@ -214,6 +218,12 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
     if (!composeReady) return
     const text = composeText
     setComposeText('')
+    // /new 本地拦截:建会话是纯 UI 导航(服务端同名命令只是 API 对等面),
+    // 直走 store 的 createSessionInProject,建完即切换(2026-10-03)。
+    if (text.trim() === '/new') {
+      void actions.createSessionInProject(task.projectId)
+      return
+    }
     if (isRunning) {
       // 执行中:默认排队(图一),完成后自动执行;「立即」在队列行上。
       void actions.queueMessage(task.id, text)
@@ -523,6 +533,15 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
 
         {/* ============ 底部输入(指标小字在提示行右端) ============ */}
         <div className="wb-composer">
+          <div className="wb-composer__inputwrap">
+          {slash.open ? (
+            <SlashPalette
+              items={slash.filtered}
+              activeIndex={slash.index}
+              onPick={slash.pick}
+              onHover={slash.setIndex}
+            />
+          ) : null}
           <textarea
             className="wb-composer__input"
             value={composeText}
@@ -539,12 +558,15 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               setComposeText(event.target.value)
             }
             onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+              // 斜杠面板键盘面前置(2026-10-03):消费返回 true;否则放行发送分支。
+              if (slash.handleKeyDown(event, (): void => handleSendCompose())) return
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
                 handleSendCompose()
               }
             }}
           />
+          </div>
           <div className="wb-composer__foot">
             {/* 权限模式(human-in-the-loop):左下角随时切换,热替换审批闸,
                 下一声工具调用生效;切到「完全访问」先过风险知情确认。 */}

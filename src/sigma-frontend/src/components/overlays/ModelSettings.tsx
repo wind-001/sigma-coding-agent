@@ -20,14 +20,15 @@ const EFFORT_PRESETS: Readonly<Record<string, readonly string[]>> = {
   thinking: ['enabled,disabled'],
 }
 
-/** 空表单(添加);编辑时由条目填充,apiKey 恒空(服务端不回传,留空=保留) */
+/** 空表单(添加);编辑时由条目填充。密钥本体只存 ~/.sigma/.env,
+ * 表单里只填**变量名**(变量名非机密,服务端原样回传,编辑可回显) */
 function emptyForm(): ModelSaveInput {
   return {
     id: undefined,
     name: '',
     protocol: 'openai-compat',
     baseUrl: '',
-    apiKey: '',
+    apiKeyEnv: '',
     modelId: '',
     efforts: [],
     effortStyle: 'reasoning_effort',
@@ -35,10 +36,11 @@ function emptyForm(): ModelSaveInput {
 }
 
 /**
- * 模型设置:自定义条目(name/baseUrl/apiKey/modelId/档位)的管理面板。
- * 档位取值与随附方式由**条目自己声明**——各家线格式不一(OpenAI 风格
- * reasoning_effort / 智谱风格 thinking),核心层不持厂商知识,谁配模型
- * 谁知道自己的 API 接受什么。内置 preset 只读展示。
+ * 模型设置:自定义条目(name/baseUrl/密钥变量名/modelId/档位)的管理面板。
+ * 密钥本体只写在 ~/.sigma/.env,条目只记指向它的变量名——服务端从头到尾
+ * 不接触 key 本身。档位取值与随附方式由**条目自己声明**——各家线格式不一
+ * (OpenAI 风格 reasoning_effort / 智谱风格 thinking),核心层不持厂商知识,
+ * 谁配模型谁知道自己的 API 接受什么。内置 preset 只读展示。
  */
 export default function ModelSettings(): JSX.Element {
   const state = useAppState()
@@ -61,7 +63,7 @@ export default function ModelSettings(): JSX.Element {
       name: m.name,
       protocol: m.protocol ?? 'openai-compat',
       baseUrl: m.baseUrl ?? '',
-      apiKey: '',
+      apiKeyEnv: m.apiKeyEnv ?? '',
       modelId: m.modelId ?? '',
       efforts: m.efforts,
       effortStyle: m.effortStyle ?? 'reasoning_effort',
@@ -156,17 +158,19 @@ export default function ModelSettings(): JSX.Element {
               </div>
               <div className="models-form__row">
                 <label className="models-form__label">
-                  API Key{form.id !== undefined ? '(留空 = 保留原值)' : ''}
+                  密钥变量名(~/.sigma/.env 里的变量;留空 = 用全局 SIGMA_API_KEY)
                 </label>
                 <input
                   className="models-form__input"
-                  type="password"
-                  value={form.apiKey}
-                  placeholder={form.id !== undefined && form.apiKey === '' ? '••••••' : 'sk-…'}
+                  value={form.apiKeyEnv}
+                  placeholder="例如:DEEPSEEK_API_KEY"
                   onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
-                    setForm({ ...form, apiKey: e.target.value })
+                    setForm({ ...form, apiKeyEnv: e.target.value })
                   }
                 />
+                <p className="models-form__hint">
+                  密钥本体只写在 ~/.sigma/.env,不经过浏览器、不落工作台配置。
+                </p>
               </div>
               <div className="models-form__row">
                 <label className="models-form__label">ModelID(实际发给 API 的模型 id)</label>
@@ -251,7 +255,7 @@ export default function ModelSettings(): JSX.Element {
           <div className="models-panel__section">自定义模型</div>
           {custom.length === 0 ? (
             <p className="models-panel__empty">
-              还没有自定义模型——点「添加模型」填入 BaseURL / API Key / ModelID,
+              还没有自定义模型——点「添加模型」填入 BaseURL / 密钥变量名 / ModelID,
               下拉与执行立即用它。
             </p>
           ) : (

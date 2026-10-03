@@ -3,7 +3,16 @@ import { apiClient, ACCESS_OPTIONS, STATUS_META, type Automation, type ModelInfo
 import { piecesToLiveEvents } from '../lib/liveBlocks'
 
 export type StatusFilter = 'all' | 'active' | 'completed'
-export type OverlayKind = 'automations' | 'plugins' | 'help' | 'fs-picker' | 'fs-file' | 'model-settings' | null
+export type OverlayKind =
+  | 'automations'
+  | 'plugins'
+  | 'help'
+  | 'fs-picker'
+  | 'fs-file'
+  | 'model-settings'
+  | 'trash'
+  | 'phone-access'
+  | null
 
 export interface AppState {
   ready: boolean
@@ -110,6 +119,8 @@ export interface AppActions {
   submitDraft(): Promise<void>
   setTaskStatus(taskId: string, status: TaskStatus): Promise<void>
   deleteTaskById(taskId: string): Promise<void>
+  /** 批量删除:循环走删除端点,执行中的会话服务端 409,结果 toast 如实汇报 */
+  deleteTasksBatch(taskIds: string[]): Promise<void>
   /** 在指定项目下立即创建一个新会话(draft)并打开 */
   createSessionInProject(projectId: string): Promise<void>
   /** 发送会话首条消息:写入描述、标题取首行(原为「新会话」时)并开始执行 */
@@ -253,6 +264,31 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
           ? startedEvents
           : [...startedEvents, userBubble]
       dispatch({ type: 'taskReplaced', task: { ...started, events: eventsWithUser } })
+      // 斜杠命令分支(2026-10-03):服务端拦截执行、不开轮——把输出作为
+      // **单条**多行 note 上屏后直接返回。不走 deltas 轮询与最终替换(那会
+      // 把命令输出冲掉;命令本就不产生轮,也不会进会话树)。
+      // ⚠ 状态必须取 started.status(服务端真值),不能用 current——
+      //   stateRef 在 dispatch 后有渲染延迟,命令分支若回写 current,
+      //   会把乐观阶段的 running 原样落库,任务永远"正在执行"(实测卡死)。
+      if ((started as unknown as { command?: boolean }).command === true) {
+        const output = (started as unknown as { output?: string[] }).output ?? []
+        const baseEvents: TaskEvent[] = started.events ?? []
+        const hasUser = baseEvents.some((e) => e.role === 'user' && e.text === trimmed)
+        const note: TaskEvent = {
+          id: `__cmd-${Date.now()}`,
+          kind: 'note',
+          text: output.join('\n'),
+          at: '',
+        }
+        dispatch({
+          type: 'taskReplaced',
+          task: {
+            ...started,
+            events: [...(hasUser ? baseEvents : [...baseEvents, userBubble]), note],
+          },
+        })
+        return '命令已执行'
+      }
       // 排队分支(星辰 2026-10-02):任务运行中发消息不再 409,后端直接进
       // followup 队列(queued=true)。当前轮的流式轮询已在别处进行,这里
       // 不再重复轮询——排队区(队列轮询)可见,本轮结束后自动接跑。
@@ -370,6 +406,34 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
             patch({ view: 'home', selectedTaskId: null })
           }
           return '任务已删除'
+        })
+      },
+      async deleteTasksBatch(taskIds: string[]): Promise<void> {
+        await runOrToast(async () => {
+          // 先读快照再动 store:dispatch 之后 stateRef 有渲染延迟(命令分支踩过同款坑)
+          const selectedId = stateRef.current.selectedTaskId
+          let ok = 0
+          const removed: string[] = []
+          const failed: string[] = []
+          for (const taskId of taskIds) {
+            try {
+              await apiClient.deleteTask(taskId)
+              ok += 1
+              removed.push(taskId)
+            } catch {
+              // 执行中的会话服务端 409,收集后如实汇报,本地列表不动它
+              failed.push(taskId)
+            }
+          }
+          for (const taskId of removed) {
+            dispatch({ type: 'taskRemoved', taskId })
+          }
+          if (selectedId !== null && taskIds.includes(selectedId) && removed.includes(selectedId)) {
+            patch({ view: 'home', selectedTaskId: null })
+          }
+          return failed.length === 0
+            ? `已删除 ${ok} 个会话`
+            : `已删除 ${ok} 个,${failed.length} 个失败(执行中的不能删)`
         })
       },
       async createSessionInProject(projectId: string): Promise<void> {

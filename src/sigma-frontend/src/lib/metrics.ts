@@ -135,7 +135,7 @@ export function buildMetricGroups(timeline: TaskTimeline | null): MetricGroup[] 
     // 但 TS 的收窄不跨函数边界。与其写非空断言(会被 lint 挡)或 `?? 0`
     // (那是**编造一个数字**),不如让 tooltip 自己按可用字段拼。
     const wallText =
-      timeline.wallSeconds !== null ? ` ÷ 墙钟 ${timeline.wallSeconds.toFixed(1)}s` : ''
+      timeline.wallSeconds !== null ? ` ÷ 执行 ${timeline.wallSeconds.toFixed(1)}s` : ''
     activity.push({
       key: 'tps',
       label: 'tok/s',
@@ -158,7 +158,7 @@ export function buildMetricGroups(timeline: TaskTimeline | null): MetricGroup[] 
       key: 'wall',
       label: '耗时',
       value: `${formatWall(wall)}${timeline.wallApprox ? '≈' : ''}`,
-      title: `墙钟耗时${timeline.wallApprox ? '（估算值，由消息时间戳推算，非精确计时）' : ''} ${wall.toFixed(1)}s`,
+      title: `执行耗时${timeline.wallApprox ? '（估算值，由消息时间戳推算，非精确计时）' : '：累计 LLM 与工具执行时间，不含轮间等待'} ${wall.toFixed(1)}s`,
     })
   }
 

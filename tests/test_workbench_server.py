@@ -267,6 +267,20 @@ def test_timeline_payload_without_trace(sessions_root: Path) -> None:
     assert SERVER._timeline_payload(sessions_root, "nope") is None
 
 
+def test_inbox_project_always_listed(http_server: tuple[str, Path]) -> None:
+    """随手问(proj-inbox)恒在项目列表:不绑定工作区的日常任务入口;
+    在它下面建任务,projectId 原样保留(不落回主工作区)。"""
+    base, _root = http_server
+    code, projects = _get(base, "/api/v1/projects")
+    assert code == 200
+    inbox = next((p for p in projects if p["id"] == "proj-inbox"), None)
+    assert inbox is not None and inbox["name"] == "随手问"
+    code, created = _post(base, "/api/v1/tasks", {"projectId": "proj-inbox", "title": "hi"})
+    assert code == 200 and created["projectId"] == "proj-inbox"
+    # 模块级 _TASKS 是跨用例的全局:清掉草稿,别污染后面的列表断言
+    SERVER._TASKS.pop(created["id"], None)  # noqa: SLF001 - 测试清理
+
+
 def test_plugins_payload_builtin_and_skills(tmp_path: Path) -> None:
     """插件 = 真实内置工具 + 真实技能扫描;扩展工具不列出(装载即执行)。"""
     skill_dir = tmp_path / "extensions" / "skills" / "demo"
@@ -517,7 +531,8 @@ def test_models_endpoint_custom_first_and_no_key_leak(
     tmp_path: Path,
 ) -> None:
     """/models = 自定义条目(模型设置,排最前)+ 内置 preset(CLI 同词汇);
-    默认 preset 排内置组第一;apiKey 绝不回传(只有 hasKey 布尔)。"""
+    默认 preset 排内置组第一。密钥本体只存 ~/.sigma/.env,服务端从不接触
+    key 本身——GET 载荷只有变量名 apiKeyEnv 与 hasKey 布尔,均非机密。"""
     from sigma.cli.main import DEFAULT_PRESET
     from sigma.providers.registry import builtin_providers
 
@@ -527,7 +542,7 @@ def test_models_endpoint_custom_first_and_no_key_leak(
         "name": "GLM-5.3-Flash",
         "protocol": "openai-compat",
         "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
-        "apiKey": "sk-test-123",
+        "apiKeyEnv": "TEST_MODEL_KEY",
         "modelId": "glm-5.3-flash",
         "efforts": ["开启", "关闭"],
         "effortStyle": "thinking",
@@ -543,7 +558,8 @@ def test_models_endpoint_custom_first_and_no_key_leak(
     mine = models[0]
     assert mine["efforts"] == ["开启", "关闭"] and mine["custom"] is True
     assert mine["modelId"] == "glm-5.3-flash" and mine["hasKey"] is True
-    assert "apiKey" not in mine and "sk-test-123" not in json.dumps(models)
+    assert mine["apiKeyEnv"] == "TEST_MODEL_KEY"  # 变量名回传(非机密),编辑可回显
+    assert "apiKey" not in mine and "sk-" not in json.dumps(models)
 
 
 def test_model_save_rejects_duplicate_name(
@@ -551,23 +567,24 @@ def test_model_save_rejects_duplicate_name(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """name 是执行链的解析键:重名(含改名撞名)一律 400;更新自身留空
-    apiKey = 保留原值(密钥不回传,表单无从带回)。"""
+    """name 是执行链的解析键:重名(含改名撞名)一律 400;密钥只落**变量名**
+    apiKeyEnv,每次保存整体覆盖,JSON 里没有任何明文 key 字段。"""
     monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
     base, _root = http_server
     payload = {
         "name": "my-model", "protocol": "openai-compat",
-        "baseUrl": "https://x/v1", "apiKey": "k", "modelId": "m-1",
+        "baseUrl": "https://x/v1", "apiKeyEnv": "K_VAR", "modelId": "m-1",
         "efforts": [], "effortStyle": "reasoning_effort",
     }
     code, first = _post(base, "/api/v1/models/save", payload)
     assert code == 200
     code, clash = _post(base, "/api/v1/models/save", {**payload, "modelId": "m-2"})
     assert code == 400 and "已存在" in clash["detail"]
-    code, updated = _post(base, "/api/v1/models/save", {**payload, "id": first["id"], "apiKey": ""})
+    code, updated = _post(base, "/api/v1/models/save", {**payload, "id": first["id"], "apiKeyEnv": "K_VAR2"})
     assert code == 200
     stored = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))["models"][0]
-    assert stored["modelId"] == "m-1" and stored["apiKey"] == "k"
+    assert stored["modelId"] == "m-1" and stored["apiKeyEnv"] == "K_VAR2"
+    assert "apiKey" not in stored
 
 
 def test_model_remove_roundtrip(
@@ -579,7 +596,7 @@ def test_model_remove_roundtrip(
     base, _root = http_server
     _code, saved = _post(base, "/api/v1/models/save", {
         "name": "gone", "protocol": "openai-compat",
-        "baseUrl": "https://x/v1", "apiKey": "", "modelId": "m",
+        "baseUrl": "https://x/v1", "apiKeyEnv": "", "modelId": "m",
         "efforts": [], "effortStyle": "reasoning_effort",
     })
     code, body = _post(base, "/api/v1/models/remove", {"id": saved["id"]})
@@ -599,15 +616,17 @@ def test_effort_extra_body_styles() -> None:
 def test_execution_params_custom_model_entry(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """自定义条目整体接管 base_url/model/协议/key;档位按条目 effortStyle
-    随附;内置 preset 仍按名解析(reasoning_effort 风格)。"""
+    """自定义条目整体接管 base_url/model/协议;密钥按条目声明的 apiKeyEnv
+    变量名解析(环境变量 > ~/.sigma/.env);档位按条目 effortStyle 随附;
+    内置 preset 仍按名解析(reasoning_effort 风格)。"""
     for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ZK_TEST_KEY", "zk-own-key")
     monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
     (tmp_path / "models.json").write_text(json.dumps({
         "models": [{
             "id": "mdl-x", "name": "GLM-5.3-Flash", "protocol": "openai-compat",
-            "baseUrl": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "zk-own-key",
+            "baseUrl": "https://open.bigmodel.cn/api/paas/v4", "apiKeyEnv": "ZK_TEST_KEY",
             "modelId": "glm-5.3-flash", "efforts": ["开启", "关闭"],
             "effortStyle": "thinking",
         }]
@@ -619,12 +638,82 @@ def test_execution_params_custom_model_entry(
     assert (base_url, model, protocol) == (
         "https://open.bigmodel.cn/api/paas/v4", "glm-5.3-flash", "openai-compat"
     )
-    assert api_key == "zk-own-key"  # 条目自带 key,不碰环境链
+    assert api_key == "zk-own-key"  # 条目变量名指向的 key,不碰全局链
     assert extra == {"thinking": {"type": "开启"}}
 
     _url, _k, model, protocol, extra = SERVER._execution_params("zhipu", "high")
     assert protocol == "openai-compat" and extra == {"reasoning_effort": "high"}
     assert model == "glm-4-flash"
+
+
+def test_execution_params_key_env_falls_back_to_global(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条目未声明 apiKeyEnv → 退到全局 SIGMA_API_KEY 链(环境变量优先)。"""
+    monkeypatch.delenv("SIGMA_PRESET", raising=False)
+    monkeypatch.setenv("SIGMA_API_KEY", "global-key")
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    (tmp_path / "models.json").write_text(json.dumps({
+        "models": [{
+            "id": "mdl-y", "name": "no-env-entry", "protocol": "openai-compat",
+            "baseUrl": "https://x/v1", "modelId": "m-9",
+            "efforts": [], "effortStyle": "reasoning_effort",
+        }]
+    }), encoding="utf-8")
+
+    _url, api_key, model, _protocol, _extra = SERVER._execution_params("no-env-entry")
+    assert api_key == "global-key" and model == "m-9"
+
+
+def test_execution_params_no_key_anywhere_raises_with_guidance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条目变量名解析不到 + 全局链也空 → LookupError,文案指路
+    ~/.sigma/.env 与密钥变量名。真实 ~/.sigma/.env 不参与本用例。"""
+    import sigma.config.settings as sigma_settings
+
+    monkeypatch.delenv("SIGMA_API_KEY", raising=False)
+    monkeypatch.delenv("MISSING_VAR_XYZ", raising=False)
+    # 屏蔽真实 ~/.sigma/.env:解析链 candidates 置空
+    monkeypatch.setattr(sigma_settings, "CANDIDATE_FILES", ())
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    (tmp_path / "models.json").write_text(json.dumps({
+        "models": [{
+            "id": "mdl-z", "name": "broken-entry", "protocol": "openai-compat",
+            "baseUrl": "https://x/v1", "apiKeyEnv": "MISSING_VAR_XYZ",
+            "modelId": "m-0", "efforts": [], "effortStyle": "reasoning_effort",
+        }]
+    }), encoding="utf-8")
+
+    with pytest.raises(LookupError) as excinfo:
+        SERVER._execution_params("broken-entry")
+    message = str(excinfo.value)
+    assert "broken-entry" in message
+    assert "~/.sigma/.env" in message and "密钥变量名" in message
+
+
+def test_model_save_rejects_bad_api_key_env(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """apiKeyEnv 是指向 ~/.sigma/.env 某一行的指针,写错等于指空气——
+    非法变量名在保存时就拦下,不进注册表。"""
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    base, _root = http_server
+    payload = {
+        "name": "bad-var", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "modelId": "m",
+        "efforts": [], "effortStyle": "reasoning_effort",
+    }
+    for bad in ("1startsWith-digit", "has space", "has-dash", "中文名"):
+        code, body = _post(base, "/api/v1/models/save", {**payload, "apiKeyEnv": bad})
+        assert code == 400 and "apiKeyEnv" in body["detail"], bad
+    # 合法名与空串照常通过(不同名,避开重名 400)
+    code, _body = _post(base, "/api/v1/models/save", {**payload, "name": "good-var", "apiKeyEnv": "GOOD_VAR_1"})
+    assert code == 200
+    code, _body = _post(base, "/api/v1/models/save", {**payload, "name": "empty-var", "apiKeyEnv": ""})
+    assert code == 200
 
 
 def test_fs_listing_with_files_flag(http_server: tuple[str, Path]) -> None:
@@ -1459,3 +1548,215 @@ def test_g98_unknown_suffix_falls_back_to_octet_stream(
     (dist / "assets" / "a.bin").write_bytes(b"\x00\x01")
     got = _content_type(base, "/assets/a.bin")
     assert got == "application/octet-stream", f"未登记类型应退回 octet-stream，实得 {got!r}"
+
+
+# ---------------------------------------------------------------------------
+# 斜杠命令(2026-10-03):"/" 在服务端拦截执行,note 块上屏,**永不进模型**
+# ---------------------------------------------------------------------------
+
+
+def _drain_deltas(base: str, task_id: str) -> list[dict[str, Any]]:
+    code, d = _get(base, f"/api/v1/tasks/{task_id}/deltas?since=0")
+    assert code == 200
+    return d["pieces"]
+
+
+def _wait_turn_done(base: str, task_id: str) -> None:
+    for _ in range(200):
+        _code, d = _get(base, f"/api/v1/tasks/{task_id}/deltas?since=0")
+        if not d["running"]:
+            return
+        time.sleep(0.05)
+
+
+def test_commands_endpoint_lists_registry(http_server: tuple[str, Path]) -> None:
+    """GET /commands = 命令注册表 + 技能清单(面板数据源,不需要 execution_env)。"""
+    base, _root = http_server
+    code, payload = _get(base, "/api/v1/commands")
+    assert code == 200
+    names = {c["name"] for c in payload["commands"]}
+    assert {"help", "stop", "reload", "checkpoints", "rollback", "new", "compact", "goal", "plan"} <= names
+    assert isinstance(payload["skills"], list)
+
+
+def test_slash_command_intercepted_never_reaches_model(
+    http_server: tuple[str, Path], execution_env: str
+) -> None:
+    """/help:200 + command 标记 + note 块;模型零调用(任务仍是 draft)。"""
+    base, _root = http_server
+    _code, created = _post(base, "/api/v1/tasks")
+    task_id = created["id"]
+
+    code, payload = _post(base, f"/api/v1/tasks/{task_id}/messages", {"text": "/help"})
+    assert code == 200
+    assert payload["command"] is True
+    assert any("可用命令" in line for line in payload["output"])
+
+    # note 块经 deltas 上屏,且立即 done(命令不开轮)
+    pieces = _drain_deltas(base, task_id)
+    assert pieces, "命令输出应作为 note 块出现在 deltas 里"
+    assert all(p["k"] == "note" for p in pieces)
+
+    # 模型没被调用:会话文件未产生,任务还是 draft(假 provider 若被调,状态会是 completed)
+    code, task = _get(base, f"/api/v1/tasks/{task_id}")
+    assert code == 200 and task["status"] == "draft"
+
+
+def test_slash_unknown_command_reports_and_not_sent(
+    http_server: tuple[str, Path], execution_env: str
+) -> None:
+    """未知命令:报错并指向 /help,绝不静默转发给模型(REPL 同款约定)。"""
+    base, _root = http_server
+    _code, created = _post(base, "/api/v1/tasks")
+    task_id = created["id"]
+    code, payload = _post(
+        base, f"/api/v1/tasks/{task_id}/messages", {"text": "/根本不存在"}
+    )
+    assert code == 200
+    assert any("未知命令" in line for line in payload["output"])
+    code, task = _get(base, f"/api/v1/tasks/{task_id}")
+    assert code == 200 and task["status"] == "draft"
+
+
+def test_slash_stop_when_idle(http_server: tuple[str, Path], execution_env: str) -> None:
+    base, _root = http_server
+    _code, created = _post(base, "/api/v1/tasks")
+    code, payload = _post(base, f"/api/v1/tasks/{created['id']}/messages", {"text": "/stop"})
+    assert code == 200
+    assert any("没有执行中的任务" in line for line in payload["output"])
+
+
+def test_slash_goal_set_and_show(http_server: tuple[str, Path], execution_env: str) -> None:
+    """/goal 设与查:目标入 _GOALS(会话(重)装配时注入系统提示)。"""
+    base, _root = http_server
+    _code, created = _post(base, "/api/v1/tasks")
+    task_id = created["id"]
+    code, payload = _post(
+        base, f"/api/v1/tasks/{task_id}/messages", {"text": "/goal 写一个爬虫"}
+    )
+    assert code == 200
+    assert any("会话目标已设" in line for line in payload["output"])
+    assert payload["goal"] == "写一个爬虫"
+    assert SERVER._GOALS[task_id] == "写一个爬虫"  # noqa: SLF001 - 注入链路的被测状态
+    code, payload = _post(base, f"/api/v1/tasks/{task_id}/messages", {"text": "/goal"})
+    assert code == 200
+    assert any("写一个爬虫" in line for line in payload["output"])
+
+
+def test_slash_running_guard_blocks_idle_commands(
+    http_server: tuple[str, Path], execution_env: str
+) -> None:
+    """执行中仅 /stop 放行,其余命令被挡(否则 /compact 会和跑着的轮对撞)。"""
+    base, _root = http_server
+    _code, created = _post(base, "/api/v1/tasks")
+    task_id = created["id"]
+    SERVER._RUNNING.add(task_id)  # noqa: SLF001 - 模拟"正在执行"
+    try:
+        code, payload = _post(
+            base, f"/api/v1/tasks/{task_id}/messages", {"text": "/compact"}
+        )
+        assert code == 200
+        assert any("执行中" in line for line in payload["output"])
+        # /stop 执行中放行(此时无会话 → 中断失败但可达,如实回执)
+        code, payload = _post(
+            base, f"/api/v1/tasks/{task_id}/messages", {"text": "/stop"}
+        )
+        assert code == 200
+        assert any("未装配" in line for line in payload["output"])
+    finally:
+        SERVER._RUNNING.discard(task_id)
+
+
+def test_slash_checkpoints_and_rollback_after_real_turn(
+    http_server: tuple[str, Path], execution_env: str
+) -> None:
+    """真跑一轮后:装配出的会话能应答 /checkpoints 与 /rollback(纯文本轮无写批次 → 无快照)。"""
+    base, _root = http_server
+    _code, created = _post(base, "/api/v1/tasks")
+    task_id = created["id"]
+    code, started = _post(base, f"/api/v1/tasks/{task_id}/messages", {"text": "你好"})
+    assert code == 200
+    _wait_turn_done(base, task_id)
+
+    code, payload = _post(base, f"/api/v1/tasks/{task_id}/messages", {"text": "/checkpoints"})
+    assert code == 200
+    assert any("快照" in line for line in payload["output"])
+
+    code, payload = _post(base, f"/api/v1/tasks/{task_id}/messages", {"text": "/rollback"})
+    assert code == 200
+    assert any("用法" in line for line in payload["output"])
+    code, payload = _post(base, f"/api/v1/tasks/{task_id}/messages", {"text": "/rollback 1"})
+    assert code == 200
+    assert any("找不到该回滚点" in line for line in payload["output"])
+
+
+def test_slash_skill_fallback_starts_turn(
+    http_server: tuple[str, Path], execution_env: str, tmp_path: Path
+) -> None:
+    """未知命令名命中技能 → 以规范提示语起**真实一轮**(模型经 load_skill 加载);
+    与技能不同名的未知命令仍然报错。"""
+    base, _root = http_server
+    skill_dir = tmp_path / "extensions" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "demo.md").write_text(
+        "---\nname: demo\ndescription: 演示技能\n---\n正文\n", encoding="utf-8"
+    )
+    _code, created = _post(base, "/api/v1/tasks")
+    task_id = created["id"]
+
+    code, payload = _post(
+        base, f"/api/v1/tasks/{task_id}/messages", {"text": "/demo 帮我写个函数"}
+    )
+    assert code == 200
+    assert payload.get("skill") == "demo"
+    assert payload["status"] == "running"  # 真起了一轮,不是 note 回执
+    _wait_turn_done(base, task_id)
+    code, task = _get(base, f"/api/v1/tasks/{task_id}")
+    assert code == 200 and task["status"] == "completed"
+
+    code, payload = _post(
+        base, f"/api/v1/tasks/{task_id}/messages", {"text": "/根本不存在"}
+    )
+    assert code == 200
+    assert any("未知命令" in line for line in payload["output"])
+
+
+def test_system_status_and_addresses(http_server: tuple[str, Path]) -> None:
+    """状态(版本/会话数/工作区)与局域网地址(不含 127.0.0.1)。"""
+    base, _root = http_server
+    code, status = _get(base, "/api/v1/system/status")
+    assert code == 200
+    assert status["version"] != ""
+    assert status["sessions"] >= 1  # 夹具写过 s-http
+    assert status["workspace"] != ""
+    code, addresses = _get(base, "/api/v1/system/addresses")
+    assert code == 200 and isinstance(addresses["urls"], list)
+    assert all(url.startswith("http://") for url in addresses["urls"])
+
+
+def test_trash_delete_restore_roundtrip(http_server: tuple[str, Path]) -> None:
+    """删除 → 回收站可见 → 恢复回会话列表(trace 兄弟文件一并找回)。
+
+    ⚠ 回收站目录是全局真实目录(~/.sigma/trash),测试**只做单条恢复**,
+    绝不调清空——那会把用户真实的回收站清掉。"""
+    base, _root = http_server
+    code, _ = _delete(base, "/api/v1/tasks/s-http")
+    assert code == 200
+
+    code, trash = _get(base, "/api/v1/system/trash")
+    assert code == 200
+    entry = next(
+        (
+            item
+            for item in trash["entries"]
+            if item["kind"] == "session" and item["taskId"] == "s-http"
+        ),
+        None,
+    )
+    assert entry is not None, trash["entries"][:5]
+
+    code, restored = _post(base, "/api/v1/system/trash/restore", {"name": entry["name"]})
+    assert code == 200 and restored["taskId"] == "s-http"
+    code, tasks = _get(base, "/api/v1/tasks")
+    assert code == 200
+    assert any(task["id"] == "s-http" for task in tasks)

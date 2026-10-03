@@ -481,6 +481,40 @@
   opacity: 1;
 }
 
+/* 批量删除入口(2026-10-03,星辰:组头行、「+」与移除按钮左侧;勾选模式中常亮) */
+.sidebar__group-batch {
+  position: absolute;
+  right: 58px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--sb-icon-neutral);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.sidebar__group-batch:hover {
+  color: var(--sb-icon-active);
+  background: var(--bg-active);
+}
+
+.sidebar__group-batch--active {
+  opacity: 1;
+  color: var(--sb-icon-active);
+  background: var(--bg-active);
+}
+
+.sidebar__group-header-row:hover .sidebar__group-batch,
+.sidebar__group-batch:focus-visible,
+.sidebar__group-batch--active {
+  opacity: 1;
+}
+
 .sidebar__group-header-row:hover .sidebar__count {
   opacity: 0;
 }
@@ -641,4 +675,155 @@
 .sidebar__ws-import:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+/* ============ 批量删除(2026-10-03):勾选模式 + 底部操作栏 ============ */
+.sidebar__batchbar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar__batchbar__btn {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidebar__batchbar__btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sidebar__batchbar__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sidebar__batchbar__btn--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.sidebar__batchbar__btn--danger:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--danger);
+}
+
+.sidebar__item-check {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1.5px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.sidebar__item-check--on {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+
+/* ============ 底部用户区菜单(2026-10-03,对标桌面端工作台) ============ */
+.footer-menu {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.footer-menu__trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.footer-menu__trigger:hover {
+  background: var(--bg-hover);
+}
+
+.footer-menu__pop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  width: 240px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(17, 20, 26, 0.18);
+  padding: 6px;
+  z-index: 60;
+}
+
+.footer-menu__status {
+  padding: 6px 8px 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.footer-menu__status-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.footer-menu__status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 2px 0;
+  color: var(--text-secondary);
+}
+
+.footer-menu__status-row code {
+  font-size: 11.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+
+.footer-menu__muted {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.footer-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.footer-menu__item:hover {
+  background: var(--bg-hover);
 }

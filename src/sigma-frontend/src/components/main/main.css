@@ -1196,6 +1196,8 @@
   border-left: 3px solid var(--border);
   border-radius: 6px;
   padding: 5px 10px;
+  /* 斜杠命令输出是多行文本(2026-10-03):保留换行与缩进,不再是碎 chip */
+  white-space: pre-wrap;
   margin: 4px 0;
 }
 
@@ -1741,4 +1743,84 @@
 .wb-bubble strong {
   font-weight: 700;
   color: #14171c;
+}
+
+/* ============ 斜杠命令面板(2026-10-03;定位仿 composer__plus-menu) ============ */
+/* 宿主:.wb-composer__inputwrap(textarea 的定位父级,面板浮在输入框正上方) */
+.wb-composer__inputwrap {
+  position: relative;
+}
+
+.wb-slash {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+  z-index: 40;
+  padding: 6px;
+}
+
+.wb-slash__item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.wb-slash__item--active,
+.wb-slash__item:hover {
+  background: var(--bg-hover);
+}
+
+.wb-slash__icon {
+  color: var(--text-secondary);
+  display: inline-flex;
+  flex: none;
+}
+
+.wb-slash__name {
+  font-weight: 600;
+  flex: none;
+}
+
+.wb-slash__args {
+  color: #ff8f1f;
+  font-size: 11.5px;
+  flex: none;
+}
+
+.wb-slash__desc {
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-slash__foot {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.wb-slash__empty {
+  padding: 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
 }

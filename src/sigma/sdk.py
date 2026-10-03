@@ -1108,6 +1108,30 @@ class InteractiveSession:
             self._last_compaction = outcome
         return outcome is not None
 
+    async def compact(self) -> CompactionOutcome | None:
+        """手动压一次(工作台 /compact 的入口):**无视策略阈值**,能压就压。
+
+        与 ``_compact_if_needed`` 的分工:那条按阈值判"该不该压",
+        这条是用户说"现在就压"。失败同样不打断会话(返回 None 表示
+        关压缩 / 没有可压段 / provider 抖了),成功走同一 ``_last_compaction``
+        可见性通道——命令层与自动压缩看到的是同一个事实。
+        """
+        if self._compaction_policy is None:
+            return None
+        try:
+            outcome = await self._context.compact(
+                policy=self._compaction_policy,
+                provider=self._provider,
+                model=self._model,
+                signal=NeverCancelled(),
+            )
+        except Exception:
+            # 与 _compact_if_needed 同判据:刻意吞掉,不清空 _last_compaction。
+            return None
+        if outcome is not None:
+            self._last_compaction = outcome
+        return outcome
+
     async def _compact_if_needed(self) -> CompactionOutcome | None:
         """动态区超过策略阈值时压一次。压不了（没有可压的段）时返回 ``None``。
 
@@ -1122,20 +1146,7 @@ class InteractiveSession:
             return None
         if not self._context.should_compact(self._compaction_policy):
             return None
-        try:
-            outcome = await self._context.compact(
-                policy=self._compaction_policy,
-                provider=self._provider,
-                model=self._model,
-                signal=NeverCancelled(),
-            )
-        except Exception:
-            # 刻意吞掉：见上面 docstring。**但不清空 `_last_compaction`**——
-            # 上一次成功压缩的结果仍然是有效的，不该被一次失败抹掉。
-            return None
-        if outcome is not None:
-            self._last_compaction = outcome
-        return outcome
+        return await self.compact()
 
     @property
     def skill_scan(self) -> SkillScan:

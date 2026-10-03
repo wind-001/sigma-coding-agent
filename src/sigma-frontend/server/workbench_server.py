@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import datetime
@@ -56,6 +57,10 @@ from sigma.events.lifecycle import (
 from sigma.hooks.base import ApprovalHook, BaseHook
 from sigma.memory.file_store import memory_dir_for, scan_memory
 from sigma.observability.timeline import build_timeline
+import re
+import socket
+import time
+
 from sigma.observability.trace import trace_path_for
 from sigma.prompts.system_prompt import build_system_prompt
 from sigma.providers.anthropic.provider import AnthropicProvider
@@ -90,6 +95,11 @@ from sigma.tools.registry import ToolRegistry
 
 #: 单项目固定 id——sigma 是单工作区 harness,工作台把它呈现为一个项目。
 PROJECT_ID = "proj-sigma"
+#: 随手问(2026-10-03):不绑定任何代码工作区的虚拟项目,承载日常非 coding 任务。
+#: 会话照常落 ~/.sigma/sessions 并陈列在侧栏;工作区用中立目录 ~/.sigma/inbox
+#(无 AGENTS.md、无项目技能、无 .git,系统提示词天然是"干净通用助手"口径)。
+INBOX_PROJECT_ID = "proj-inbox"
+INBOX_WORKSPACE = Path.home() / ".sigma" / "inbox"
 #: 任务列表一次最多解析多少个会话(按修改时间取最近)。整树解析有读盘代价。
 TASKS_LIMIT = 100
 #: 详情回放事件上限(老会话可能有几百条)。
@@ -135,6 +145,8 @@ _REGISTRY_PATH = Path.home() / ".sigma" / "workbench-projects.json"
 
 #: 删除会话的回收站(移入而非 unlink:审计事实可恢复)。测试可替换。
 _TRASH_DIR = Path.home() / ".sigma" / "trash"
+#: 服务启动时刻(工作台状态面板的"已运行"字段)。
+_STARTED_AT = time.time()
 
 #: 计划模式追加的系统提示词段(与 L3 审批的写类拒绝配合:
 #: 模型先出计划,用户看完切回其他模式再执行)。
@@ -238,13 +250,19 @@ def _registry_write(reg: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 模型配置注册表(工作台"模型设置"):用户自定义 base_url/api_key/model_id
-# 的条目,与内置 preset 并列进 /models;执行链按名字解析。apiKey 落盘在
-# ~/.sigma/workbench-models.json——与 ~/.sigma/.env 同一信任域(本机明文),
-# 且**绝不回传前端**(GET 载荷只有 hasKey 布尔)。
+# 模型配置注册表(工作台"模型设置"):用户自定义 base_url/model_id 的条目,
+# 与内置 preset 并列进 /models;执行链按名字解析。**密钥本体只存
+# ~/.sigma/.env**(2026-10-03 拍板,与全局密钥同一处):条目只落密钥**变量名**
+# apiKeyEnv,JSON 里没有任何明文 key;GET 载荷带变量名与 hasKey 布尔,
+# 两者均非机密。
 # ---------------------------------------------------------------------------
 
 _MODELS_REGISTRY_PATH = Path.home() / ".sigma" / "workbench-models.json"
+
+#: 密钥变量名的合法性:环境变量的命名规则(字母/下划线开头,只含
+#: 字母/数字/下划线)。它是"指向 ~/.sigma/.env 里某一行"的指针,
+#: 写错了等于指了个空气,必须在保存时就拦下。
+ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 #: 档位随附方式:OpenAI 风格 reasoning_effort 字符串 / 智谱风格 thinking 对象。
 #: 取值集合刻意封闭——线格式是协议事实,不该让用户自由发挥。
@@ -280,7 +298,9 @@ def _effort_extra_body(style: str, effort: str) -> dict[str, Any] | None:
 
 def _save_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """新增/更新模型条目。``name`` 是执行链的解析键,必须唯一;
-    ``apiKey`` 留空 = 保留原值(密钥不回传前端,表单无从带回)。"""
+    密钥只落**变量名** ``apiKeyEnv``(本体在 ~/.sigma/.env,服务端
+    从不接触 key 本身,也就不存在"留空 = 保留原值"的问题——变量名
+    不是机密,GET 原样回传,每次保存都整体覆盖)。"""
     name = str(body.get("name") or "").strip()
     base_url = str(body.get("baseUrl") or "").strip()
     model_id = str(body.get("modelId") or "").strip()
@@ -321,9 +341,13 @@ def _save_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             "createdAt": target.get("createdAt", _now_stamp()),
         }
     )
-    api_key = str(body.get("apiKey") or "")
-    if api_key != "" or "apiKey" not in target:
-        target["apiKey"] = api_key  # 新条目落空串;更新留空 = 保留原值
+    # 密钥本体在 ~/.sigma/.env,条目只记变量名(空 = 走全局 SIGMA_API_KEY 链)。
+    # 旧版条目曾把明文 key 存在这里,任何一次保存都顺手清掉残留字段。
+    api_key_env = str(body.get("apiKeyEnv") or "").strip()
+    if api_key_env != "" and ENV_NAME_RE.fullmatch(api_key_env) is None:
+        return 400, {"detail": "apiKeyEnv 必须是合法环境变量名(字母/下划线开头,只含字母/数字/下划线)"}
+    target["apiKeyEnv"] = api_key_env
+    target.pop("apiKey", None)
     reg["models"] = models
     _models_registry_write(reg)
     return 200, {"ok": True, "id": target["id"]}
@@ -365,6 +389,17 @@ def _all_projects(primary: Path) -> list[dict[str, Any]]:
                 "createdAt": entry.get("createdAt", ""),
             }
         )
+    # 随手问恒在列(可被激活为 active,Composer 下拉/侧栏由此渲染)
+    INBOX_WORKSPACE.mkdir(parents=True, exist_ok=True)
+    projects.append(
+        {
+            "id": INBOX_PROJECT_ID,
+            "name": "随手问",
+            "repoPath": str(INBOX_WORKSPACE),
+            "branch": "",
+            "createdAt": "",
+        }
+    )
     return projects
 
 
@@ -909,12 +944,13 @@ def _execution_params(
 
     模型解析链(按优先级):
     1. **用户自定义条目**(模型设置里配的,name 精确匹配)——base_url/
-       model_id/协议/key 全按条目,apiKey 留空才走 resolve_api_key 链;
+       model_id/协议按条目;密钥按条目声明的 ``apiKeyEnv`` 变量名解析
+       (环境变量 > ~/.sigma/.env),未声明才退到全局 SIGMA_API_KEY 链;
        档位按条目声明的 ``effortStyle`` 随附;
     2. **内置 preset**(与 CLI ``--preset`` 同一套注册表词汇)——显式选择
        整体接管 preset/base_url/model;
     3. 都没有 → 与 CLI 同链(env SIGMA_BASE_URL / SIGMA_MODEL / SIGMA_PRESET
-       > 厂商预设默认值;密钥:命令行 > 环境变量 > 用户级 .env > 项目 .env)。
+       > 厂商预设默认值;密钥:命令行 > 环境变量 > ~/.sigma/.env)。
 
     没配 key(且条目没带 key)抛 ``LookupError``,由端点转成 400 指路文案。
     """
@@ -926,15 +962,23 @@ def _execution_params(
             None,
         )
         if entry is not None:
-            api_key = str(entry.get("apiKey") or "")
-            if api_key == "":
+            # 密钥:条目声明的变量名优先,同一套 resolve(环境变量 >
+            # ~/.sigma/.env);未声明变量名或没解析到才退到全局
+            # SIGMA_API_KEY 链。判断用真值而不是 == "":resolve 未命中
+            # 返回的是 None,None == "" 是 False,会漏掉回退与报错。
+            api_key: str | None = ""
+            var_name = str(entry.get("apiKeyEnv") or "").strip()
+            if var_name != "":
+                api_key, _source = resolve_api_key(var_name=var_name)
+            if not api_key:
                 chained, _source = resolve_api_key()
                 api_key = chained or ""
-                if api_key == "":
-                    raise LookupError(
-                        f"模型「{hint}」未配置密钥:在模型设置里填 apiKey,"
-                        "或走 SIGMA_API_KEY / ~/.sigma/.env 链。"
-                    )
+            if not api_key:
+                raise LookupError(
+                    f"模型「{hint}」未配置密钥:把 key 写进 ~/.sigma/.env,"
+                    "并在模型设置里把密钥变量名指向它(如 DEEPSEEK_API_KEY);"
+                    "或直接用 SIGMA_API_KEY。"
+                )
             style = str(entry.get("effortStyle") or "reasoning_effort")
             return (
                 str(entry.get("baseUrl") or ""),
@@ -949,7 +993,7 @@ def _execution_params(
             api_key = chained or ""
             if not api_key:
                 raise LookupError(
-                    "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env(推荐)"
+                    "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env"
                     "——与 sigma CLI 用的是同一份配置。"
                 )
             return (
@@ -966,7 +1010,7 @@ def _execution_params(
     api_key = chained or ""
     if not api_key:
         raise LookupError(
-            "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env(推荐)"
+            "未配置模型密钥:设环境变量 SIGMA_API_KEY,或写进 ~/.sigma/.env"
             "——与 sigma CLI 用的是同一份配置。"
         )
     preset = os.environ.get("SIGMA_PRESET", _default_preset())
@@ -1055,6 +1099,10 @@ def _get_or_create_session(
         memory=DEFAULT_ENABLE_MEMORY,
     )
     system_prompt += ("\n\n" + _PLAN_INSTRUCTION) if access == "plan" else ""
+    goal = _GOALS.get(task_id)
+    if goal:
+        # /goal 设的目标随(重)装配注入;活会话已在设置时经 steering 通告过。
+        system_prompt += f"\n\n[会话目标] {goal}"
     registry = default_registry(
         web_search=web_on,
         tavily_api_key=_WEB_KEYS.tavily,
@@ -1149,6 +1197,288 @@ def _draft_payload(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ===========================================================================
+# 斜杠命令(2026-10-03,对标 Claude Code / Aider / Gemini CLI 的成熟设计)
+#
+# 约定(与 CLI REPL 同源,repl.py 的 COMMANDS 表):
+#   - "/" 开头**永不进模型**,在 _post_message 最上游拦截——且必须在
+#     running 判定之前,否则执行中的 /stop 会被当 followup 排队;
+#   - 注册表统一元数据(name/args/description/when),别名同表;
+#   - 未知命令报错并指向 /help,绝不静默转发;
+#   - 输出走 deltas 的 note 块(前端直播区零改动即可渲染),HTTP 响应
+#     同时带 command/output(结构化消费面)。
+# ===========================================================================
+
+#: /goal 的会话目标(task 记录是草稿专属,磁盘会话没有记录,单独存;
+#: 会话(重)装配时注入系统提示,见 _get_or_create_session)。
+_GOALS: dict[str, str] = {}
+#: /checkpoints 的 序号→ref 映射(REPL index_map 的 Web 对应物)。
+#: 会话级 UI 状态,服务端内存即可;重启后重新 /checkpoints 刷新。
+_CHECKPOINT_INDEX: dict[str, dict[str, str]] = {}
+_CHECKPOINT_LOCK = threading.Lock()
+
+#: 处理器签名:(task_id, session, arg, primary, sessions_root) → (输出行, 附加载荷)。
+#: 附加载荷并入 HTTP 响应(如 /new 的 newTaskId,前端跳转用)。
+CommandHandler = Callable[..., tuple[list[str], dict[str, Any]]]
+
+_COMMANDS: dict[str, dict[str, Any]] = {}
+
+
+def _command(name: str, args: str, description: str, when: str = "always") -> Callable[[CommandHandler], CommandHandler]:
+    """注册装饰器。``when``:always=随时可用;idle=仅空闲(会动工作区/跑长任务)。"""
+    def wrap(fn: CommandHandler) -> CommandHandler:
+        _COMMANDS[name] = {
+            "handler": fn, "args": args, "description": description, "when": when,
+        }
+        return fn
+
+    return wrap
+
+
+@_command("help", "", "列出全部斜杠命令")
+def _cmd_help(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    lines = ["可用命令:"]
+    for name in sorted(_COMMANDS):
+        meta = _COMMANDS[name]
+        hint = f" {meta['args']}" if meta["args"] else ""
+        lines.append(f"  /{name}{hint}  — {meta['description']}")
+    lines.append("技能:输入 / 选技能或命令;技能可用 /技能名 [任务] 直接调用。")
+    return lines, {}
+
+
+@_command("stop", "", "中断当前执行(执行中也可用)")
+def _cmd_stop(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    code, payload = _stop_task(task_id)
+    if code != 200:
+        return [f"✗ {payload.get('detail', '停止失败')}"], {}
+    if payload.get("interrupted"):
+        return ["✓ 已发送中断,当前工具完成后停止"], {}
+    return ["· 当前没有执行中的任务"], {}
+
+
+@_command("reload", "[文件名]", "热重载 extensions 下的扩展工具", when="idle")
+def _cmd_reload(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    if session is None:
+        return ["✗ 会话尚未装配(发第一条消息后再用)"], {}
+    reports = session.reload_tools(arg or None)
+    if not reports:
+        return ["· 没有可装载的扩展(<workspace>/extensions/*.py)"], {}
+    lines: list[str] = []
+    for report in reports:
+        failed = str(getattr(report, "failed_reason", "") or "")
+        if failed:
+            lines.append(f"✗ {report.source}:{failed}")
+        else:
+            added = ", ".join(report.added) or "无"
+            removed = ", ".join(report.removed) or "无"
+            lines.append(f"✓ {report.source}  新增 [{added}]  移除 [{removed}]")
+    return lines, {}
+
+
+@_command("checkpoints", "", "列出影子库回滚点(/rollback 用)")
+def _cmd_checkpoints(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    if session is None:
+        return ["✗ 会话尚未装配(发第一条消息后再用)"], {}
+    cp = session.checkpoint
+    if cp is None or not cp.available:
+        reason = str(getattr(cp, "unavailable_reason", "") or "") if cp is not None else "未启用影子库"
+        return [f"✗ 影子库不可用:{reason}"], {}
+    refs = cp.refs()
+    if not refs:
+        return ["· 影子库还没有任何快照(写过文件的会话才有)"], {}
+    with _CHECKPOINT_LOCK:
+        _CHECKPOINT_INDEX[task_id] = {str(i + 1): info.ref for i, info in enumerate(refs)}
+    lines = ["回滚点(新 → 旧;用 /rollback <序号> 恢复):"]
+    for i, info in enumerate(refs):
+        lines.append(f"  {i + 1}. {info.label}  ({info.ref[:8]})")
+    return lines, {}
+
+
+@_command("rollback", "<序号|ref前缀>", "把工作区回滚到某个回滚点", when="idle")
+def _cmd_rollback(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    if session is None:
+        return ["✗ 会话尚未装配"], {}
+    cp = session.checkpoint
+    if cp is None or not cp.available:
+        return ["✗ 影子库不可用"], {}
+    if arg == "":
+        return ["✗ 用法:/rollback <序号>(先 /checkpoints 查看)"], {}
+    with _CHECKPOINT_LOCK:
+        index = dict(_CHECKPOINT_INDEX.get(task_id, {}))
+    ref = index.get(arg)
+    if ref is None:
+        matches = [info.ref for info in cp.refs() if info.ref.startswith(arg)]
+        if len(matches) == 1:
+            ref = matches[0]
+        elif len(matches) > 1:
+            return ["✗ 该前缀命中多个回滚点,请用完整序号"], {}
+        else:
+            return ["✗ 找不到该回滚点,先 /checkpoints 查看"], {}
+    report = cp.restore(ref)
+    if not report.ok:
+        return [f"✗ 回滚失败:{report.note}"], {}
+    lines = [
+        f"✓ 已回滚到 {report.ref[:8]}",
+        f"  恢复/改动 {len(report.changed)} 个文件,删除 {len(report.deleted)} 个,受保护跳过 {report.protected} 个",
+    ]
+    if report.pre_restore_ref:
+        lines.append(f"  回滚前状态已自存为 {report.pre_restore_ref[:8]}(可再回滚)")
+    return lines, {}
+
+
+@_command("new", "", "新建一个会话(工作台切过去)")
+def _cmd_new(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    record = _TASKS.get(task_id) or {}
+    project = _project_of(task_id, record, primary)
+    created = _create_task({"projectId": str(project.get("id") or "")})
+    return [
+        f"✓ 已创建新会话 {created['id'][:8]}(侧栏可见,前端即将切换)"
+    ], {"newTaskId": created["id"]}
+
+
+@_command("compact", "", "立即压缩上下文(无视自动阈值)", when="idle")
+def _cmd_compact(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    if session is None:
+        return ["✗ 会话尚未装配(发第一条消息后再用)"], {}
+    outcome = _run_on_persistent_loop(session.compact())
+    if outcome is None:
+        return ["· 没有可压缩的内容(历史太短或压缩已关)"], {}
+    lines = [
+        f"✓ 压缩完成:压缩 {outcome.compacted_messages} 条,保留 {outcome.kept_messages} 条"
+    ]
+    text = str(getattr(outcome.summary, "summary", "") or "")
+    if text:
+        lines.append(_clip(text, 200))
+    return lines, {}
+
+
+@_command("goal", "[文本]", "显示或设置会话目标(注入模型上下文)")
+def _cmd_goal(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    if arg == "":
+        with _TASKS_LOCK:
+            record = _TASKS.get(task_id) or {}
+        current = _GOALS.get(task_id) or str(record.get("goal") or "")
+        return [f"当前目标:{current or '(未设置,用 /goal <文本> 设置)'}"], {}
+    with _TASKS_LOCK:
+        record = _TASKS.get(task_id)
+        if record is not None:
+            record["goal"] = arg
+    _GOALS[task_id] = arg
+    lines = [f"✓ 会话目标已设:{arg}"]
+    if session is not None:
+        # 活会话靠 steering 通告(空闲时下一轮开头注入;执行中在下一个块边界注入);
+        # 重建装配则走 _get_or_create_session 的系统提示注入。
+        session.submit_steering(f"[会话目标] {arg}")
+        lines.append("  已通告当前会话")
+    else:
+        lines.append("  (会话装配时自动注入)")
+    return lines, {"goal": arg}
+
+
+@_command("plan", "", "切换到规划模式(只读规划,不改工作区)", when="idle")
+def _cmd_plan(
+    task_id: str, session: InteractiveSession | None, arg: str, primary: Path, sessions_root: Path
+) -> tuple[list[str], dict[str, Any]]:
+    code, payload = _set_task_access(primary, task_id, {"access": "plan"})
+    if code != 200:
+        return [f"✗ {payload.get('detail', '切换失败')}"], {}
+    return ["✓ 已切到 plan 模式(只读规划)。直接输入任务即可开始规划。"], {"access": "plan"}
+
+
+def _commands_payload(workspace: Path) -> dict[str, Any]:
+    """面板数据源:命令注册表 + 技能清单(复用 /plugins 的技能扫描)。"""
+    commands = [
+        {
+            "name": name,
+            "args": _COMMANDS[name]["args"],
+            "description": _COMMANDS[name]["description"],
+        }
+        for name in sorted(_COMMANDS)
+    ]
+    skills = [
+        {"name": p["name"], "description": p["description"]}
+        for p in _plugins_payload(workspace)
+        if str(p.get("id", "")).startswith("skill:")
+    ]
+    return {"commands": commands, "skills": skills}
+
+
+def _find_skill(primary: Path, name: str) -> dict[str, str] | None:
+    """/技能名 兜底:在技能扫描清单里找同名技能(id 形如 skill:<name>)。"""
+    for plugin in _plugins_payload(primary):
+        if str(plugin.get("id", "")) == f"skill:{name}":
+            return {"name": str(plugin["name"]), "description": str(plugin["description"])}
+    return None
+
+
+def _dispatch_command(
+    primary: Path, sessions_root: Path, task_id: str, text: str
+) -> tuple[int, dict[str, Any]]:
+    """拦截到的 "/命令":执行并把输出写进 deltas(前端零改动上屏)。
+
+    失败姿态与 REPL 一致:任何命令异常都降级为一条 ✗ 输出行,
+    绝不把命令文本漏给模型,也绝不 500(输出面在,用户看得见)。
+    """
+    name, _, arg = text[1:].partition(" ")
+    name = name.strip().lower()
+    arg = arg.strip()
+    entry = _COMMANDS.get(name)
+    if entry is None:
+        # 技能兜底:命令名未注册但命中技能清单 → 以规范提示语起**真实一轮**,
+        # 模型经 load_skill 工具加载技能(前端面板选中即填 /技能名,同一条路径)。
+        skill = _find_skill(primary, name)
+        if skill is not None:
+            prompt = f"请使用技能 {skill['name']}。"
+            if arg:
+                prompt = f"请使用技能 {skill['name']}:{arg}"
+            code, payload = _post_message(primary, sessions_root, task_id, prompt)
+            if code == 200:
+                payload["skill"] = skill["name"]
+            return code, payload
+        lines = [f"✗ 未知命令 /{name}(命令不会发给模型)。可用命令见 /help"]
+        extra: dict[str, Any] = {}
+    else:
+        if entry["when"] == "idle" and task_id in _RUNNING:
+            lines = ["✗ 任务执行中,请先 /stop 再使用该命令"]
+            extra = {}
+        else:
+            try:
+                lines, extra = entry["handler"](
+                    task_id, _session_of(task_id), arg, primary, sessions_root
+                )
+            except Exception as exc:  # noqa: BLE001 - 命令失败是输出不是错误
+                lines = [f"✗ 命令失败:{type(exc).__name__}: {exc}"]
+                extra = {}
+    with _DELTAS_LOCK:
+        _DELTAS[task_id] = {
+            "pieces": [{"k": "note", "t": _clip(line, 500)} for line in lines],
+            "lock": threading.Lock(),
+            "done": True,
+            "error": None,
+        }
+    payload = _merged_task_payload(primary, sessions_root, task_id)
+    payload["command"] = True
+    payload["output"] = lines
+    payload.update(extra)
+    return 200, payload
+
+
 def _post_message(
     primary: Path, sessions_root: Path, task_id: str, text: str
 ) -> tuple[int, dict[str, Any]]:
@@ -1165,6 +1495,10 @@ def _post_message(
         _execution_params()  # 快速失败:没配 key 不起线程
     except LookupError as exc:
         return 400, {"detail": str(exc)}
+    # 斜杠命令拦截(2026-10-03):"/" 开头永不进模型。必须在 running 判定
+    # **之前**——否则执行中的 /stop 会被当 followup 排队(见命令层注释)。
+    if text.startswith("/"):
+        return _dispatch_command(primary, sessions_root, task_id, text)
     queued = False
     with _TASKS_LOCK:
         record = _TASKS.get(task_id)
@@ -1691,6 +2025,129 @@ def _timeline_payload(sessions_root: Path, session_id: str) -> dict[str, Any] | 
     }
 
 
+def _system_status(sessions_root: Path, workspace: Path, port: int) -> dict[str, Any]:
+    """工作台状态(底部菜单的状态区):版本/工作区/磁盘会话数/已运行。"""
+    sessions = len(list(sessions_root.glob("*.jsonl")))
+    return {
+        "version": __version__,
+        "workspace": str(workspace),
+        "sessions": sessions,
+        "uptimeSeconds": int(time.time() - _STARTED_AT),
+        "port": port,
+    }
+
+
+def _local_addresses(port: int) -> list[str]:
+    """局域网访问地址(手机访问面板):列出本机内网 IPv4。
+
+    出口网卡 IP 用 UDP connect 技巧取(不发包,223.5.5.5 是阿里公共 DNS,
+    国内可达);getaddrinfo 兜底扫本机名。只留私网段——127.0.0.1 对手机没意义。"""
+    urls: list[str] = []
+    seen: set[str] = {"127.0.0.1", "localhost"}
+    candidates: list[str] = []
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("223.5.5.5", 53))
+            candidates.append(str(sock.getsockname()[0]))
+        finally:
+            sock.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            candidates.append(str(info[4][0]))
+    except OSError:
+        pass
+    for ip in candidates:
+        if ip in seen or not ip.startswith(("192.168.", "10.", "172.")):
+            continue
+        seen.add(ip)
+        urls.append(f"http://{ip}:{port}")
+    return urls
+
+
+#: 回收站文件名的时间戳模式(_now_stamp 去冒号后的形态):日期 + T + 时刻 + 毫秒。
+#: 它**自带点号**,task_id 也含点——按点切必然切错(实测),必须按戳模式剥离。
+_TRASH_STAMP_RE = re.compile(r"\.(\d{4}-\d{2}-\d{2}T\d{6}\.\d+)$")
+
+
+def _trash_task_id(stem: str) -> str:
+    """从回收站文件 stem 里剥出原 task_id;没有戳尾巴的(手工放的)原样返回。"""
+    match = _TRASH_STAMP_RE.search(stem)
+    return stem[: match.start()] if match is not None else stem
+
+
+def _trash_payload() -> list[dict[str, Any]]:
+    """回收站清单:删除的会话/trace 都躺在这(_delete_task 的审计安全设计)。
+
+    回收站文件名 = ``{task_id}.{stamp}{后缀}``;task_id 本身含点
+    (如 20261003-164418.624-9a9f),所以剥掉后缀后按**最后一个点**切出 task_id
+    ——stamp 只含数字与横线,没有点,这个切分是安全的。"""
+    if not _TRASH_DIR.is_dir():
+        return []
+    entries: list[dict[str, Any]] = []
+    for path in _TRASH_DIR.iterdir():
+        if not path.is_file():
+            continue
+        name = path.name
+        kind = "session" if name.endswith(".jsonl") else "trace"
+        stem = name[: -len(".jsonl")] if name.endswith(".jsonl") else name
+        task_id = _trash_task_id(stem)
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append(
+            {
+                "name": name,
+                "taskId": task_id,
+                "kind": kind,
+                "sizeBytes": stat.st_size,
+                "deletedAt": int(stat.st_mtime),
+            }
+        )
+    entries.sort(key=lambda entry: entry["deletedAt"], reverse=True)
+    return entries[:200]
+
+
+def _trash_restore(sessions_root: Path, name: str) -> tuple[int, dict[str, Any]]:
+    """从回收站恢复一个会话(*.jsonl):移回会话目录,trace 兄弟文件一并找回。"""
+    safe = Path(name).name
+    src = _TRASH_DIR / safe
+    if not src.is_file():
+        return 404, {"detail": "回收站里没有这个文件"}
+    if not safe.endswith(".jsonl"):
+        return 400, {"detail": "只支持恢复会话文件(*.jsonl)"}
+    stem = safe[: -len(".jsonl")]
+    task_id = _trash_task_id(stem)
+    dest = sessions_root / f"{task_id}.jsonl"
+    if dest.exists():
+        return 409, {"detail": f"会话 {task_id} 已存在,无法恢复"}
+    src.replace(dest)
+    for candidate in _TRASH_DIR.iterdir():
+        if candidate.is_file() and candidate.name.startswith(f"{stem}.") and not candidate.name.endswith(".jsonl"):
+            trace_dest = trace_path_for(sessions_root, task_id)
+            if not trace_dest.exists():
+                candidate.replace(trace_dest)
+            break
+    return 200, {"ok": True, "taskId": task_id}
+
+
+def _trash_clear() -> tuple[int, dict[str, Any]]:
+    """清空回收站(不可恢复——客户端必须先确认)。"""
+    count = 0
+    if _TRASH_DIR.is_dir():
+        for path in _TRASH_DIR.iterdir():
+            if path.is_file():
+                try:
+                    path.unlink()
+                    count += 1
+                except OSError:
+                    pass
+    return 200, {"ok": True, "cleared": count}
+
+
 def _plugins_payload(workspace: Path) -> list[dict[str, Any]]:
     """插件市场 = 内置工具(builtin)+ 技能(markdown 扫描)。
 
@@ -1911,13 +2368,17 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if parts == ["automations"]:
             self._send_json(200, [])
             return
+        # /commands:斜杠命令注册表 + 技能清单(工作台输入面板的数据源)。
+        if parts == ["commands"]:
+            self._send_json(200, _commands_payload(self.workspace))
+            return
         if parts == ["plugins"]:
             self._send_json(200, _plugins_payload(self.workspace))
             return
         if parts == ["models"]:
             # 自定义条目在前(与用户实际模型匹配),内置 preset 在后(默认
-            # preset 排第一,前端首载落在它上)。apiKey 绝不回传——只有
-            # hasKey 布尔;前端编辑留空 = 保留原值。
+            # preset 排第一,前端首载落在它上)。密钥本体在 ~/.sigma/.env,
+            # 这里只有变量名 apiKeyEnv 与 hasKey 布尔,均非机密。
             payloads: list[dict[str, Any]] = []
             for entry in _models_registry_read().get("models", []):
                 payloads.append(
@@ -1930,7 +2391,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                         "baseUrl": str(entry.get("baseUrl") or ""),
                         "protocol": str(entry.get("protocol") or "openai-compat"),
                         "effortStyle": str(entry.get("effortStyle") or "reasoning_effort"),
-                        "hasKey": bool(entry.get("apiKey")),
+                        "apiKeyEnv": str(entry.get("apiKeyEnv") or ""),
+                        # 兼容迁移窗口:旧条目若还残留明文 apiKey,hasKey 别突然翻 false
+                        "hasKey": bool(entry.get("apiKeyEnv") or entry.get("apiKey")),
                     }
                 )
             default = _default_preset()
@@ -1959,6 +2422,21 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self._send_json(200, payloads)
             return
         # /memory:契约之外的附加数据面(工作台"记忆"区)。
+        # /system/status:工作台状态(底部菜单状态区)。
+        if parts == ["system", "status"]:
+            self._send_json(
+                200,
+                _system_status(root, self.workspace, self.server.server_address[1]),
+            )
+            return
+        # /system/addresses:局域网访问地址(手机访问面板)。
+        if parts == ["system", "addresses"]:
+            self._send_json(200, {"urls": _local_addresses(self.server.server_address[1])})
+            return
+        # /system/trash:会话回收站清单(删除先入回收站,这里是 second chance)。
+        if parts == ["system", "trash"]:
+            self._send_json(200, {"entries": _trash_payload()})
+            return
         if parts == ["memory"]:
             self._send_json(200, _memory_payload(self.workspace))
             return
@@ -1983,6 +2461,14 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self._send_json(200 if ok else 400, {"ok": ok, "detail": detail})
             return
         # 模型设置:新增/更新(留空 apiKey=保留原值)与移除自定义条目。
+        # 回收站:恢复 / 清空(清空不可恢复,客户端必须先确认)。
+        if parts == ["api", "v1", "system", "trash", "restore"]:
+            body = self._read_json_body()
+            self._send_json(*_trash_restore(self.sessions_root, str(body.get("name") or "")))
+            return
+        if parts == ["api", "v1", "system", "trash", "clear"]:
+            self._send_json(*_trash_clear())
+            return
         if parts == ["api", "v1", "models", "save"]:
             self._send_json(*_save_model_entry(self._read_json_body()))
             return
@@ -2137,7 +2623,9 @@ def make_server(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="sigma 工作台桥接服务(只读)")
-    parser.add_argument("--host", default="127.0.0.1")
+    # 默认 0.0.0.0(星辰 2026-10-03 拍板):手机访问是默认能力,重启不再需要带参。
+    # 无鉴权——只在可信网络运行,启动日志有提醒。
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8301)
     parser.add_argument("--sessions-dir", default=None, help="会话目录,默认 ~/.sigma/sessions")
     parser.add_argument("--workspace", default=None, help="工作区根,默认当前目录")
@@ -2176,6 +2664,9 @@ def main(argv: list[str] | None = None) -> int:
         dist_dir=dist_dir,
     )
     print(f"sigma 工作台桥接(只读):http://{args.host}:{args.port}")
+    if args.host == "0.0.0.0":
+        # 监听全网卡时必须把无鉴权这件事说到脸上(成熟工具的通用做法)。
+        print("  ⚠ 监听 0.0.0.0:同一网络内任何人都能打开工作台(无登录鉴权),请只在可信网络运行。")
     print(f"  会话目录  {sessions_root}")
     print(f"  工作区    {workspace}")
     print(f"  前端产物  {dist_dir}{'(存在)' if dist_dir.is_dir() else '(未构建)'}")

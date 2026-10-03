@@ -48,6 +48,23 @@ exclude 与大文件：**全走 git 原生机制，不自写匹配器**
     git 不在 PATH、初始化失败、命令报错——一律降级为"本次不 checkpoint"，
     **不抛异常、不阻断任务**（checkpoint 失败不该让用户丢会话）。
     可用性由 :attr:`available` 与调用方（CLI 横幅）如实展示，不静默变弱。
+
+生命周期与欠账回收(2026-10-03,与用户确认)
+    水位治理只治"总量尖峰"——低于水位时一切只进不出,这正是"文件债"
+    的稳态来源。回收因此从**阈值触发**补成**生命周期触发**,三个入口:
+
+    1. 会话启动清扫(:meth:`startup_sweep`,产品壳建会话时调):重试欠账
+       prune、摘崩溃残留的 ``index.lock``、清零分支孤儿、按 TTL 回收过期分支;
+    2. 会话收尾(:meth:`close_session`,产品壳退出时调):gc 打包 → 水位
+       → 回收旧分支;
+    3. mark 热路径上的水位检查(批次8 原样保留,治尖峰)。
+
+    回收语义一句话:**正在跑的不能动**(闲置不足 min_idle 的分支可能是
+    并行的活会话),**最近关掉的留一份**(跨会话反悔只对"上一次"有用),
+    **再早的过期作废**(TTL)。当前会话自己的分支任何路径都不删。
+    代价说清楚:闲置超过 TTL 却还开着的会话,历史快照会被回收——影子库
+    是软保障,丢回滚点不丢工作区,下一个 mark 以孤儿基线重新开始
+    (与批次7 的竞态边界同一姿态)。
 """
 
 from __future__ import annotations
@@ -108,6 +125,29 @@ WATERMARK_MIN_IDLE_S = 3600.0
 #: 水位检查的降频间隔:每 N 次 mark 用纯文件遍历 du 一次库目录。
 #: du 不贵,但它不该出现在**每个写批次**的热路径上——降频到 1/N。
 WATERMARK_SCAN_INTERVAL = 20
+
+# ----------------------------------------------------------------------
+# 生命周期回收(2026-10-03:治"低于水位时只进不出"的稳态债)
+# ----------------------------------------------------------------------
+
+#: 收尾/清扫时,**非当前**分支保留的"最近已结束会话"数量。
+#: 跨会话反悔只对"上一次"有意义,留更多只是把债往后挪。
+RETIRE_KEEP_ENDED = 1
+
+#: 已结束分支的 TTL(秒):闲置超过它,连"最近一份"的资格也没有。
+#: 7 天——更早的分支反悔价值趋零;还开着的活会话由 min_idle 闸保护,
+#: 不看 TTL(见 retire_ended_branches 的判定顺序)。
+RETIRE_TTL_S = 7 * 86400.0
+
+#: gc --prune=now 失败时在库根写的欠条文件名。**静默失败的孤儿对象
+#: 永远没人认领**(实测:24MB、零分支的库里躺着整库对象)——写下欠条,
+#: 下次任何清扫入口先还账。
+NEEDS_PRUNE_MARKER = "sigma-needs-prune"
+
+#: stale ``index.lock`` 的最小年龄(秒)。活 add 持锁 ≤ git 命令超时
+#: (默认 60s),超龄的锁只可能是崩溃残留;不摘的代价是永久的——
+#: mark 的 ``add -A`` 每次都失败,checkpoint 整个会话静默失效。
+STALE_LOCK_MIN_AGE_S = 600.0
 
 EXCLUDES_HEADER = (
     "# 本文件由 sigma 的影子 checkpoint 生成，每次 mark 前刷新，请勿手改。\n"
@@ -583,7 +623,7 @@ class ShadowCheckpoint:
         先做**文件级**存在性检查而不是 ``_ensure_ready``——懒基线（G65 修订）意味着
         没写过文件的会话根本没有库，收尾 gc 不许凭空把它造出来。
         """
-        if not (self._root / "HEAD").exists():
+        if not self._repo_exists():
             return False
         self._ensure_ready()
         if self._ready is not True:
@@ -600,6 +640,150 @@ class ShadowCheckpoint:
             timeout_s=timeout_s,
         )
         return out.returncode == 0
+
+    # ------------------------------------------------------------------
+    # 生命周期回收(2026-10-03):启动清扫 / 会话收尾 / 欠账重试
+    # ------------------------------------------------------------------
+
+    def _repo_exists(self) -> bool:
+        """文件级存在性检查——懒基线(G65)的执行点:没写过文件的会话没有库,
+        清扫/收尾不许凭空把它造出来(:meth:`gc` 同款判据)。"""
+        return (self._root / "HEAD").exists()
+
+    def _object_count(self) -> int:
+        """库内对象总数(loose + pack)——"库里有货"的判据,一次子进程的开销。"""
+        out = self._git("count-objects", "-v")
+        total = 0
+        for line in out.stdout.splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() in ("count", "in-pack"):
+                try:
+                    total += int(value.strip())
+                except ValueError:
+                    continue
+        return total
+
+    def _marker_path(self) -> Path:
+        """欠账标记:``gc --prune=now`` 失败时写,成功清账时删。"""
+        return self._root / NEEDS_PRUNE_MARKER
+
+    def _retry_pending_prune(self) -> None:
+        """上次 gc 失败的欠账:有标记就再试一次,成功即销账。
+
+        失败就继续留着标记——欠条不因一次还不上就撕掉。
+        """
+        try:
+            if self._marker_path().exists():
+                self._gc_prune()
+        except OSError:
+            pass
+
+    def _clear_stale_index_lock(self) -> None:
+        """摘崩溃残留的 ``index.lock``。
+
+        并发边界:活 add 持锁 ≤ git 命令超时(默认 60s),所以只摘年龄超过
+        :data:`STALE_LOCK_MIN_AGE_S` 的锁——并行会话正在用的锁绝不会"老"
+        到被误摘。不摘的代价是永久的:mark 的 ``add -A`` 每次都失败,
+        checkpoint 整个会话静默失效(保险丝烧断了,还没人听见响)。
+        """
+        lock = self._root / "index.lock"
+        try:
+            if lock.exists() and time.time() - lock.stat().st_mtime > STALE_LOCK_MIN_AGE_S:
+                lock.unlink()
+        except OSError:
+            pass
+
+    def retire_ended_branches(
+        self,
+        *,
+        keep: int = RETIRE_KEEP_ENDED,
+        ttl_s: float = RETIRE_TTL_S,
+    ) -> int:
+        """按生命周期回收"已结束会话"的分支,返回**删成功**的分支数。
+
+        判定顺序(缺一不可):
+
+        1. **当前分支绝不进池**——它是本会话的后悔药,任何路径都不删;
+        2. **闲置不足 min_idle 的分支不进池**——可能是正在跑的并行会话
+           (R4 同款判据,与水位治理共用 ``watermark_min_idle_s``);
+        3. 池内(= 已结束)分支**新 → 旧**:前 ``keep`` 个保留
+           ("最近关掉的留一份"),其余删除;
+        4. 闲置超过 ``ttl_s`` 的无条件删除——连"最近一份"的资格也没有。
+
+        prune 批量化:这里按**规则**删、删完统一 gc 一次,不像水位那样
+        "删一个量一次"——本方法没有"到水位即停"的需求,一次释放更省。
+        删失败的分支留着,下个周期再试(软保障,不抛)。
+        """
+        if not self._repo_exists():
+            return 0
+        self._ensure_ready()
+        if self._ready is not True:
+            return 0
+        now = time.time()
+        pool: list[tuple[str, float]] = []  # (分支, 闲置秒),_branches_by_age 升序
+        for branch, last_ts in self._branches_by_age():
+            if branch == self._branch:
+                continue
+            idle = now - last_ts
+            if idle < self._watermark_min_idle_s:
+                continue  # 可能是正在跑的并行会话
+            pool.append((branch, idle))
+        doomed: list[str] = []
+        for index, (branch, idle) in enumerate(reversed(pool)):  # 新 → 旧
+            if idle >= ttl_s or index >= keep:
+                doomed.append(branch)
+        deleted = 0
+        for branch in doomed:
+            if self._git("update-ref", "-d", f"refs/heads/{branch}").returncode == 0:
+                deleted += 1
+        if deleted:
+            self._gc_prune()
+        return deleted
+
+    def startup_sweep(self) -> None:
+        """会话启动清扫:还欠账 → 摘 stale 锁 → 清零分支孤儿 → 回收过期分支。
+
+        与水位治理的分工:水位治"总量尖峰",清扫治"时间累积"。
+        保险丝语义:任何失败都不抛——清扫失败只影响这一次,
+        下个会话启动再来;绝不阻断会话启动。
+        """
+        if not self._repo_exists():
+            return
+        self._clear_stale_index_lock()
+        self._retry_pending_prune()
+        if not self._branches_by_age() and self._object_count() > 0:
+            # 零分支却躺着对象:全是没人认领的孤儿——删分支后 gc 失败年代的
+            # 旧账。没有夹子就没有触发点,水位与回收都永远轮不到它,直接还账。
+            # 注意 index 也引用对象:库没分支了,它必然是上个会话的残档,
+            # 直接删掉再 prune 才干净(下一个 mark 的 add -A 会原样重建;
+            # 不用 read-tree --empty,它会顺手物化空树对象)。
+            try:
+                (self._root / "index").unlink()
+            except OSError:
+                pass
+            self._gc_prune()
+        try:
+            self.retire_ended_branches()
+        except Exception:  # noqa: BLE001 — 保险丝语义,见上
+            pass
+
+    def close_session(self) -> None:
+        """会话收尾(产品壳退出时调):gc 打包 → 水位 → 生命周期回收。
+
+        顺序:先 gc 打包(本会话的 loose 对象全体受益),再查水位
+        (批次8 原语义,收尾是第二个触发点),最后回收旧分支——
+        回收放最后,拔完夹子一次 prune 释放到位;收尾前若有欠账先还。
+        保险丝语义:任何一步失败都不抛,收尾不打扰退出。
+        """
+        if not self._repo_exists():
+            return
+        self._retry_pending_prune()
+        try:
+            self.gc()
+            self.enforce_watermark()
+            self.retire_ended_branches()
+        except Exception:  # noqa: BLE001 — 保险丝语义
+            pass
 
     # ------------------------------------------------------------------
     # 水位治理(P4-批次8:防止工作区被影子库撑爆——批次7 实测过 803MB 单库)
@@ -682,8 +866,8 @@ class ShadowCheckpoint:
         默认的 2 周宽限会把对象留在盘上,水位永远下不来(G121 的注入靶)。
         ``gc.packRefs=false`` 延续松散 ref 不变量(见 :meth:`gc`)。
         """
-        self._git("reflog", "expire", "--expire=now", "--all")
-        self._git(
+        ok_reflog = self._git("reflog", "expire", "--expire=now", "--all").returncode == 0
+        ok_gc = self._git(
             "-c",
             "gc.autoDetach=false",
             "-c",
@@ -691,7 +875,18 @@ class ShadowCheckpoint:
             "gc",
             "--quiet",
             "--prune=now",
-        )
+        ).returncode == 0
+        # 失败不再静默:写欠条,下次清扫入口重试(见 _retry_pending_prune)。
+        # gc 挂一次不该等于孤儿对象永生——静默失败的代价实测过:
+        # 一个 24MB、零分支的库里躺着整库没人认领的对象。
+        try:
+            marker = self._marker_path()
+            if ok_reflog and ok_gc:
+                marker.unlink(missing_ok=True)
+            else:
+                marker.touch()
+        except OSError:
+            pass
 
     def _cleanup_over_watermark(self, size: int) -> int:
         """LRU 清理梯子,返回治理后的库大小。**当前会话的分支绝不删。**

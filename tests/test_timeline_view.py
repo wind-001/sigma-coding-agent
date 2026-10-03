@@ -191,14 +191,52 @@ def test_g870_trace_values_win_over_approximation(tmp_path: Path) -> None:
     assert r2.latency_ms == 2100
     # 工具时长从 trace 配对而来
     assert r1.tools[0].duration_ms == 400
-    # 状态与墙钟来自 trace（精确）
+    # 状态与执行耗时来自 trace（精确）:LLM 0.94 + 工具 0.4 + LLM 2.1 = 3.44
+    # (2026-10-03 起口径改为「累计执行时间」,不含轮间空闲;本 fixture 无空闲)
     assert report.status == "completed"
     assert report.wall_approx is False
-    assert abs((report.wall_seconds or 0) - 3.7) < 1e-6
+    assert abs((report.wall_seconds or 0) - 3.44) < 1e-6
 
     rendered = "\n".join(render_timeline(report))
     assert "940ms" in rendered
     assert "≈" not in rendered  # 全部精确值时近似标记消失
+
+
+def test_wall_excludes_idle_between_turns(tmp_path: Path) -> None:
+    """执行耗时不含轮间空闲(2026-10-03 实测冤案:两轮各 ~2s,墙钟报 24s)。
+
+    fixture:llm1 [100,102] · tool [102.5,103] · 用户看回复+打字 600s · llm2 [703,705]
+    旧口径墙钟 = 605s;新口径 = 2 + 0.5 + 2 = 4.5s。
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    session_file = _write_session(root)
+    trace_file = root / f"{SID}.trace.jsonl"
+    trace_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"ts": T0, "t": 100.0, "kind": "llm_requested", "round": 1}),
+                json.dumps(
+                    {"ts": T1, "t": 102.0, "kind": "llm_end", "round": 1, "latency_ms": 2000}
+                ),
+                json.dumps({"ts": T2, "t": 102.5, "kind": "tool_start", "name": "read"}),
+                json.dumps(
+                    {"ts": T2, "t": 103.0, "kind": "tool_end", "name": "read", "ok": True}
+                ),
+                json.dumps({"ts": T3, "t": 703.0, "kind": "llm_requested", "round": 2}),
+                json.dumps(
+                    {"ts": T3, "t": 705.0, "kind": "llm_end", "round": 2, "latency_ms": 2000}
+                ),
+                json.dumps({"ts": T3, "t": 705.5, "kind": "turn_end", "status": "completed"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_timeline(SID, session_file, trace_file)
+
+    assert report.wall_approx is False
+    assert abs((report.wall_seconds or 0) - 4.5) < 1e-6
 
 
 # ---------------------------------------------------------------------------

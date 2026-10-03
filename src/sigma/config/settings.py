@@ -41,13 +41,12 @@ TAVILY_ENV_VAR = "TAVILY_API_KEY"
 FIRECRAWL_ENV_VAR = "FIRECRAWL_API_KEY"
 
 # 用户级配置目录：**在 git 仓库之外**，所以它不会被误提交。
-# 项目根的 .env 也可用（已加进 .gitignore），但仓库外的那个更安全。
+# 2026-10-03 拍板：密钥的文件来源**只有这一个**。项目根 ``.env`` 曾经是
+# 第二候选，已退出解析链——两处都能放 key 时，"改了哪个才生效"
+# 是一类纯靠猜的排查问题；统一到一处后这个问题不存在了。
 USER_CONFIG_DIR = Path.home() / ".sigma"
 
-CANDIDATE_FILES: tuple[Path, ...] = (
-    USER_CONFIG_DIR / ".env",
-    Path.cwd() / ".env",
-)
+CANDIDATE_FILES: tuple[Path, ...] = (USER_CONFIG_DIR / ".env",)
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -75,7 +74,7 @@ def resolve_api_key(
 ) -> tuple[str | None, str]:
     """按优先级找 API key。
 
-    优先级（**高 → 低**）：命令行 > 环境变量 > 用户级 ``.env`` > 项目级 ``.env``
+    优先级（**高 → 低**）：命令行 > 环境变量 > ``~/.sigma/.env``
 
     "环境变量高于文件"是有意的：临时想换个 key 时
     ``export`` 一句就该生效，不必去改文件。

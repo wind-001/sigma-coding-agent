@@ -180,6 +180,10 @@ def build_timeline(
         tool_durations: dict[int, list[int]] = {}
         t_first: float | None = None
         t_last: float | None = None
+        # 执行耗时(2026-10-03):LLM 区间与工具区间的覆盖时长,轮间空闲不计。
+        busy: list[tuple[float, float]] = []
+        tool_starts: dict[int, list[float]] = {}
+        llm_start: float | None = None
         for entry in lines:
             t = entry.get("t")
             if isinstance(t, (int, float)):
@@ -189,7 +193,12 @@ def build_timeline(
             kind = entry.get("kind")
             if kind == "llm_requested":
                 trace_round += 1
+                if isinstance(t, (int, float)):
+                    llm_start = float(t)
             elif kind == "llm_end":
+                if isinstance(t, (int, float)) and llm_start is not None:
+                    busy.append((llm_start, float(t)))
+                    llm_start = None
                 if 0 < trace_round <= len(rounds):
                     slot = rounds[trace_round - 1]
                     latency = entry.get("latency_ms")
@@ -199,12 +208,19 @@ def build_timeline(
                     ttft = entry.get("ttft_ms")
                     if isinstance(ttft, (int, float)):
                         slot["ttft"] = round(float(ttft))
+            elif kind == "tool_start":
+                if isinstance(t, (int, float)) and trace_round > 0:
+                    tool_starts.setdefault(trace_round, []).append(float(t))
             elif kind == "tool_end":
                 duration = entry.get("duration_ms")
                 if isinstance(duration, (int, float)):
                     tool_durations.setdefault(trace_round, []).append(
                         round(float(duration))
                     )
+                # 与 tool_start 按到达序一一配对,落一条忙碌区间
+                starts = tool_starts.get(trace_round) or []
+                if isinstance(t, (int, float)) and starts:
+                    busy.append((starts.pop(0), float(t)))
             elif kind == "approval":
                 approvals.append(
                     ApprovalView(
@@ -232,9 +248,24 @@ def build_timeline(
                     )
                 )
             rounds[round_no - 1]["tools"] = paired
-        if t_first is not None and t_last is not None:
-            wall_seconds = round(t_last - t_first, 3)
+        # 执行耗时 = LLM 区间 ∪ 工具区间(合并重叠)的覆盖时长——**不含轮间空闲**:
+        # 用户看回复、打字的间隔不该记在 agent 头上(实测:两轮各 ~2s,墙钟却 24s)。
+        # 追踪残缺到没有任何可配对区间时,退回首尾差并如实标 approx。
+        busy.sort()
+        merged: list[list[float]] = []
+        for start, end in busy:
+            if end < start:
+                continue
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        if merged:
+            wall_seconds = round(sum(end - start for start, end in merged), 3)
             wall_approx = False
+        elif t_first is not None and t_last is not None:
+            wall_seconds = round(t_last - t_first, 3)
+            wall_approx = True
     elif first_epoch is not None and last_epoch is not None:
         wall_seconds = round(max(0.0, last_epoch - first_epoch), 3)
 
@@ -369,7 +400,7 @@ def render_timeline(report: TimelineReport) -> list[str]:
     if report.tool_errors:
         tail.append(f"工具错误 {report.tool_errors}")
     if report.wall_seconds is not None:
-        tail.append(("≈" if report.wall_approx else "") + f"总耗时 {report.wall_seconds:.1f}s")
+        tail.append(("≈" if report.wall_approx else "") + f"执行耗时 {report.wall_seconds:.1f}s")
     if report.status:
         tail.append(f"状态 {report.status}")
     if tail:

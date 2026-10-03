@@ -115,12 +115,51 @@ export interface Plugin {
   builtin: boolean
 }
 
+/** 斜杠命令元数据(GET /commands;输入面板数据源,2026-10-03)。 */
+export interface CommandInfo {
+  name: string
+  /** 参数提示(如 "<序号>");空 = 无参数 */
+  args: string
+  description: string
+}
+
+/** 技能条目(面板"技能"分区;选中即填入调用提示语)。 */
+export interface SkillInfo {
+  name: string
+  description: string
+}
+
+/** GET /commands 的载荷:命令注册表 + 技能清单,面板的单一事实源。 */
+export interface CommandsPayload {
+  commands: CommandInfo[]
+  skills: SkillInfo[]
+}
+
+/** 工作台状态(底部菜单状态区,GET /system/status)。 */
+export interface SystemStatus {
+  version: string
+  workspace: string
+  sessions: number
+  uptimeSeconds: number
+  port: number
+}
+
+/** 回收站条目(删除的会话/trace 移入 ~/.sigma/trash,可恢复)。 */
+export interface TrashEntry {
+  name: string
+  taskId: string
+  kind: 'session' | 'trace' | 'other'
+  sizeBytes: number
+  /** 删除时间(文件 mtime 的 Unix 秒,近似) */
+  deletedAt: number
+}
+
 export interface ModelInfo {
   id: string
   name: string
   /** 档位取值由条目自己声明(空 = 该模型无档位,前端隐藏下拉) */
   efforts: string[]
-  /** 自定义条目(模型设置里配的 base_url/api_key/model_id) */
+  /** 自定义条目(模型设置里配的 base_url/model_id/密钥变量名) */
   custom?: boolean
   /** 实际发给 API 的 model id */
   modelId?: string
@@ -128,17 +167,22 @@ export interface ModelInfo {
   protocol?: string
   /** 档位随附方式:reasoning_effort(OpenAI 风格)| thinking(智谱风格) */
   effortStyle?: string
-  /** 是否已配密钥(密钥本身绝不回传前端) */
+  /**
+   * 密钥变量名(指向 ~/.sigma/.env 里的一行,如 DEEPSEEK_API_KEY)。
+   * 变量名不是机密,原样回传;密钥本体永不经过前端。
+   */
+  apiKeyEnv?: string
+  /** 是否已配密钥(变量名非空) */
   hasKey?: boolean
 }
 
-/** 模型设置表单(新增/更新);apiKey 留空 = 保留原值 */
+/** 模型设置表单(新增/更新);密钥本体只写 ~/.sigma/.env,这里只填变量名 */
 export interface ModelSaveInput {
   id?: string
   name: string
   protocol: string
   baseUrl: string
-  apiKey: string
+  apiKeyEnv: string
   modelId: string
   efforts: string[]
   effortStyle: string
@@ -357,6 +401,18 @@ export interface SigmaApiClient {
   /** 外部强制中断(协作式:在跑工具完成后于块边界停,状态已持久化可续跑)。
    *  interrupted=false 表示后端本就没在跑(滞留状态已被纠正)。 */
   stopTask?(taskId: string): Promise<{ interrupted: boolean }>
+  /** 斜杠命令注册表 + 技能清单(输入面板数据源;可选方法,mock 不实现)。 */
+  listCommands?(): Promise<CommandsPayload>
+  /** 工作台状态(版本/工作区/会话数/运行时长;可选方法,mock 不实现)。 */
+  getSystemStatus?(): Promise<SystemStatus>
+  /** 局域网访问地址(手机访问面板;可选方法,mock 不实现)。 */
+  listAddresses?(): Promise<{ urls: string[] }>
+  /** 会话回收站清单(可选方法,mock 不实现)。 */
+  listTrash?(): Promise<{ entries: TrashEntry[] }>
+  /** 从回收站恢复一个会话(*.jsonl;可选方法,mock 不实现)。 */
+  restoreTrash?(name: string): Promise<{ ok: boolean; taskId: string }>
+  /** 清空回收站(不可恢复,调用方必须先确认;可选方法,mock 不实现)。 */
+  clearTrash?(): Promise<{ ok: boolean; cleared: number }>
   /** 当前激活的工作区(可选方法,mock 不实现)。 */
   getWorkspace?(): Promise<WorkspaceState>
   /** 切换激活的工作区(可选方法,mock 不实现)。 */

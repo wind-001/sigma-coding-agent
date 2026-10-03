@@ -1,6 +1,9 @@
 import {
   type Automation,
+  type CommandsPayload,
   type CreateTaskInput,
+  type SystemStatus,
+  type TrashEntry,
   type ModelInfo,
   type ModelSaveInput,
   type PingInfo,
@@ -119,6 +122,36 @@ export class HttpSigmaClient implements SigmaApiClient {
 
   listPlugins(): Promise<Plugin[]> {
     return this.request<Plugin[]>('/plugins')
+  }
+
+  /** 斜杠命令注册表 + 技能清单(输入面板数据源,2026-10-03)。 */
+  listCommands(): Promise<CommandsPayload> {
+    return this.request<CommandsPayload>('/commands')
+  }
+
+  getSystemStatus(): Promise<SystemStatus> {
+    return this.request<SystemStatus>('/system/status')
+  }
+
+  listAddresses(): Promise<{ urls: string[] }> {
+    return this.request<{ urls: string[] }>('/system/addresses')
+  }
+
+  listTrash(): Promise<{ entries: TrashEntry[] }> {
+    return this.request<{ entries: TrashEntry[] }>('/system/trash')
+  }
+
+  restoreTrash(name: string): Promise<{ ok: boolean; taskId: string }> {
+    return this.request<{ ok: boolean; taskId: string }>('/system/trash/restore', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+  }
+
+  clearTrash(): Promise<{ ok: boolean; cleared: number }> {
+    return this.request<{ ok: boolean; cleared: number }>('/system/trash/clear', {
+      method: 'POST',
+    })
   }
 
   setPluginInstalled(pluginId: string, installed: boolean): Promise<Plugin> {

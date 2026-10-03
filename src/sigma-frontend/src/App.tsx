@@ -7,6 +7,8 @@ import PluginsPanel from './components/overlays/PluginsPanel'
 import HelpModal from './components/overlays/HelpModal'
 import FsPicker from './components/overlays/FsPicker'
 import ModelSettings from './components/overlays/ModelSettings'
+import TrashPanel from './components/overlays/TrashPanel'
+import PhoneAccessPanel from './components/overlays/PhoneAccessPanel'
 import { AppProvider, useAppState, useAppActions } from './store/appStore'
 
 function Toast(): JSX.Element | null {
@@ -45,6 +47,8 @@ function Shell(): JSX.Element {
       {state.overlay === 'fs-file' ? <FsPicker mode="file" /> : null}
       {state.overlay === 'model-settings' ? <ModelSettings /> : null}
       {state.overlay === 'help' ? <HelpModal /> : null}
+      {state.overlay === 'trash' ? <TrashPanel /> : null}
+      {state.overlay === 'phone-access' ? <PhoneAccessPanel /> : null}
       <Toast />
     </div>
   )

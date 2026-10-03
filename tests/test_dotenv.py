@@ -91,28 +91,22 @@ class TestResolveApiKey:
         assert key is None
         assert source == "未找到"
 
-    def test_candidate_order_defines_priority(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """顺序即优先级，第一个命中的胜出。
+    def test_default_candidates_are_user_level_only(self) -> None:
+        """默认文件来源**只有** ``~/.sigma/.env``。
 
-        这条锁的是 ``CANDIDATE_FILES`` 的语义——用户级 ``~/.sigma/.env``
-        排在项目级 ``./.env`` 之前（仓库外更安全）。
+        2026-10-03 拍板：项目根 ``.env`` 退出解析链。曾经它是第二候选——
+        两处都能放 key 时，"改了哪个才生效"是一类纯靠猜的排查问题；
+        统一到一处后这个问题不存在了。若有人把它加回候选列表，这条会失败。
         """
-        monkeypatch.delenv(ENV_VAR_NAME, raising=False)
-        first = tmp_path / "first.env"
-        second = tmp_path / "second.env"
-        first.write_text(f"{ENV_VAR_NAME}=first\n", encoding="utf-8")
-        second.write_text(f"{ENV_VAR_NAME}=second\n", encoding="utf-8")
+        from sigma.config.settings import CANDIDATE_FILES
 
-        key, _ = resolve_api_key(explicit=None, candidates=[first, second])
-        assert key == "first"
+        assert CANDIDATE_FILES == (USER_CONFIG_DIR / ".env",)
 
 
 def test_user_config_is_outside_repo() -> None:
     """``~/.sigma/.env`` 必须在仓库之外。
 
-    这是它比项目根 ``.env`` 更安全的**唯一**理由——
+    它现在是密钥**唯一的**文件来源——仓库之外才不可能被误提交；
     若哪天有人把它改成项目内路径，这条用例会失败。
     """
     assert USER_CONFIG_DIR == Path.home() / ".sigma"

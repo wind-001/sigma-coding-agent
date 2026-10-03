@@ -401,7 +401,7 @@ def _resolve_config(
     """解析配置。
 
     优先级（高 → 低）：``--api-key`` > 环境变量 ``SIGMA_API_KEY``
-    > ``~/.sigma/.env`` > ``./.env``
+    > ``~/.sigma/.env``（密钥唯一的文件来源）
 
     "环境变量高于文件"是有意的：临时换 key 时 ``export`` 一句就该生效，
     不必去改文件。
@@ -990,7 +990,7 @@ class SessionManager:
         会话间互不影响；TaskTool 的信箱状态也天然随会话走，不会串。
         工具实例仍共享（同一批对象），只有"谁注册了什么"这份账各自记。
         """
-        return InteractiveSession(
+        session = InteractiveSession(
             provider=self._provider,
             workspace_root=self._workspace,
             model=self._model,
@@ -1013,6 +1013,17 @@ class SessionManager:
             enable_repo_map=self._enable_repo_map,
             enable_extensions=self._enable_extensions,
         )
+        # 启动清扫(2026-10-03):借会话启动的时机做生命周期维护——还欠账、
+        # 摘崩溃残留的 index.lock、按 TTL 回收已结束分支。放在产品壳而不是
+        # SDK:清扫有**删除副作用**,回放/测试/单发路径构造会话时不该顺手删。
+        # 保险丝语义:清扫失败绝不阻断会话启动。
+        checkpoint = session.checkpoint
+        if checkpoint is not None:
+            try:
+                checkpoint.startup_sweep()
+            except Exception:  # noqa: BLE001 — 清扫失败不打扰启动
+                pass
+        return session
 
     # -- 查询 ---------------------------------------------------------------
 
@@ -1122,10 +1133,7 @@ class SessionManager:
         checkpoint = getattr(self._session, "checkpoint", None)
         if checkpoint is not None:
             try:
-                checkpoint.gc()
-                # 水位治理(批次8):收尾 gc 后是第二个触发点——退进度前
-                # 最后一次把库压回水位以下。失败静默,同 gc 的保险丝语义。
-                checkpoint.enforce_watermark()
+                checkpoint.close_session()
             except Exception:
                 # GC/水位是优化不是正确性：失败不打扰收尾（last_error 里留痕）。
                 pass

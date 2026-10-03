@@ -8,6 +8,7 @@ import {
   Folder,
   FolderOpen,
   LayoutGrid,
+  ListChecks,
   ListFilter,
   Pin,
   Plus,
@@ -15,7 +16,6 @@ import {
   Settings,
   Smartphone,
   Trash2,
-  User,
   X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -27,6 +27,7 @@ import {
 } from '../../api'
 import { matchStatusFilter, useAppActions, useAppState, type StatusFilter } from '../../store/appStore'
 import { formatRelative } from '../../lib/time'
+import FooterMenu from './FooterMenu'
 import './sidebar.css'
 
 /* ============================================================
@@ -73,9 +74,22 @@ interface SidebarTaskItemProps {
   onSelect: (taskId: string) => void
   /** 提供时条目悬停显示删除按钮 */
   onDelete?: (taskId: string) => void
+  /** 批量选择模式(2026-10-03):点条目=勾选,悬停删除隐藏 */
+  selectMode?: boolean
+  checked?: boolean
+  onToggleSelect?: (taskId: string) => void
 }
 
-function SidebarTaskItem({ task, variant, selected, onSelect, onDelete }: SidebarTaskItemProps): JSX.Element {
+function SidebarTaskItem({
+  task,
+  variant,
+  selected,
+  onSelect,
+  onDelete,
+  selectMode = false,
+  checked = false,
+  onToggleSelect,
+}: SidebarTaskItemProps): JSX.Element {
   const statusMeta = STATUS_META[task.status]
   const itemClassName = [
     'sidebar__item',
@@ -87,7 +101,22 @@ function SidebarTaskItem({ task, variant, selected, onSelect, onDelete }: Sideba
 
   return (
     <div className="sidebar__item-row">
-      <button type="button" className={itemClassName} title={task.title} onClick={() => onSelect(task.id)}>
+      <button
+        type="button"
+        className={itemClassName}
+        title={task.title}
+        onClick={() =>
+          selectMode && onToggleSelect !== undefined ? onToggleSelect(task.id) : onSelect(task.id)
+        }
+      >
+        {selectMode ? (
+          <span
+            className={`sidebar__item-check${checked ? ' sidebar__item-check--on' : ''}`}
+            aria-hidden="true"
+          >
+            {checked ? <Check size={12} /> : null}
+          </span>
+        ) : null}
         <span className="sidebar__item-main">
           <span
             className="sidebar__item-status"
@@ -99,7 +128,7 @@ function SidebarTaskItem({ task, variant, selected, onSelect, onDelete }: Sideba
         </span>
         <span className="sidebar__item-time">{formatRelative(task.updatedAt)}</span>
       </button>
-      {onDelete !== undefined ? (
+      {onDelete !== undefined && !selectMode ? (
         <button
           type="button"
           className="sidebar__item-del"
@@ -126,6 +155,14 @@ interface ProjectSectionProps {
   onSelectTask: (taskId: string) => void
   onCreateSession: (projectId: string) => void
   onDeleteTask: (taskId: string) => void
+  /** 批量删除(2026-10-03,星辰:入口在组头行,按项目勾选):
+   *  batchActive=本项目处于勾选模式;组头悬停显形清单图标切换 */
+  batchActive?: boolean
+  onToggleBatch?: () => void
+  selectedIds?: string[]
+  onToggleSelect?: (taskId: string) => void
+  onToggleSelectAll?: (allIds: string[]) => void
+  onBatchDelete?: (ids: string[]) => void
   /** 提供时组头悬停显示「移除工作区」(主工作区不提供该入口) */
   onRemove?: (projectId: string) => void
 }
@@ -140,6 +177,12 @@ function ProjectSection({
   onSelectTask,
   onCreateSession,
   onDeleteTask,
+  batchActive = false,
+  onToggleBatch,
+  selectedIds = [],
+  onToggleSelect,
+  onToggleSelectAll,
+  onBatchDelete,
   onRemove,
 }: ProjectSectionProps): JSX.Element {
   return (
@@ -186,7 +229,46 @@ function ProjectSection({
             <X size={13} aria-hidden="true" />
           </button>
         ) : null}
+        {/* 批量删除入口(星辰:放组头行)——悬停显形;勾选模式中常亮 */}
+        {onToggleBatch !== undefined ? (
+          <button
+            type="button"
+            className={`sidebar__group-batch${batchActive ? ' sidebar__group-batch--active' : ''}`}
+            aria-label={`批量删除「${project.name}」的会话`}
+            title="批量删除会话"
+            onClick={(event: React.MouseEvent<HTMLButtonElement>): void => {
+              event.stopPropagation()
+              onToggleBatch()
+            }}
+          >
+            <ListChecks size={14} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
+      {batchActive ? (
+        <div className="sidebar__batchbar">
+          <button
+            type="button"
+            className="sidebar__batchbar__btn"
+            onClick={(): void => onToggleSelectAll?.(tasks.map((task) => task.id))}
+          >
+            {tasks.length > 0 && tasks.every((task) => selectedIds.includes(task.id))
+              ? '全不选'
+              : '全选'}
+          </button>
+          <button
+            type="button"
+            className="sidebar__batchbar__btn sidebar__batchbar__btn--danger"
+            disabled={selectedIds.length === 0}
+            onClick={(): void => onBatchDelete?.([...selectedIds])}
+          >
+            删除({selectedIds.length})
+          </button>
+          <button type="button" className="sidebar__batchbar__btn" onClick={onToggleBatch}>
+            取消
+          </button>
+        </div>
+      ) : null}
       {collapsed ? null : (
         <div className="sidebar__group-items">
           {tasks.length === 0 ? (
@@ -200,6 +282,9 @@ function ProjectSection({
                 selected={selectedTaskId === task.id}
                 onSelect={onSelectTask}
                 onDelete={onDeleteTask}
+                selectMode={batchActive}
+                checked={selectedIds.includes(task.id)}
+                onToggleSelect={onToggleSelect}
               />
             ))
           )}
@@ -308,6 +393,36 @@ export default function Sidebar(): JSX.Element {
     }
   }
 
+  // ===== 批量删除(2026-10-03,星辰改:入口在项目组头行,按项目批量) =====
+  const [batchProjectId, setBatchProjectId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const toggleSelect = (taskId: string): void => {
+    setSelectedIds((prev) =>
+      prev.includes(taskId) ? prev.filter((id) => id !== taskId) : [...prev, taskId],
+    )
+  }
+  /** 进入/退出某项目的勾选模式;进入时顺手展开该组(折叠着勾选没意义)。 */
+  const handleToggleBatch = (projectId: string): void => {
+    setSelectedIds([])
+    if (batchProjectId === projectId) {
+      setBatchProjectId(null)
+      return
+    }
+    setBatchProjectId(projectId)
+    setCollapsedIds((prev) => prev.filter((id) => id !== projectId))
+  }
+  const handleToggleSelectAll = (allIds: string[]): void => {
+    const allSelected = allIds.length > 0 && allIds.every((id) => selectedIds.includes(id))
+    setSelectedIds(allSelected ? [] : allIds)
+  }
+  const handleBatchDelete = (ids: string[]): void => {
+    if (window.confirm(`确认删除所选 ${ids.length} 个会话?将移入回收站,执行中的会话会跳过。`)) {
+      setBatchProjectId(null)
+      setSelectedIds([])
+      void actions.deleteTasksBatch(ids)
+    }
+  }
+
   const handleStatusFilter = (filter: StatusFilter): void => {
     actions.setStatusFilter(filter)
     setFilterOpen(false)
@@ -344,10 +459,10 @@ export default function Sidebar(): JSX.Element {
           if (project.id === INBOX_PROJECT_ID) {
             return (
               <div key={project.id} className="sidebar__group">
-                <div className="sidebar__section-title">任务</div>
+                <div className="sidebar__section-title">随手问</div>
                 <div className="sidebar__group-items">
                   {projectTasks.length === 0 ? (
-                    <div className="sidebar__empty">暂无任务,按 Ctrl+N 新建</div>
+                    <div className="sidebar__empty">暂无会话;首页项目选「随手问」即可开始</div>
                   ) : (
                     projectTasks.map((task) => (
                       <SidebarTaskItem
@@ -375,6 +490,12 @@ export default function Sidebar(): JSX.Element {
               onSelectTask={handleSelectTask}
               onCreateSession={handleCreateSession}
               onDeleteTask={handleDeleteTask}
+              batchActive={batchProjectId === project.id}
+              onToggleBatch={() => handleToggleBatch(project.id)}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onToggleSelectAll={handleToggleSelectAll}
+              onBatchDelete={handleBatchDelete}
               onRemove={project.id === 'proj-sigma' ? undefined : handleRemoveWorkspace}
             />
           )
@@ -499,12 +620,16 @@ export default function Sidebar(): JSX.Element {
       <div className="sidebar__scroll">{renderList()}</div>
 
       <footer className="sidebar__user">
-        <div className="sidebar__avatar">
-          <User size={18} aria-hidden="true" />
-        </div>
-        <span className="sidebar__username">sigma 本机工作台</span>
+        {/* 用户区菜单(2026-10-03,对标成熟桌面端):头像=工作台菜单(状态/手机访问/回收站/帮助/设置) */}
+        <FooterMenu />
         <div className="sidebar__user-actions">
-          <button type="button" className="sidebar__icon-btn" aria-label="移动设备">
+          <button
+            type="button"
+            className="sidebar__icon-btn"
+            aria-label="手机访问"
+            title="手机访问"
+            onClick={(): void => actions.setOverlay('phone-access')}
+          >
             <Smartphone size={17} aria-hidden="true" />
           </button>
           <button

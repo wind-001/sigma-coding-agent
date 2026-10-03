@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, Folder, Gauge, GitBranch, Globe, Plus, ShieldCheck } from 'lucide-react'
 import Dropdown from './Dropdown'
 import FullAccessWarning from './FullAccessWarning'
+import SlashPalette, { useSlashItems, useSlashNav } from './SlashPalette'
 import { useAppActions, useAppState } from '../../store/appStore'
 import { ACCESS_OPTIONS, WEB_OPTIONS, type ModelInfo, type Project } from '../../api'
 
@@ -55,7 +56,18 @@ export default function Composer(): JSX.Element {
     }
   }, [plusOpen])
 
+  // 斜杠命令面板(2026-10-03,与 TaskDetail 同源逻辑):首页输入 "/" 弹出,
+  // Enter 建会话后命令文本由服务端拦截执行——/goal、/compact 之类在首页同样可用。
+  const slashItems = useSlashItems()
+  const slash = useSlashNav(state.draft, actions.setDraft, slashItems)
+
   const handleSend = (): void => {
+    // /new 本地拦截:首页建会话是纯 UI 动作(与 TaskDetail 同款)。
+    if (state.draft.trim() === '/new') {
+      void actions.createSessionInProject(state.activeProjectId)
+      actions.setDraft('')
+      return
+    }
     void actions.submitDraft()
   }
 
@@ -64,6 +76,7 @@ export default function Composer(): JSX.Element {
   }
 
   const handleTextareaKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (slash.handleKeyDown(event, (): void => handleSend())) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       handleSend()
@@ -128,14 +141,24 @@ export default function Composer(): JSX.Element {
       </div>
 
       <div className="composer__body">
-        <textarea
-          ref={textareaRef}
-          className="composer__textarea"
-          value={state.draft}
-          onChange={handleTextareaChange}
-          onKeyDown={handleTextareaKeyDown}
-          placeholder="描述你的任务,Enter 发送——会在当前项目下新建会话并开始执行"
-        />
+        <div className="wb-composer__inputwrap">
+          {slash.open ? (
+            <SlashPalette
+              items={slash.filtered}
+              activeIndex={slash.index}
+              onPick={slash.pick}
+              onHover={slash.setIndex}
+            />
+          ) : null}
+          <textarea
+            ref={textareaRef}
+            className="composer__textarea"
+            value={state.draft}
+            onChange={handleTextareaChange}
+            onKeyDown={handleTextareaKeyDown}
+            placeholder="描述你的任务,Enter 发送——会在当前项目下新建会话并开始执行"
+          />
+        </div>
       </div>
 
       <div className="composer__footer">
