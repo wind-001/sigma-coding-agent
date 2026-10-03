@@ -621,6 +621,8 @@ def test_execution_params_custom_model_entry(
     内置 preset 仍按名解析(reasoning_effort 风格)。"""
     for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
+    # 第二段(内置 preset)走全局密钥链:CI 上没有 ~/.sigma/.env,显式给一个
+    monkeypatch.setenv("SIGMA_API_KEY", "ci-global-key")
     monkeypatch.setenv("ZK_TEST_KEY", "zk-own-key")
     monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
     (tmp_path / "models.json").write_text(json.dumps({
@@ -1097,6 +1099,9 @@ def _web_session(
     藏身的地方:手写 registry 就绕过了出问题的装配代码)。"""
     monkey = pytest.MonkeyPatch()
     monkey.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("ok"))
+    # CI 上没有 ~/.sigma/.env:装配链要解析全局密钥,必须显式给一个
+    # (开发者本机有真密钥,所以这坑只在 CI 炸——2026-10-03 实测)。
+    monkey.setenv("SIGMA_API_KEY", "web-test-key")
     monkey.setattr(SERVER._WebKeys, "tavily", tavily)
     monkey.setattr(SERVER._WebKeys, "firecrawl", None)
     monkey.setattr(SERVER._WebKeys, "resolved", True)
@@ -1141,6 +1146,9 @@ def _web_session(
     藏身的地方:手写 registry 就绕过了出问题的装配代码)。"""
     monkey = pytest.MonkeyPatch()
     monkey.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("ok"))
+    # CI 上没有 ~/.sigma/.env:装配链要解析全局密钥,必须显式给一个
+    # (开发者本机有真密钥,所以这坑只在 CI 炸——2026-10-03 实测)。
+    monkey.setenv("SIGMA_API_KEY", "web-test-key")
     monkey.setattr(SERVER._WebKeys, "tavily", tavily)
     monkey.setattr(SERVER._WebKeys, "firecrawl", None)
     monkey.setattr(SERVER._WebKeys, "resolved", True)
