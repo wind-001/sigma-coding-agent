@@ -318,8 +318,18 @@ export interface TaskQueues {
   steering: string[]
   /** follow-up 队列(当前任务完成后逐条自动执行) */
   followups: string[]
-  /** 待确认的审批(变更前确认环) */
-  approvals: { id: string; tool: string; summary: string }[]
+  /** 待确认的审批(变更前确认环);args = 完整调用参数(安全审核卡可展开) */
+  approvals: { id: string; tool: string; summary: string; args?: Record<string, unknown> }[]
+  /** ask_user 待答问题(模型主动问的方向决策,真正等人选) */
+  questions: TaskQuestion[]
+}
+
+/** ask_user 问题卡:question + 候选 + 推荐下标(0 起,null = 无推荐) */
+export interface TaskQuestion {
+  id: string
+  question: string
+  options: string[]
+  recommended: number | null
 }
 
 /** 目录浏览(选择工作区用):只列子目录,不读文件内容。 */
@@ -380,6 +390,9 @@ export interface SigmaApiClient {
   editQueued?(taskId: string, kind: 'steering' | 'followup', index: number, text: string): Promise<void>
   /** 审批决策(变更前确认环)。 */
   decideApproval?(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
+  /** ask_user 选择回填(方向决策交还用户)。option 命中候选=常规选择;
+   *  非空不在候选=自由输入;dismiss=true=忽略本次(模型自行决定)。 */
+  answerQuestion?(taskId: string, questionId: string, option: string, dismiss?: boolean): Promise<void>
   /** 权限模式中途切换(human-in-the-loop):热替换审批闸,下一声工具调用生效。 */
   setTaskAccess?(taskId: string, access: string): Promise<void>
   /** 联网开关切换(默认关,要显式开)。

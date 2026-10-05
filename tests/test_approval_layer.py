@@ -35,7 +35,7 @@ from sigma.providers.base import NeverCancelled
 from sigma.providers.fake import FakeProvider
 from sigma.providers.messages import TextBlock
 from sigma.providers.stamps import from_epoch as ts
-from sigma.tools.builtin.ask_user import AskUserTool
+from sigma.tools.builtin.ask_user import IGNORE_SENTINEL, AskUserTool
 from sigma.tools.builtin.bash import BashTool
 from sigma.tools.builtin.write import WriteTool
 from sigma.sdk import InteractiveSession
@@ -475,3 +475,35 @@ async def test_ask_user_empty_answer_falls_back_to_recommendation() -> None:
 
     assert "未收到有效选择" in result.content[0].text  # type: ignore[union-attr]
     assert result.details["choice_index"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_user_free_text_answer_passes_through() -> None:
+    """自由输入(非空但不在候选):如实转给模型,不回退推荐项——
+    工作台问题卡文本框的语义(星辰 2026-10-04"留自由选择空间")。"""
+    async def ask(question: str, options: list[str], recommended: int | None) -> str:
+        return "先写测试再写实现,放到 tests/ 目录"
+
+    result = await _run_ask(AskUserTool(), _ctx(ask))
+
+    assert "用户自行输入" in result.content[0].text  # type: ignore[union-attr]
+    assert "先写测试再写实现" in result.content[0].text  # type: ignore[union-attr]
+    assert result.details["choice_index"] is None
+    assert result.details["choice"] == "先写测试再写实现,放到 tests/ 目录"
+    assert result.details["note"] == "自由输入"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_ignore_sentinel_lets_model_decide() -> None:
+    """忽略哨兵(工作台"忽略本次"按钮):告知模型用户看到了但不想选,
+    由模型自行决定——**并明令禁止重复问同样的问题**(2026-10-04 实测:
+    忽略后模型连问三轮,每轮阻塞等待,用户体感"卡住")。"""
+    async def ask(question: str, options: list[str], recommended: int | None) -> str:
+        return IGNORE_SENTINEL
+
+    result = await _run_ask(AskUserTool(), _ctx(ask))
+
+    assert "忽略本次提问" in result.content[0].text  # type: ignore[union-attr]
+    assert "不要再次调用 ask_user" in result.content[0].text  # type: ignore[union-attr]
+    assert result.details["choice_index"] is None
+    assert result.details["note"] == "用户忽略本次"

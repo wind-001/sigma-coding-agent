@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Activity, ArrowLeft, ArrowUp, ChevronDown, Database, Gauge, Globe, Pencil, Send, ShieldCheck, Square, X } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowUp, ChevronDown, Database, Gauge, Globe, HelpCircle, Pencil, Send, ShieldCheck, Square, X } from 'lucide-react'
 import {
   ACCESS_OPTIONS,
   apiClient,
@@ -9,10 +9,12 @@ import {
   type Task,
   type TaskEvent,
   type TaskQueues,
+  type TaskQuestion,
   type TaskTimeline,
 } from '../../api'
 import { buildMetricGroups, wallSummary } from '../../lib/metrics'
 import { formatDateTime } from '../../lib/time'
+import { maybeNotify } from '../../notify'
 import { useAppActions, useAppState } from '../../store/appStore'
 import Dropdown from './Dropdown'
 import FullAccessWarning from './FullAccessWarning'
@@ -61,11 +63,211 @@ function ToolChip({ event }: { event: TaskEvent }): JSX.Element {
 }
 
 /** 思考行:模型思考增量,弱化展示(图二的"思考 · 持续了 N 秒"位)。 */
-function ThinkingRow({ event }: { event: TaskEvent }): JSX.Element {
+/**
+ * 深度思考块(2026-10-04 星辰:可折叠+上下可滑动+蓝玻璃):
+ * 流式直播中默认展开,轮次结束后自动收起成一行摘要;头部点击随时展开/收起,
+ * 展开态正文区限高可滚动。默认展开与否由 live 驱动——收起是"完成态"。
+ */
+function ThinkingRow({ event, live = false }: { event: TaskEvent; live?: boolean }): JSX.Element {
+  const [open, setOpen] = useState<boolean>(live)
+  useEffect((): void => {
+    // 直播结束 → 自动收起;用户手动展开过就不再抢(以最后一次状态为准会
+    // 打架,这里取最简单也最符合"完成即收起"预期的语义)
+    if (!live) setOpen(false)
+  }, [live])
   return (
-    <div className="wb-thinking" title={event.text}>
-      <span className="wb-thinking__label">深度思考</span>
-      <span className="wb-thinking__text">{event.text}</span>
+    <div className={`wb-thinking${open ? ' wb-thinking--open' : ''}`}>
+      <button
+        type="button"
+        className="wb-thinking__head"
+        title={open ? '点击收起' : '点击展开'}
+        onClick={(): void => setOpen((prev: boolean) => !prev)}
+      >
+        <span className="wb-thinking__label">深度思考</span>
+        {!open ? <span className="wb-thinking__preview">{event.text}</span> : null}
+        <ChevronDown
+          size={13}
+          className={`wb-thinking__chevron${open ? ' wb-thinking__chevron--open' : ''}`}
+          aria-hidden="true"
+        />
+      </button>
+      {open ? <div className="wb-thinking__body">{event.text}</div> : null}
+    </div>
+  )
+}
+
+/**
+ * 安全审核卡(审批):头部标明"安全审核"+工具名,摘要单行截断,
+ * 完整调用参数可展开(human-in-the-loop 要让人看清楚批的是什么);
+ * 决策已发出时按钮禁用,防重复点击,决策落地靠队列轮询摘卡。
+ */
+function ApprovalCard({
+  item,
+  deciding,
+  onDecide,
+}: {
+  item: TaskQueues['approvals'][number]
+  deciding: boolean
+  onDecide: (decision: 'approve' | 'deny') => void
+}): JSX.Element {
+  const [open, setOpen] = useState<boolean>(false)
+  const hasArgs = item.args !== undefined && Object.keys(item.args).length > 0
+  return (
+    <div className="wb-approval">
+      <ShieldCheck size={16} className="wb-approval__icon" aria-hidden="true" />
+      <div className="wb-approval__main">
+        <div className="wb-approval__head">
+          <span className="wb-approval__label">安全审核</span>
+          <span className="wb-approval__tool">{item.tool}</span>
+        </div>
+        <span className="wb-approval__summary" title={item.summary}>{item.summary}</span>
+        {hasArgs ? (
+          <>
+            <button
+              type="button"
+              className="wb-approval__toggle"
+              onClick={(): void => setOpen((prev: boolean) => !prev)}
+            >
+              <ChevronDown size={12} className={open ? 'wb-approval__chevron--open' : ''} />
+              {open ? '收起参数' : '展开完整参数'}
+            </button>
+            {open ? (
+              <pre className="wb-approval__args">{JSON.stringify(item.args, null, 2)}</pre>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      <div className="wb-approval__actions">
+        <button
+          type="button"
+          className="wb-approval__btn wb-approval__btn--deny"
+          disabled={deciding}
+          onClick={(): void => onDecide('deny')}
+        >
+          拒绝
+        </button>
+        <button
+          type="button"
+          className="wb-approval__btn wb-approval__btn--approve"
+          disabled={deciding}
+          onClick={(): void => onDecide('approve')}
+        >
+          {deciding ? '已决策…' : '批准'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * ask_user 问题卡(方向决策交还用户,样式参照市面成熟问询 UI):
+ * **两段式防误触**(星辰 2026-10-04)——点选项只是"选中"(圆点填充、边框
+ * 高亮),可随时改选;点「确认提交」才真正回填执行线程。自定义文本与
+ * 选项互斥:输入文字即改走自由输入,选中项被清掉,反之亦然。
+ * 「忽略本次」是显式动作,仍直接生效(告诉模型"用户看到了但不想选")。
+ * 多个问题排队时**一次只出一张**(星辰 2026-10-04"一个一个选,避免上下
+ * 对齐"),答完由队列轮询顶上下一张;queued=排在其后的数量。
+ * 已应答后整卡禁用置灰,由队列轮询摘除。
+ */
+function QuestionCard({
+  item,
+  onAnswer,
+  onDismiss,
+  queued = 0,
+}: {
+  item: TaskQuestion
+  onAnswer: (option: string) => void
+  onDismiss: () => void
+  queued?: number
+}): JSX.Element {
+  const [customText, setCustomText] = useState<string>('')
+  const [selected, setSelected] = useState<string | null>(null)
+  const [answered, setAnswered] = useState<boolean>(false)
+  const customReady: boolean = customText.trim() !== ''
+  const canConfirm: boolean = !answered && (customReady || selected !== null)
+
+  const confirm = (): void => {
+    if (!canConfirm) return
+    setAnswered(true)
+    if (customReady) {
+      onAnswer(customText.trim())
+    } else {
+      onAnswer(selected as string)
+    }
+  }
+  return (
+    <div className={`wb-question${answered ? ' wb-question--answered' : ''}`}>
+      <div className="wb-question__head">
+        <HelpCircle size={16} className="wb-question__icon" aria-hidden="true" />
+        <span className="wb-question__label">需要你决定</span>
+        {queued > 0 ? (
+          <span className="wb-question__queued" title="答完这张,下一张自动出现">
+            还有 {queued} 个问题排队
+          </span>
+        ) : null}
+      </div>
+      <div className="wb-question__text">{item.question}</div>
+      <div className="wb-question__options">
+        {item.options.map((option: string, index: number): JSX.Element => (
+          <button
+            key={option}
+            type="button"
+            disabled={answered}
+            className={`wb-question__option${item.recommended === index ? ' wb-question__option--recommended' : ''}${selected === option && !customReady ? ' wb-question__option--selected' : ''}`}
+            onClick={(): void => {
+              setSelected(option)
+              setCustomText('')
+            }}
+          >
+            <span className="wb-question__dot" aria-hidden="true" />
+            {item.recommended === index ? (
+              <span className="wb-question__badge">推荐</span>
+            ) : null}
+            <span className="wb-question__option-text">{option}</span>
+          </button>
+        ))}
+      </div>
+      <div className="wb-question__custom">
+        <input
+          type="text"
+          className="wb-question__custom-input"
+          value={customText}
+          disabled={answered}
+          placeholder="都不合适？直接输入你的想法…"
+          onFocus={(): void => setSelected(null)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>): void => {
+            setCustomText(e.target.value)
+            if (e.target.value.trim() !== '') setSelected(null)
+          }}
+          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>): void => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              confirm()
+            }
+          }}
+        />
+      </div>
+      <div className="wb-question__foot">
+        <button
+          type="button"
+          className="wb-question__ignore"
+          disabled={answered}
+          onClick={(): void => {
+            setAnswered(true)
+            onDismiss()
+          }}
+        >
+          忽略本次（由模型自行决定）
+        </button>
+        <button
+          type="button"
+          className="wb-question__confirm"
+          disabled={!canConfirm}
+          onClick={confirm}
+        >
+          {answered ? '已提交…' : '确认提交'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -101,6 +303,8 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
   /** 排队项行内编辑(星辰 2026-10-02"排队文本可重新编辑")。 */
   const [editTarget, setEditTarget] = useState<{ kind: 'steering' | 'followup'; index: number } | null>(null)
   const [editText, setEditText] = useState<string>('')
+  /** 已发出决策的审批卡(按钮禁用防重复点击);卡片由队列轮询摘除。 */
+  const [decidingIds, setDecidingIds] = useState<ReadonlySet<string>>(new Set())
 
   const handleSaveEdit = (): void => {
     if (editTarget === null || editText.trim() === '') return
@@ -157,13 +361,72 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
     }
   }, [task.id, isRunning, task.updatedAt])
 
+  // ===== 系统通知(human-in-the-loop,星辰 2026-10-03 拍板 Web 通知 API):
+  // 用户没在看面板(最小化/面板不在最上方)时,审批待确认与任务终态要发
+  // 系统通知追人;正看着就只走面板内 UI。变化检测完全架在既有轮询上,
+  // 不发任何新请求;判定与去重逻辑都在 notify.ts。 =====
+  const prevStatusRef = useRef<Task['status']>(task.status)
+  const prevApprovalsRef = useRef<TaskQueues['approvals']>([])
+  const prevQuestionsRef = useRef<TaskQuestion[]>([])
+  // 切换任务时先对齐基线:上一个任务的状态/审批数不能算成这个任务的变化。
+  // (声明在检测 effect 之前,同一轮渲染里基线先重置、检测后执行。)
+  useEffect((): void => {
+    prevStatusRef.current = task.status
+    prevApprovalsRef.current = queues?.approvals ?? []
+    prevQuestionsRef.current = queues?.questions ?? []
+    // 依赖刻意只有 task.id——状态/队列的变化由下面几个检测 effect 处理
+  }, [task.id])
+  useEffect((): void => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = task.status
+    if (prev === task.status) return
+    if (task.status === 'completed') {
+      maybeNotify(`「${task.title}」已完成`, '任务已执行完成,请返回工作台查看结果。', {
+        tag: `sigma-task-${task.id}-done`,
+      })
+    } else if (task.status === 'failed') {
+      maybeNotify(`「${task.title}」失败`, '任务执行失败,请返回工作台查看原因。', {
+        tag: `sigma-task-${task.id}-done`,
+      })
+    } else if (task.status === 'waiting_approval') {
+      // 服务端当前不发这个状态(审批期仍是 running,靠 queues 轮询发现),
+      // 分支留作状态机演进后的兜底。
+      maybeNotify(`「${task.title}」等待审批`, '您有任务需要审批,请返回工作台批准。', {
+        tag: `sigma-task-${task.id}-approval`,
+      })
+    }
+  }, [task.status, task.title, task.id])
+  useEffect((): void => {
+    const current = queues?.approvals ?? []
+    const prev = prevApprovalsRef.current
+    prevApprovalsRef.current = current
+    if (current.length === 0 || current.length <= prev.length) return
+    // 通知文案只说"有事等你批"(星辰 2026-10-04):细节(工具名/参数)
+    // 回面板看审批卡,通知不当明细单用。
+    maybeNotify(`「${task.title}」等待审批`, '您有任务需要审批,请返回工作台批准。', {
+      tag: `sigma-task-${task.id}-approval`,
+    })
+  }, [queues, task.title, task.id])
+  useEffect((): void => {
+    // ask_user 问题增量:模型把方向决策交还用户了,同样要弹通知追人。
+    const current = queues?.questions ?? []
+    const prev = prevQuestionsRef.current
+    prevQuestionsRef.current = current
+    if (current.length === 0 || current.length <= prev.length) return
+    maybeNotify(
+      `「${task.title}」等待你的选择`,
+      '有任务等待您做出选择,请返回工作台处理。',
+      { tag: `sigma-task-${task.id}-ask` },
+    )
+  }, [queues, task.title, task.id])
+
   // 新回放到达(轮次变化)时滚到底部。
   useEffect((): void => {
     const node = threadRef.current
     if (node !== null) {
       node.scrollTop = node.scrollHeight
     }
-  }, [task.events.length, task.status, queues?.followups.length, queues?.approvals.length])
+  }, [task.events.length, task.status, queues?.followups.length, queues?.approvals.length, queues?.questions.length])
 
   // 轮结束(无论成败)后复位中断请求标记,下一轮从头开始。
   useEffect((): void => {
@@ -310,11 +573,13 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
             </p>
           ) : (
             task.events.map((event: TaskEvent): JSX.Element => {
+              // 流式直播判定提到最前:thinking 与 message 两个分支都要用
+              const live = event.id.startsWith('__live')
               if (event.kind === 'tool_call') {
                 return <ToolChip key={event.id} event={event} />
               }
               if (event.kind === 'thinking') {
-                return <ThinkingRow key={event.id} event={event} />
+                return <ThinkingRow key={event.id} event={event} live={live} />
               }
               if (event.kind === 'note') {
                 // 系统注入(如 todo 防跑偏提醒):不是用户说的话,灰条呈现
@@ -334,7 +599,6 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
                 )
               }
               if (event.role === 'assistant') {
-                const live = event.id.startsWith('__live')
                 return (
                   <div key={event.id} className="wb-row wb-row--assistant">
                     <div
@@ -394,32 +658,42 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
           ) : null}
         </div>
 
-        {/* ============ 审批卡(变更前确认环,图三) ============ */}
-        {pendingApprovals.length > 0 ? (
+        {/* ============ 审批卡(安全审核)+ ask_user 问题卡 ============ */}
+        {pendingApprovals.length > 0 || (queues?.questions.length ?? 0) > 0 ? (
           <div className="wb-approvals">
             {pendingApprovals.map((item) => (
-              <div key={item.id} className="wb-approval">
-                <div className="wb-approval__main">
-                  <span className="wb-approval__tool">{item.tool}</span>
-                  <span className="wb-approval__summary" title={item.summary}>{item.summary}</span>
-                </div>
-                <div className="wb-approval__actions">
-                  <button
-                    type="button"
-                    className="wb-approval__btn wb-approval__btn--deny"
-                    onClick={(): void => void actions.decideApproval(task.id, item.id, 'deny')}
-                  >
-                    拒绝
-                  </button>
-                  <button
-                    type="button"
-                    className="wb-approval__btn wb-approval__btn--approve"
-                    onClick={(): void => void actions.decideApproval(task.id, item.id, 'approve')}
-                  >
-                    批准
-                  </button>
-                </div>
-              </div>
+              <ApprovalCard
+                key={item.id}
+                item={item}
+                deciding={decidingIds.has(item.id)}
+                onDecide={(decision: 'approve' | 'deny'): void => {
+                  // 决策中禁用防重复点击;promise 落定后解除(卡片由队列
+                  // 轮询摘除;失败时 toast 已报错,按钮恢复可重试)。
+                  setDecidingIds((prev): Set<string> => new Set(prev).add(item.id))
+                  void actions
+                    .decideApproval(task.id, item.id, decision)
+                    .finally((): void => {
+                      setDecidingIds((prev): Set<string> => {
+                        const next = new Set(prev)
+                        next.delete(item.id)
+                        return next
+                      })
+                    })
+                }}
+              />
+            ))}
+            {(queues?.questions ?? []).slice(0, 1).map((item: TaskQuestion): JSX.Element => (
+              <QuestionCard
+                key={item.id}
+                item={item}
+                queued={(queues?.questions.length ?? 0) - 1}
+                onAnswer={(option: string): void =>
+                  void actions.answerQuestion(task.id, item.id, option)
+                }
+                onDismiss={(): void =>
+                  void actions.answerQuestion(task.id, item.id, '', true)
+                }
+              />
             ))}
           </div>
         ) : null}

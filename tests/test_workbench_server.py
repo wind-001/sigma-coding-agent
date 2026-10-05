@@ -718,6 +718,165 @@ def test_model_save_rejects_bad_api_key_env(
     assert code == 200
 
 
+# ---------------------------------------------------------------------------
+# ask_user 交互通道:模型主动问的方向决策在工作台真正等人选(2026-10-03)
+# ---------------------------------------------------------------------------
+
+
+def test_ask_channel_pending_and_answer() -> None:
+    """ask 挂起 → 注册表可见待答问题 → 应答唤醒执行线程并返回所选选项;
+    应答后条目摘除(下次 /queues 不再出现)。"""
+    ask = SERVER._make_ask("task-ask-1")
+    results: list[str] = []
+
+    async def scenario() -> None:
+        waiter = asyncio.create_task(ask("选哪个方案?", ["方案一", "方案二"], 0))
+        await asyncio.sleep(0.2)  # 让挂起生效(to_thread 起线程有延迟)
+        pending = SERVER._pending_questions("task-ask-1")
+        assert len(pending) == 1
+        assert pending[0]["question"] == "选哪个方案?"
+        assert pending[0]["options"] == ["方案一", "方案二"]
+        assert pending[0]["recommended"] == 0
+        code, payload = SERVER._answer_question(
+            "task-ask-1", pending[0]["id"], {"option": "方案二"}
+        )
+        assert code == 200 and payload["ok"] is True
+        results.append(await waiter)
+
+    asyncio.run(scenario())
+    assert results == ["方案二"]
+    assert SERVER._pending_questions("task-ask-1") == []
+
+
+def test_ask_channel_custom_answer_and_dismiss() -> None:
+    """三形态回填(星辰 2026-10-04"留自由选择空间"):命中候选=选择;
+    非空不在候选=自由输入原样传;dismiss=忽略哨兵;空 option=400;
+    重复回答=409(先到先得)。"""
+    from sigma.tools.builtin.ask_user import IGNORE_SENTINEL
+
+    ask = SERVER._make_ask("task-ask-2")
+    results: list[str] = []
+
+    async def scenario() -> None:
+        w_opt = asyncio.create_task(ask("q1", ["A", "B"], 0))
+        w_custom = asyncio.create_task(ask("q2", ["A", "B"], 0))
+        w_dismiss = asyncio.create_task(ask("q3", ["A", "B"], 0))
+        await asyncio.sleep(0.2)  # 让挂起生效(to_thread 起线程有延迟)
+        pending = SERVER._pending_questions("task-ask-2")
+        ids = {p["question"]: p["id"] for p in pending}
+        assert len(ids) == 3
+        # 空 option → 400(忽略必须走 dismiss=true)
+        code, payload = SERVER._answer_question("task-ask-2", ids["q1"], {"option": ""})
+        assert code == 400 and "dismiss" in payload["detail"]
+        code, _payload = SERVER._answer_question("task-ask-2", ids["q1"], {"option": "B"})
+        assert code == 200
+        code, _payload = SERVER._answer_question(
+            "task-ask-2", ids["q2"], {"option": "先写测试再写实现"}
+        )
+        assert code == 200  # 自由输入合法,原样传给工具
+        code, _payload = SERVER._answer_question("task-ask-2", ids["q3"], {"dismiss": True})
+        assert code == 200
+        # 重复回答 → 409 先到先得
+        code, _payload = SERVER._answer_question("task-ask-2", ids["q1"], {"option": "A"})
+        assert code == 409
+        results.extend(await asyncio.gather(w_opt, w_custom, w_dismiss))
+
+    asyncio.run(scenario())
+    assert results == ["B", "先写测试再写实现", IGNORE_SENTINEL]
+
+
+def test_ask_channel_ignored_question_auto_skips_repeat() -> None:
+    """忽略去重(2026-10-04):用户显式忽略过的问题,模型原样重问时**直接
+    返回忽略哨兵**——不再出卡、不再阻塞,把"重问循环"在通道层掐断。
+    实测背景:忽略后 deepseek-reasoner 连问三轮,每轮阻塞等待,用户体感卡住。"""
+    from sigma.tools.builtin.ask_user import IGNORE_SENTINEL
+
+    ask = SERVER._make_ask("task-ask-dedupe")
+    results: list[str] = []
+
+    async def scenario() -> None:
+        first = asyncio.create_task(ask("今晚吃什么", ["火锅", "烧烤"], 0))
+        await asyncio.sleep(0.2)
+        qid = SERVER._pending_questions("task-ask-dedupe")[0]["id"]
+        code, _payload = SERVER._answer_question(
+            "task-ask-dedupe", qid, {"dismiss": True}
+        )
+        assert code == 200
+        results.append(await first)
+
+        # 原样重问:立即返回哨兵,不注册新条目
+        second = asyncio.create_task(ask("今晚吃什么", ["火锅", "烧烤"], 0))
+        await asyncio.sleep(0.1)
+        assert SERVER._pending_questions("task-ask-dedupe") == []
+        results.append(await second)
+        # 空白差异视为同一问题
+        third = asyncio.create_task(ask("今晚吃什么  ", ["火锅", "烧烤"], 0))
+        results.append(await third)
+
+    asyncio.run(scenario())
+    assert results == [IGNORE_SENTINEL, IGNORE_SENTINEL, IGNORE_SENTINEL]
+
+
+def test_stop_releases_pending_questions_and_denies_approvals() -> None:
+    """停止任务时:挂起问题放行(空答案 → ask_user 兜底回退推荐项),
+    挂起审批拒绝并唤醒——否则 stop 要干等工具超时(实测卡 10 分钟)。"""
+    ask = SERVER._make_ask("task-stop-rel")
+    released_answer: list[str] = []
+
+    async def scenario() -> None:
+        waiter = asyncio.create_task(ask("q", ["A", "B"], 0))
+        await asyncio.sleep(0.2)
+        assert SERVER._release_questions_on_stop("task-stop-rel") == 1
+        released_answer.append(await waiter)
+
+    asyncio.run(scenario())
+    assert released_answer == [""]  # 空答案 → 工具兜底回退推荐项
+    assert SERVER._pending_questions("task-stop-rel") == []
+
+    # 审批侧:直接造一个挂起条目,验证拒绝并唤醒
+    entry: dict[str, Any] = {
+        "id": "req-x", "tool": "bash", "args": {}, "summary": "x",
+        "event": threading.Event(), "decision": "deny",
+        "reason": "等待审批超时(300s),自动拒绝",
+    }
+    with SERVER._APPROVALS_LOCK:
+        SERVER._APPROVALS.setdefault("task-stop-rel", []).append(entry)
+    assert SERVER._deny_approvals_on_stop("task-stop-rel") == 1
+    assert entry["event"].is_set() and entry["decision"] == "deny"
+    assert entry["reason"] == "任务已被停止"
+
+
+def test_ask_channel_unknown_question_404() -> None:
+    code, _payload = SERVER._answer_question(
+        "no-such-task", "no-such-id", {"option": "A"}
+    )
+    assert code == 404
+
+
+def test_questions_http_roundtrip(http_server: tuple[str, Path]) -> None:
+    """HTTP 全链:ask 挂起(后台线程)→ /queues 载荷带 questions →
+    POST /questions/{qid} 回填 → ask 返回所选。"""
+    base, _root = http_server
+    ask = SERVER._make_ask("task-q-http")
+    result: list[str] = []
+
+    def runner() -> None:
+        result.append(asyncio.run(ask("选哪个?", ["甲", "乙"], 0)))
+
+    thread = threading.Thread(target=runner)
+    thread.start()
+    try:
+        time.sleep(0.3)
+        code, queues = _get(base, "/api/v1/tasks/task-q-http/queues")
+        assert code == 200 and len(queues["questions"]) == 1
+        qid = queues["questions"][0]["id"]
+        code, body = _post(base, f"/api/v1/tasks/task-q-http/questions/{qid}", {"option": "乙"})
+        assert code == 200 and body["ok"] is True
+    finally:
+        thread.join(timeout=5)
+    assert result == ["乙"]
+
+
 def test_fs_listing_with_files_flag(http_server: tuple[str, Path]) -> None:
     """/fs 默认只列子目录;files=1 追加文件条目(isDir=False,目录在前)。"""
     base, sessions_root = http_server

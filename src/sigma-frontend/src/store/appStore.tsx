@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
 import { apiClient, ACCESS_OPTIONS, STATUS_META, type Automation, type ModelInfo, type ModelSaveInput, type Plugin, type Project, type Task, type TaskDeltaPiece, type TaskEvent, type TaskStatus } from '../api'
 import { piecesToLiveEvents } from '../lib/liveBlocks'
+import { requestNotificationPermission } from '../notify'
 
 export type StatusFilter = 'all' | 'active' | 'completed'
 export type OverlayKind =
@@ -137,6 +138,8 @@ export interface AppActions {
   editQueued(taskId: string, kind: 'steering' | 'followup', index: number, text: string): Promise<void>
   /** 审批决策(变更前确认环) */
   decideApproval(taskId: string, requestId: string, decision: 'approve' | 'deny'): Promise<void>
+  /** ask_user 选择回填:把用户的选择交回执行线程;dismiss=忽略本次 */
+  answerQuestion(taskId: string, questionId: string, option: string, dismiss?: boolean): Promise<void>
   /** 权限模式中途切换:热替换审批闸,下一声工具调用生效 */
   setTaskAccess(taskId: string, access: string): Promise<void>
   /** 联网开关(默认关):要重建工具表与 loop,**下次执行生效** */
@@ -208,6 +211,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
      * 载荷替换。⚠ 以 `apiClient.xxx(...)` 方法调用形式执行——取出来调会
      * 丢 this(实测白屏)。 */
     const send = async (taskId: string, text: string): Promise<string> => {
+      // 发消息必然来自点击/回车 = 合法的用户手势:系统通知的授权请求
+      // 挂在这里(浏览器要求手势内发起;未授权时静默跳过,不影响主路径)。
+      requestNotificationPermission()
       if (apiClient.addTaskMessage === undefined) {
         throw new Error('当前后端不支持执行(桥接服务过旧或处于 mock 模式)')
       }
@@ -506,6 +512,24 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         await runOrToast(async (): Promise<string> => {
           await decideApproval(taskId, requestId, decision)
           return decision === 'approve' ? '已批准' : '已拒绝'
+        })
+      },
+      async answerQuestion(
+        taskId: string,
+        questionId: string,
+        option: string,
+        dismiss: boolean = false,
+      ): Promise<void> {
+        // 可选方法先收窄到局部再进异步闭包(TS 跨闭包 narrow 不成立);
+        // 提取调用安全:原型方法已在 HttpSigmaClient 构造器绑定。
+        const answerQuestion = apiClient.answerQuestion
+        if (answerQuestion === undefined) {
+          throw new Error('当前后端不支持交互问答(桥接服务过旧或处于 mock 模式)')
+        }
+        await runOrToast(async (): Promise<string> => {
+          await answerQuestion(taskId, questionId, option, dismiss)
+          if (dismiss) return '已忽略:模型将自行决定后续路径'
+          return '已选择:按你的选择继续执行'
         })
       },
       async setTaskAccess(taskId: string, access: string): Promise<void> {

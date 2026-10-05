@@ -247,6 +247,18 @@ export class HttpSigmaClient implements SigmaApiClient {
     })
   }
 
+  async answerQuestion(
+    taskId: string,
+    questionId: string,
+    option: string,
+    dismiss: boolean = false,
+  ): Promise<void> {
+    await this.request<unknown>(`/tasks/${taskId}/questions/${questionId}`, {
+      method: 'POST',
+      body: JSON.stringify({ option: dismiss ? '' : option, dismiss }),
+    })
+  }
+
   async setTaskAccess(taskId: string, access: string): Promise<void> {
     await this.request<unknown>(`/tasks/${taskId}/access`, {
       method: 'POST',

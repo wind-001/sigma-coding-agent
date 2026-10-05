@@ -995,6 +995,20 @@
 
 .wb-row {
   display: flex;
+  /* 入场浮现(2026-10-04):新气泡淡入+上浮 6px;流式更新不重挂,
+     动画只在气泡诞生时播一次。reduced-motion 用户直接关闭。 */
+  animation: wb-row-in 0.26s ease-out;
+}
+
+@keyframes wb-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .wb-row--user {
@@ -1007,7 +1021,7 @@
 
 .wb-bubble {
   max-width: 78%;
-  padding: 9px 13px;
+  padding: 10px 14px;
   border-radius: 14px;
   font-size: 14.5px;
   line-height: 1.65;
@@ -1015,33 +1029,92 @@
   word-break: break-word;
 }
 
-/* 用户消息 = 浅灰圆角泡(参考对话产品的克制样式,不用大色块);
-   助手消息 = 平铺正文(无边框无底色),对话感优先。 */
+/* 用户消息 = 蓝玻璃泡(2026-10-04,星辰"文本流与主题统一"):半透蓝 +
+   backdrop 模糊,壁纸从泡里透出;右下角收窄是聊天气泡的方向暗示。 */
 .wb-bubble--user {
-  background: var(--bg-sidebar);
-  color: var(--text-primary);
+  background:
+    linear-gradient(
+      135deg,
+      rgba(96, 155, 250, 0.88) 0%,
+      rgba(59, 130, 246, 0.78) 55%,
+      rgba(47, 116, 232, 0.82) 100%
+    );
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow:
+    0 6px 18px rgba(59, 130, 246, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  color: #fff;
   border-radius: 16px;
+  border-bottom-right-radius: 5px;
+  text-shadow: 0 1px 1px rgba(15, 40, 90, 0.25);
 }
 
+/* 助手消息 = 暖白玻璃卡(2026-10-04:原"透明正文"升级为玻璃家族成员)。
+   玻璃填充本身就是壁纸之上的可读层——白纱+玻璃双保险,比裸字更清晰;
+   text-shadow 保留为第三层保险。左下角收窄与用户泡方向相反。 */
 .wb-bubble--assistant {
-  background: transparent;
-  border: none;
+  background:
+    linear-gradient(
+      118deg,
+      rgba(255, 255, 255, 0.82) 0%,
+      rgba(255, 255, 255, 0.1) 30%,
+      rgba(255, 255, 255, 0) 55%
+    ),
+    linear-gradient(
+      168deg,
+      rgba(255, 255, 255, 0.62) 0%,
+      rgba(255, 250, 242, 0.5) 100%
+    );
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.66);
+  border-radius: 14px;
+  border-bottom-left-radius: 5px;
+  box-shadow:
+    0 6px 20px rgba(18, 22, 38, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
   color: var(--text-primary);
-  padding: 2px 6px;
   max-width: 92%;
-  /* 古风背景第三层保险(星辰 2026-10-02):助手正文无底色,图会透到字后。
-     veil 之外再加一道极淡描边阴影——白纱万一被覆盖(覆盖层/滚动容器
-     叠加)字依然可读。数值刻意压得很轻,远看只是"字更实"而非"发光"。 */
   text-shadow:
     0 1px 2px rgba(255, 255, 255, 0.85),
     0 0 6px rgba(255, 255, 255, 0.55);
 }
 
-/* 流式直播气泡:中间过程弱化(小字/浅色),完成后以正式气泡沉淀(星辰 2026-10-02) */
+/* 流式直播气泡:中间过程弱化(小字/浅色),完成后以正式气泡沉淀(星辰 2026-10-02)。
+   2026-10-04 加:行尾呼吸光标——"正在输出"一眼可辨,播完随气泡沉淀消失。 */
 .wb-bubble--live {
   color: var(--text-muted);
   font-size: 13.5px;
   opacity: 0.92;
+}
+
+.wb-bubble--live::after {
+  content: '▍';
+  color: #3b82f6;
+  margin-left: 2px;
+  animation: wb-caret 1s steps(2, start) infinite;
+}
+
+@keyframes wb-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* 动态效果的整体开关:偏好减弱动效的用户不播入场/光标动画 */
+@media (prefers-reduced-motion: reduce) {
+  .wb-row {
+    animation: none;
+  }
+  .wb-bubble--live::after {
+    animation: none;
+  }
 }
 
 /* 权限模式芯片(输入区左下角,随时切换):完全访问黄色警示,其余正常色 */
@@ -1593,28 +1666,83 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ============ 深度思考块:可折叠+可滚动+蓝玻璃(2026-10-04,星辰) ============ */
+/* 与问题卡同族的玻璃配方,描边带本族蓝;收起=一行摘要,展开=限高滚动正文 */
 .wb-thinking {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
   max-width: 88%;
   align-self: flex-start;
+  border-radius: 12px;
+  border: 1px solid rgba(150, 190, 255, 0.5);
+  background:
+    linear-gradient(
+      118deg,
+      rgba(255, 255, 255, 0.88) 0%,
+      rgba(255, 255, 255, 0.1) 30%,
+      rgba(255, 255, 255, 0) 55%
+    ),
+    linear-gradient(
+      168deg,
+      rgba(240, 247, 255, 0.6) 0%,
+      rgba(228, 240, 255, 0.42) 100%
+    );
+  backdrop-filter: blur(20px) saturate(1.8);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  box-shadow:
+    0 8px 24px rgba(18, 22, 38, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+}
+
+.wb-thinking__head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 6px 10px;
+  cursor: pointer;
   font-size: 12.5px;
-  color: var(--text-muted);
-  background: var(--bg-sidebar);
-  border-radius: 8px;
-  padding: 5px 10px;
+  text-align: left;
 }
 
 .wb-thinking__label {
   flex: none;
-  font-weight: 600;
+  font-weight: 700;
+  color: #3b82f6;
 }
 
-.wb-thinking__text {
+.wb-thinking__preview {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.wb-thinking__chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.wb-thinking__chevron--open {
+  transform: rotate(180deg);
+}
+
+.wb-thinking__body {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px 12px 10px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid rgba(59, 130, 246, 0.14);
+  scrollbar-width: thin;
 }
 
 .wb-queue {
@@ -1686,12 +1814,18 @@
 
 .wb-approval {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 10px 12px;
   background: rgba(255, 143, 31, 0.06);
   border: 1px solid rgba(255, 143, 31, 0.3);
   border-radius: 10px;
+}
+
+.wb-approval__icon {
+  flex: none;
+  margin-top: 2px;
+  color: #ff8f1f;
 }
 
 .wb-approval__main {
@@ -1699,13 +1833,32 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
+}
+
+.wb-approval__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wb-approval__label {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ff8f1f;
+  background: rgba(255, 143, 31, 0.12);
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 
 .wb-approval__tool {
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text-primary);
+  font-family: ui-monospace, Consolas, monospace;
 }
 
 .wb-approval__summary {
@@ -1717,10 +1870,48 @@
   white-space: nowrap;
 }
 
+.wb-approval__toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.wb-approval__toggle:hover {
+  color: var(--text-primary);
+}
+
+.wb-approval__chevron--open {
+  transform: rotate(180deg);
+}
+
+.wb-approval__args {
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(255, 143, 31, 0.18);
+  border-radius: 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .wb-approval__actions {
   display: flex;
   gap: 6px;
   flex: none;
+  margin-top: 2px;
 }
 
 .wb-approval__btn {
@@ -1729,14 +1920,198 @@
   font-size: 12.5px;
 }
 
+.wb-approval__btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .wb-approval__btn--approve {
   background: #22a06b;
   color: #fff;
 }
 
+.wb-approval__btn--approve:hover:not(:disabled) {
+  background: #1d8a5c;
+}
+
 .wb-approval__btn--deny {
   background: var(--bg-sidebar);
   color: var(--text-secondary);
+}
+
+.wb-approval__btn--deny:hover:not(:disabled) {
+  color: #d64545;
+}
+
+/* ============ ask_user 问题卡(方向决策交还用户,2026-10-03) ============ */
+.wb-question {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(59, 130, 246, 0.05);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 10px;
+}
+
+.wb-question__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wb-question__icon {
+  color: #3b82f6;
+}
+
+.wb-question__label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.wb-question__text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wb-question__options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wb-question__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: var(--bg-sidebar);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.wb-question__option:disabled {
+  cursor: default;
+}
+
+.wb-question__option:hover:not(:disabled) {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.06);
+  color: var(--text-primary);
+}
+
+.wb-question__dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0, 0, 0, 0.25);
+  background: #fff;
+}
+
+.wb-question__option--recommended .wb-question__dot {
+  border-color: #3b82f6;
+}
+
+.wb-question__option-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.wb-question--answered {
+  opacity: 0.55;
+}
+
+.wb-question__custom {
+  display: flex;
+  gap: 6px;
+}
+
+.wb-question__custom-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+}
+
+.wb-question__custom-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.wb-question__custom-input:disabled {
+  opacity: 0.6;
+}
+
+.wb-question__custom-btn {
+  flex: none;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  border-radius: 8px;
+  background: #3b82f6;
+  color: #fff;
+  cursor: pointer;
+}
+
+.wb-question__custom-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wb-question__foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.wb-question__ignore {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.wb-question__ignore:hover:not(:disabled) {
+  color: var(--text-secondary);
+}
+
+.wb-question__ignore:disabled {
+  cursor: default;
+}
+
+.wb-question__option--recommended {
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.wb-question__badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 4px;
+  padding: 0 5px;
 }
 
 /* 加粗可见性(星辰 2026-10-02):700 + 近黑,与正文灰黑拉开一档 */
@@ -1823,4 +2198,199 @@
   padding: 12px;
   font-size: 12.5px;
   color: var(--text-secondary);
+}
+
+/* ============ 液态玻璃:选择提示表面共享材质(2026-10-04,星辰) ============ */
+/* 斜杠面板 / 加号菜单 / 下拉菜单三个浮层共用同一块"玻璃"：
+   backdrop 高斯模糊 + 饱和度抬升（古风壁纸透过玻璃产生真实折射感），
+   斜向高光层做镜面反光，四向内描边模拟玻璃厚度，底部大阴影负责"浮起"。
+   高光烘焙在元素自身 background 里——容器内滚动时反光不跟着滚走。 */
+.wb-slash,
+.composer__plus-menu,
+.dropdown__menu {
+  background:
+    linear-gradient(
+      118deg,
+      rgba(255, 255, 255, 0.9) 0%,
+      rgba(255, 255, 255, 0.08) 30%,
+      rgba(255, 255, 255, 0) 55%
+    ),
+    linear-gradient(
+      168deg,
+      rgba(255, 255, 255, 0.5) 0%,
+      rgba(240, 246, 255, 0.34) 46%,
+      rgba(255, 240, 226, 0.44) 100%
+    );
+  backdrop-filter: blur(30px) saturate(2.2) brightness(1.04);
+  -webkit-backdrop-filter: blur(30px) saturate(2.2) brightness(1.04);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow:
+    0 24px 64px rgba(18, 22, 38, 0.22),
+    0 4px 14px rgba(18, 22, 38, 0.08),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.3),
+    inset 1.5px 0 0 rgba(255, 255, 255, 0.4),
+    inset -1.5px 0 0 rgba(255, 255, 255, 0.4),
+    inset 0 0 28px rgba(255, 255, 255, 0.3);
+}
+
+/* 玻璃圆角比原实底卡片更圆——液态语言的标志性参数 */
+.wb-slash {
+  border-radius: 16px;
+  scrollbar-width: thin;
+}
+
+.composer__plus-menu,
+.dropdown__menu {
+  border-radius: 14px;
+}
+
+/* 玻璃上的选中/悬停 = 磨砂凸起小药丸,而不是实色块 */
+.wb-slash__item--active,
+.wb-slash__item:hover,
+.dropdown__item:hover,
+.composer__plus-item:hover {
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.85),
+    0 2px 10px rgba(18, 22, 38, 0.08);
+}
+
+.wb-slash__foot {
+  border-top-color: rgba(15, 18, 25, 0.07);
+}
+
+/* 无 backdrop-filter 能力的环境：回退到实底卡片,保证可读性 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .wb-slash,
+  .composer__plus-menu,
+  .dropdown__menu {
+    background: var(--bg-card);
+  }
+}
+
+/* ============ ask_user 问题卡 / 审批卡:同一块玻璃(2026-10-04,星辰) ============ */
+/* 与斜杠面板同配方,但各带一丝本族色的边——蓝=待选择,橙=待审批,
+   让"玻璃"在一堆卡片里仍能一眼分清语义。 */
+.wb-question,
+.wb-approval {
+  background:
+    linear-gradient(
+      118deg,
+      rgba(255, 255, 255, 0.9) 0%,
+      rgba(255, 255, 255, 0.08) 30%,
+      rgba(255, 255, 255, 0) 55%
+    ),
+    linear-gradient(
+      168deg,
+      rgba(255, 255, 255, 0.5) 0%,
+      rgba(240, 246, 255, 0.34) 46%,
+      rgba(255, 240, 226, 0.44) 100%
+    );
+  backdrop-filter: blur(30px) saturate(2.2) brightness(1.04);
+  -webkit-backdrop-filter: blur(30px) saturate(2.2) brightness(1.04);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 14px;
+  box-shadow:
+    0 20px 56px rgba(18, 22, 38, 0.18),
+    0 4px 14px rgba(18, 22, 38, 0.07),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.3),
+    inset 1.5px 0 0 rgba(255, 255, 255, 0.4),
+    inset -1.5px 0 0 rgba(255, 255, 255, 0.4),
+    inset 0 0 24px rgba(255, 255, 255, 0.28);
+}
+
+/* 本族色的描边与外圈微光(蓝=ask_user,橙=审批) */
+.wb-question {
+  border-color: rgba(150, 190, 255, 0.65);
+  box-shadow:
+    0 0 0 1px rgba(59, 130, 246, 0.1),
+    0 20px 56px rgba(18, 22, 38, 0.18),
+    0 4px 14px rgba(18, 22, 38, 0.07),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
+    inset 0 0 24px rgba(255, 255, 255, 0.28);
+}
+
+.wb-approval {
+  border-color: rgba(255, 205, 150, 0.65);
+  box-shadow:
+    0 0 0 1px rgba(255, 143, 31, 0.1),
+    0 20px 56px rgba(18, 22, 38, 0.18),
+    0 4px 14px rgba(18, 22, 38, 0.07),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
+    inset 0 0 24px rgba(255, 255, 255, 0.28);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .wb-question,
+  .wb-approval {
+    background: var(--bg-card);
+  }
+}
+
+/* ============ ask_user 两段式交互(2026-10-04,星辰):选中→确认 ============ */
+/* 选项字体加大加深(星辰"不够清晰"):12.5→13.5px,副文字色→主文字色 */
+.wb-question__option {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  font-weight: 500;
+  padding: 8px 12px;
+}
+
+.wb-question__option-text {
+  letter-spacing: 0.01em;
+}
+
+/* 选中态:圆点填充 + 蓝描边 + 轻蓝底,一眼看出"已选但未提交" */
+.wb-question__option--selected {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+
+.wb-question__option--selected .wb-question__dot {
+  border-color: #3b82f6;
+  background: #3b82f6;
+  box-shadow: inset 0 0 0 2.5px #fff;
+}
+
+/* 底部操作行:左=忽略(次要),右=确认提交(主按钮,未选中时禁用) */
+.wb-question__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wb-question__confirm {
+  flex: none;
+  padding: 6px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 9px;
+  background: #3b82f6;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.wb-question__confirm:hover:not(:disabled) {
+  background: #2f74e8;
+}
+
+.wb-question__confirm:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+
+/* 排队提示:多个 ask_user 一次只出一张,这里告知后面还有几张 */
+.wb-question__queued {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: rgba(15, 18, 25, 0.04);
+  border-radius: 4px;
+  padding: 1px 6px;
 }

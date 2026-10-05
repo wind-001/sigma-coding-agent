@@ -39,7 +39,7 @@ import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs
 
 from sigma import __version__
@@ -63,6 +63,7 @@ import time
 
 from sigma.observability.trace import trace_path_for
 from sigma.prompts.system_prompt import build_system_prompt
+from sigma.tools.builtin.ask_user import IGNORE_SENTINEL
 from sigma.providers.anthropic.provider import AnthropicProvider
 from sigma.providers.base import BaseProvider
 from sigma.providers.messages import (
@@ -664,12 +665,109 @@ def _decide_approval(task_id: str, request_id: str, decision: str) -> bool:
     return False
 
 
-def _pending_approvals(task_id: str) -> list[dict[str, str]]:
+def _pending_approvals(task_id: str) -> list[dict[str, Any]]:
     with _APPROVALS_LOCK:
         pending = list(_APPROVALS.get(task_id, []))
     return [
-        {"id": e["id"], "tool": e["tool"], "summary": e["summary"]} for e in pending
+        {
+            "id": e["id"],
+            "tool": e["tool"],
+            "summary": e["summary"],
+            # 完整参数:前端"安全审核"卡可展开看全貌,不再只有 220 字符截断
+            "args": dict(e.get("args") or {}),
+        }
+        for e in pending
     ]
+
+
+# ---------------------------------------------------------------------------
+# ask_user 交互通道(2026-10-03,星辰):模型主动问的方向决策在工作台真正
+# 等人选,而不是落到"非交互自动采用推荐项"。与审批环同一套模式——待答
+# 问题入注册表,/queues 载荷带给前端,决策端点唤醒执行线程。ask_user 工具
+# 自己校验答案必须在选项里(不合法回退推荐项并如实注明),这里只管传递。
+#
+# **等待不设超时**(2026-10-04 教训):旧版 600s 超时从问题创建时刻起算,
+# 用户处理前一张卡时它一直在走——点忽略时条目可能早已过期(404 静默),
+# 用户体感"点了没反应、模型卡住"。现在:卡片可见、通知已发、停止可放行
+# (stop 会主动回收挂起问题),等待本身就该等到用户表态为止。
+#
+# **忽略去重**:用户显式忽略过的问题,模型若原样重问(2026-10-04 实测
+# deepseek-reasoner 会连问三轮),后续相同问题直接返回忽略哨兵——不再
+# 出卡、不再阻塞,把"重问循环"在通道层掐断。
+# ---------------------------------------------------------------------------
+
+_QUESTIONS: dict[str, list[dict[str, Any]]] = {}
+_QUESTIONS_LOCK = threading.Lock()
+_IGNORED_QUESTIONS: dict[str, set[str]] = {}
+
+
+def _make_ask(task_id: str) -> Callable[[str, list[str], int | None], Awaitable[str]]:
+    """构造挂给 InteractiveSession 的 ``ask`` 协程(签名与 sdk 一致)。"""
+
+    async def ask(question: str, options: list[str], recommended: int | None) -> str:
+        signature = " ".join(question.split())
+        if signature in _IGNORED_QUESTIONS.get(task_id, set()):
+            return IGNORE_SENTINEL
+        entry: dict[str, Any] = {
+            "id": uuid.uuid4().hex[:8],
+            "question": question,
+            "options": list(options),
+            "recommended": recommended,
+            "event": threading.Event(),
+            "answer": "",
+        }
+        with _QUESTIONS_LOCK:
+            _QUESTIONS.setdefault(task_id, []).append(entry)
+        await asyncio.to_thread(entry["event"].wait)
+        with _QUESTIONS_LOCK:
+            pending = _QUESTIONS.get(task_id, [])
+            if entry in pending:
+                pending.remove(entry)
+        answer = str(entry["answer"])
+        if answer == IGNORE_SENTINEL:
+            with _QUESTIONS_LOCK:
+                _IGNORED_QUESTIONS.setdefault(task_id, set()).add(signature)
+        return answer
+
+    return ask
+
+
+def _pending_questions(task_id: str) -> list[dict[str, Any]]:
+    with _QUESTIONS_LOCK:
+        pending = list(_QUESTIONS.get(task_id, []))
+    return [
+        {
+            "id": e["id"],
+            "question": e["question"],
+            "options": list(e["options"]),
+            "recommended": e["recommended"],
+        }
+        for e in pending
+    ]
+
+
+def _answer_question(task_id: str, question_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """前端的选择回填,三形态(2026-10-04 扩,星辰"留自由选择空间"):
+    - ``dismiss=True`` → 忽略哨兵(模型自行决定后续路径);
+    - option 命中候选 → 常规选择;
+    - option 非空但不在候选 → **自由输入**,原样传递(ask_user 工具
+      负责把它当自定义答案转给模型);
+    - option 空串 → 不该发生(前端忽略走 dismiss),按无效处理。"""
+    option = str(body.get("option") or "")
+    dismiss = bool(body.get("dismiss"))
+    answer = IGNORE_SENTINEL if dismiss else option
+    if answer == "":
+        return 400, {"detail": "option 不能为空(忽略本次请传 dismiss=true)"}
+    with _QUESTIONS_LOCK:
+        for entry in _QUESTIONS.get(task_id, []):
+            if entry["id"] != question_id:
+                continue
+            if entry["event"].is_set():
+                return 409, {"detail": "该问题已被回答"}
+            entry["answer"] = answer
+            entry["event"].set()
+            return 200, {"ok": True}
+    return 404, {"detail": f"问题 {question_id} 不存在或已过期"}
 
 
 def _set_task_access(
@@ -1130,6 +1228,9 @@ def _get_or_create_session(
         enable_checkpoint=shadow_dir is not None,
         enable_trace=True,
         approval=approval,
+        # ask_user 交互通道(2026-10-03):模型问方向时真正等人选,答案经
+        # /questions 端点回填。不传 = 非交互,ask_user 会自动采用推荐项。
+        ask=_make_ask(task_id),
         extra_hooks=[_StreamCollector(task_id)],
     )
     with _SESSIONS_LOCK:
@@ -1565,6 +1666,37 @@ def _run_on_persistent_loop(coro: Any) -> Any:
     return asyncio.run_coroutine_threadsafe(coro, _TURN_LOOP).result()
 
 
+def _release_questions_on_stop(task_id: str) -> int:
+    """停止任务时放行所有挂起的 ask_user 问题(空答案 → 工具兜底回退
+    推荐项)。**不放行的话 stop 要干等工具超时(600s)才到块边界**——
+    实测 2026-10-04:用户按停止后界面卡在"等待当前工具完成"。"""
+    with _QUESTIONS_LOCK:
+        pending = list(_QUESTIONS.get(task_id, []))
+    released = 0
+    for entry in pending:
+        if entry["event"].is_set():
+            continue
+        entry["answer"] = ""
+        entry["event"].set()
+        released += 1
+    return released
+
+
+def _deny_approvals_on_stop(task_id: str) -> int:
+    """停止任务时拒绝所有挂起审批(同一类卡死:审批等 300s 才超时)。"""
+    with _APPROVALS_LOCK:
+        pending = list(_APPROVALS.get(task_id, []))
+    denied = 0
+    for entry in pending:
+        if entry["event"].is_set():
+            continue
+        entry["decision"] = "deny"
+        entry["reason"] = "任务已被停止"
+        entry["event"].set()
+        denied += 1
+    return denied
+
+
 def _stop_task(task_id: str) -> tuple[int, dict[str, Any]]:
     """外部强制中断(星辰 2026-10-02):调 ``InteractiveSession.interrupt()``,
     协作式停止——在跑的工具先完成,流在下一个块边界停;树上状态已持久化,
@@ -1578,8 +1710,17 @@ def _stop_task(task_id: str) -> tuple[int, dict[str, Any]]:
         session = _session_of(task_id)
         if session is None:
             return 409, {"detail": "会话未装配,无法中断"}
+        # 先放行挂起的交互(问题/审批),被卡住的工具调用才能收尾,
+        # interrupt 的块边界停止马上就到——否则界面干等工具超时。
+        _released = _release_questions_on_stop(task_id)
+        _denied = _deny_approvals_on_stop(task_id)
         stopped = session.interrupt()
-        return 200, {"ok": True, "interrupted": stopped}
+        return 200, {
+            "ok": True,
+            "interrupted": stopped,
+            "releasedQuestions": _released,
+            "deniedApprovals": _denied,
+        }
     with _TASKS_LOCK:
         record = _TASKS.get(task_id)
         if record is not None and record.get("status") == "running":
@@ -2358,7 +2499,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 since = 0
             self._send_json(200, _deltas_payload(parts[1], max(0, since)))
             return
-        # /tasks/{id}/queues:steering/follow-up 队列 + 待审批项(队列管理与审批卡)。
+        # /tasks/{id}/queues:steering/follow-up 队列 + 待审批项 + 待答问题
+        # (队列管理 / 审批卡 / ask_user 问题卡)。
         if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "queues":
             session = _session_of(parts[1])
             self._send_json(
@@ -2368,6 +2510,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     "steering": session.pending_steering() if session is not None else [],
                     "followups": session.pending_followups() if session is not None else [],
                     "approvals": _pending_approvals(parts[1]),
+                    "questions": _pending_questions(parts[1]),
                 },
             )
             return
@@ -2515,6 +2658,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             decision = str(body.get("decision") or "deny")
             ok = _decide_approval(parts[3], parts[5], decision)
             self._send_json(200 if ok else 404, {"ok": ok})
+            return
+        # /tasks/{id}/questions/{qid}:ask_user 的选择回填(方向决策交还用户)。
+        if (
+            len(parts) == 6
+            and parts[:3] == ["api", "v1", "tasks"]
+            and parts[4] == "questions"
+        ):
+            body = self._read_json_body()
+            code, payload = _answer_question(parts[3], parts[5], body)
+            self._send_json(code, payload)
             return
         # /tasks/{id}/access:权限模式中途切换(human-in-the-loop)。
         if (
