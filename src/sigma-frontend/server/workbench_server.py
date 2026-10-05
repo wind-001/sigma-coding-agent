@@ -1315,6 +1315,10 @@ def _get_or_create_session(
         web_search=web_on,
         web_fetch=fetch_on,
         skills=bool(skills_scan.skills),
+        # task 工具行与注册表同源(批次 7 纪律):工作台默认开子 agent,
+        # 提示词必须同步声明,否则模型照着旧清单答"我没有这个工具"。
+        task=True,
+        todo=True,
         # 记忆纪律段与``enable_memory`` 同源。引用SDK 的常量而不是写字面量:
         # 拼提示词与装配会话引同一个真值,两处不会漂移(漂移症状 =
         # 索引在常驻区摆着、提示词只字未提)。
@@ -1336,6 +1340,15 @@ def _get_or_create_session(
         provider=provider,
         workspace_root=repo,
         model=model,
+        # 子 agent(task)+ 团队(team_board/multi_agent)随会话装配(星辰
+        # 2026-10-05 拍板"我所有的工具默认都是开的",与 CLI --sub-agent
+        # 默认 True 对齐)。此前没传 = SDK 默认 False,工作台模型工具表里
+        # 根本没有这两个工具,想调也调不了。schema 常驻成本(~2k token)
+        # 是拍板接受的代价。板/信箱随会话实例化,(模型,档位)变化触发的
+        # 同树重建会换新板——进行中的团队任务不跨重建存活,与 CLI 续会话
+        # 的语义一致。
+        enable_sub_agent=True,
+        enable_team_tasks=True,
         # ⚠ 这三行是本批次修的**根因**:此前这里一个都没传,
         # 于是 InteractiveSession 落到 sdk 侧的兜底`default_registry(todo=...)`
         # ——而它的web_search 默认False。结果工具表里根本没有 web_search,

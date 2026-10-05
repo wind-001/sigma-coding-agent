@@ -32,6 +32,7 @@ import pytest
 
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
 from sigma.agent.types import ToolResult
+from sigma.config.resident_caps import caps_sum
 from sigma.providers.base import BaseProvider, SamplingParams
 from sigma.providers.events import StopEvent, TextDelta, UsageEvent
 from sigma.providers.messages import (
@@ -419,6 +420,32 @@ def execution_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("SIGMA_API_KEY", "test-key")
     monkeypatch.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("你好!我是 sigma。"))
     return "ok"
+
+
+def test_workbench_sessions_have_sub_agent_and_team_tools(
+    http_server: tuple[str, Path], execution_env: str
+) -> None:
+    """星辰 2026-10-05 拍板"我所有的工具默认都是开的":工作台会话注册表
+    必须装上 task/team_board/multi_agent。此前 _get_or_create_session 没传
+    enable 旗标 = SDK 默认 False,工具表里根本没有,模型想调也调不了
+    (工作台与 CLI --sub-agent 默认 True 的能力差,本测试钉住)。"""
+    base, _root = http_server
+    code, _started = _post(base, "/api/v1/tasks/s-http/messages", {"text": "你好"})
+    assert code == 200
+    for _ in range(100):
+        time.sleep(0.2)
+        if "s-http" not in SERVER._RUNNING:
+            break
+    session = SERVER._SESSIONS.get("s-http")
+    assert session is not None, "执行过的任务应有缓存会话"
+    assert {"task", "team_board", "multi_agent"} <= set(session._registry.names())
+    # 清理模块态,不污染后续测试
+    with SERVER._SESSIONS_LOCK:
+        SERVER._SESSIONS.pop("s-http", None)
+        SERVER._SESSION_META.pop("s-http", None)
+    with SERVER._TASKS_LOCK:
+        SERVER._TASKS.pop("s-http", None)
+    SERVER._RUNNING.discard("s-http")
 
 
 def test_execution_loop_create_and_run(http_server: tuple[str, Path], execution_env: str) -> None:
@@ -1378,9 +1405,11 @@ def test_g92_prompt_and_registry_same_source(tmp_path: Path) -> None:
 def test_g93_resident_region_ok_both_switches(tmp_path: Path) -> None:
     """G93:开关两态下常驻区指纹与预算都过(名义门槛比没有更坏——要真跑)。
 
-    开启比关闭多≈600 token(工具行 + 调研纪律段),必须确认仍在 D4 的
-    总闸之内。这个断言的价值在于:预算不够时它会**当场抛**而不是
-    "跑跑看好像也行"。
+    开启比关闭多(工具行 + 调研纪律段 + 已注册工具的 schema)。闸值引自
+    ``resident_caps`` 表(G885 与总额对账)而**不硬编码**——硬编码会陈旧:
+    2026-10-05 工作台默认开子 agent/团队工具,实测常驻区 3508,把 v2 时代
+    硬编码的 3500 当场炸出(v3 总闸 5750 本可容纳)。预算不够时
+    ``verify_resident_budget`` 会**当场抛**而不是"跑跑看好像也行"。
     """
     sessions_root = tmp_path / "sessions"
     for web in (False, True):
@@ -1389,8 +1418,8 @@ def test_g93_resident_region_ok_both_switches(tmp_path: Path) -> None:
         session._context.verify_resident_region()
         # 预算:超了当场抛 ResidentBudgetExceeded
         session._context.verify_resident_budget()
-        assert session._context.resident_tokens <= 3500, (
-            f"web={web} 常驻区 {session._context.resident_tokens} 超 D4 总闸 3500"
+        assert session._context.resident_tokens <= caps_sum(), (
+            f"web={web} 常驻区 {session._context.resident_tokens} 超 D4 总闸 {caps_sum()}"
         )
         session.__dict__["_test_monkey"].undo()
 
