@@ -649,11 +649,16 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               <span className="wb-typing__dot" />
               {stopRequested
                 ? '已请求中断,等待当前工具完成后停止…'
-                : task.events.some(
-                      (event) => event.kind === 'thinking' && event.id.startsWith('__live'),
-                    )
-                  ? '深度思考中…'
-                  : '正在执行,回复流式输出中…'}
+                : // 以**最后一条**事件定性:思考流过但已转正文/工具时,再说
+                  // "深度思考中"就是谎报(实测误导用户以为思考内容没展示)。
+                  (() => {
+                    const last = task.events[task.events.length - 1]
+                    return last !== undefined &&
+                      last.kind === 'thinking' &&
+                      last.id.startsWith('__live')
+                      ? '深度思考中…'
+                      : '正在执行,回复流式输出中…'
+                  })()}
             </div>
           ) : null}
         </div>
