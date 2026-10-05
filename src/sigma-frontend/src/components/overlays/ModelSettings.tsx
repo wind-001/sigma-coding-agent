@@ -146,7 +146,7 @@ export default function ModelSettings(): JSX.Element {
                 </select>
               </div>
               <div className="models-form__row">
-                <label className="models-form__label">BaseURL</label>
+                <label className="models-form__label">BaseURL(填到 /v1 为止,不用带 /chat/completions——带了也会被自动剥掉)</label>
                 <input
                   className="models-form__input"
                   value={form.baseUrl}

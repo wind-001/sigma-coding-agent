@@ -301,13 +301,25 @@ def _effort_extra_body(style: str, effort: str) -> dict[str, Any] | None:
     return {"reasoning_effort": effort}
 
 
+def _normalize_base_url(url: str) -> str:
+    """BaseURL 归一化:配置的语义是 **API 根**(provider 自己拼
+    ``/chat/completions``)。用户把完整端点粘进来是最常见的错——实测
+    2026-10-05,拼出 ``/chat/completions/chat/completions`` 404。保存与
+    执行两处都过这里:保存纠正写盘的值,执行兜住已存坏的旧条目。"""
+    url = url.strip().rstrip("/")
+    suffix = "/chat/completions"
+    if url.lower().endswith(suffix):
+        url = url[: -len(suffix)].rstrip("/")
+    return url
+
+
 def _save_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """新增/更新模型条目。``name`` 是执行链的解析键,必须唯一;
     密钥只落**变量名** ``apiKeyEnv``(本体在 ~/.sigma/.env,服务端
     从不接触 key 本身,也就不存在"留空 = 保留原值"的问题——变量名
     不是机密,GET 原样回传,每次保存都整体覆盖)。"""
     name = str(body.get("name") or "").strip()
-    base_url = str(body.get("baseUrl") or "").strip()
+    base_url = _normalize_base_url(str(body.get("baseUrl") or ""))
     model_id = str(body.get("modelId") or "").strip()
     protocol = str(body.get("protocol") or "openai-compat").strip()
     style = str(body.get("effortStyle") or "reasoning_effort").strip()
@@ -1083,7 +1095,8 @@ def _execution_params(
                 )
             style = str(entry.get("effortStyle") or "reasoning_effort")
             return (
-                str(entry.get("baseUrl") or ""),
+                # 防御性归一化:旧条目可能存了带 /chat/completions 的完整端点
+                _normalize_base_url(str(entry.get("baseUrl") or "")),
                 api_key,
                 str(entry.get("modelId") or ""),
                 str(entry.get("protocol") or "openai-compat"),

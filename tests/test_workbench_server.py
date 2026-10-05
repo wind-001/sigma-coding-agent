@@ -1993,3 +1993,44 @@ def test_post_message_synthesizes_record_for_disk_session(
     with SERVER._TASKS_LOCK:
         SERVER._TASKS.pop("s-http", None)
     SERVER._RUNNING.discard("s-http")
+
+
+def test_base_url_normalization_strips_chat_completions() -> None:
+    """BaseURL 的语义是 API 根(provider 自己拼 /chat/completions)。
+    用户把完整端点粘进来是最常见的错——实测拼出
+    /chat/completions/chat/completions 404(2026-10-05 LongCat 截图)。"""
+    f = SERVER._normalize_base_url
+    assert f("https://api.longcat.chat/openai/v1/chat/completions") == "https://api.longcat.chat/openai/v1"
+    assert f("https://api.longcat.chat/openai/v1/chat/completions/") == "https://api.longcat.chat/openai/v1"
+    assert f("https://api.deepseek.com/v1/") == "https://api.deepseek.com/v1"
+    assert f("https://api.deepseek.com/v1") == "https://api.deepseek.com/v1"  # 正常值不动
+
+    # 执行链兜底:已存坏的旧条目也剥(_execution_params 条目分支)
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(SERVER, "resolve_api_key", lambda: ("k", "test"))
+        monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_models_registry(
+            name="LongCat", base_url="https://api.longcat.chat/openai/v1/chat/completions",
+        ))
+        base_url, _k, _m, _p, _e = SERVER._execution_params("LongCat")
+        assert base_url == "https://api.longcat.chat/openai/v1"
+    finally:
+        monkeypatch.undo()
+
+
+def tmp_models_registry(*, name: str, base_url: str) -> Any:
+    """写一个临时模型注册表并返回其路径(monkeypatch 目标)。"""
+    import json as _json
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    p = d / "models.json"
+    p.write_text(_json.dumps({
+        "models": [{
+            "id": "mdl-t", "name": name, "protocol": "openai-compat",
+            "baseUrl": base_url, "apiKeyEnv": "", "modelId": "m",
+            "efforts": [], "effortStyle": "reasoning_effort",
+        }]
+    }), encoding="utf-8")
+    return p
