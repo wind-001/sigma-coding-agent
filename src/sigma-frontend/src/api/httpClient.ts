@@ -184,10 +184,12 @@ export class HttpSigmaClient implements SigmaApiClient {
     return this.request<TaskTimeline | null>(`/tasks/${taskId}/timeline`)
   }
 
-  addTaskMessage(taskId: string, text: string): Promise<Task> {
+  addTaskMessage(taskId: string, text: string, opts?: { model?: string; effort?: string }): Promise<Task> {
+    // model/effort 随消息提交:TaskDetail 切换器的选择落到任务记录,
+    // 服务端会话层发现元数据变化就重建(切模型下一轮立即生效)。
     return this.request<Task>(`/tasks/${taskId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, model: opts?.model, effort: opts?.effort }),
     })
   }
 

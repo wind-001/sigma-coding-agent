@@ -245,7 +245,13 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       }
       let started: Task
       try {
-        started = await apiClient.addTaskMessage(taskId, trimmed)
+        // model/effort 随消息提交:TaskDetail 切换器写的是全局 composer 状态,
+        // 这里把它带到任务记录,服务端会话层发现变化就重建(切模型下轮生效)。
+        const s0 = stateRef.current
+        started = await apiClient.addTaskMessage(taskId, trimmed, {
+          model: s0.composerModel,
+          effort: s0.composerEffort,
+        })
       } catch (error) {
         // 发送失败要回滚乐观气泡,否则界面停在一个假 running 态
         const landed = await apiClient.getTask(taskId).catch((): null => null)

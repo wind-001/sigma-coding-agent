@@ -375,7 +375,7 @@ export interface SigmaApiClient {
    * 文本经 deltas 端点流式送达;轮结束后用 getTask 取最终载荷。
    * 可选方法:mock 不实现。
    */
-  addTaskMessage?(taskId: string, text: string): Promise<Task>
+  addTaskMessage?(taskId: string, text: string, opts?: { model?: string; effort?: string }): Promise<Task>
   /** 流式增量轮询(TextChunk 钩子缓冲;可选方法,mock 不实现)。 */
   getTaskDeltas?(taskId: string, since: number): Promise<TaskDeltas>
   /** 队列与待审批快照(可选方法,mock 不实现)。 */

@@ -129,6 +129,10 @@ _DELTAS_LOCK = threading.Lock()
 #: **同一个 InteractiveSession 跨轮复用**——run_task 每次新建会话做不到。
 _SESSIONS: dict[str, InteractiveSession] = {}
 _SESSIONS_LOCK = threading.Lock()
+#: 会话创建时的(模型,档位)快照:任一变化 → 同树重建会话(provider/model
+#: 换新,历史在 tree 里不丢)。没有它,TaskDetail 的模型切换器只是改了
+#: UI——实测 2026-10-05:切到 deepseek-reasoner,三轮仍打旧模型。
+_SESSION_META: dict[str, dict[str, str]] = {}
 #: 审批闸注册表:approve() 逐调用读 mode,工作台切权限档时热替换(见
 #: _set_task_access)——无需重建会话,下一声工具调用立即生效。
 _GATES: dict[str, _HttpApprovalGate] = {}  # noqa: F821 - 类定义在下面(from __future__ annotations)
@@ -1145,13 +1149,22 @@ def _get_or_create_session(
     所以工作台直接走 SDK 装配(与 CLI 同一条构造路径、同一批默认值)。
     流式 collector 随会话建一次(缓冲区按 task_id 每轮实时读,见
     _StreamCollector)。"""
+    # 会话按(模型,档位)元数据缓存:任一变化 → **同树重建**(provider/
+    # model/extra_body 换新,历史在 tree 里不丢)。access 不进 meta——
+    # 审批闸经 _GATES 热替换,无需重建。
+    record = _TASKS.get(task_id) or {}
+    meta = {
+        "model": str(record.get("model") or ""),
+        "effort": str(record.get("effort") or ""),
+    }
     with _SESSIONS_LOCK:
         session = _SESSIONS.get(task_id)
+        if session is not None and _SESSION_META.get(task_id) != meta:
+            session = None  # 元数据变了:丢弃缓存,下面按新装配重建
     if session is not None:
         return session
     # 模型/档位:任务记录里显式选的优先(自定义条目 > 内置 preset > CLI 同链);
     # 历史/磁盘会话无记录 → 与 CLI 同链。会话级冻结(见 InteractiveSession)。
-    record = _TASKS.get(task_id) or {}
     base_url, api_key, model, protocol, extra_body = _execution_params(
         str(record.get("model") or ""), str(record.get("effort") or "")
     )
@@ -1235,6 +1248,7 @@ def _get_or_create_session(
     )
     with _SESSIONS_LOCK:
         _SESSIONS[task_id] = session
+        _SESSION_META[task_id] = meta
     return session
 
 
@@ -1581,13 +1595,20 @@ def _dispatch_command(
 
 
 def _post_message(
-    primary: Path, sessions_root: Path, task_id: str, text: str
+    primary: Path,
+    sessions_root: Path,
+    task_id: str,
+    text: str,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """发一条消息:**立即返回 running**,一轮在后台线程执行(前端流式轮询)。
 
     并发守卫:同一会话同时只允许一轮(``409``);未知任务 ``404``;
     未配 key ``400``(指路文案,启动线程前先验,快速失败)。
     会话→项目归属索引在本入口写入(工作台执行过的会话才知道归属)。
+    ``model``/``effort``:TaskDetail 切换器随消息提交的选择——写入任务
+    记录,会话层按元数据变化同树重建(见 _get_or_create_session)。
     """
     text = text.strip()
     if text == "":
@@ -1615,6 +1636,12 @@ def _post_message(
             _RUNNING.add(task_id)
             if record is not None:
                 record["status"] = "running"
+        # 模型/档位随消息落地(记录即意图);会话层发现 meta 变了就重建。
+        if record is not None:
+            if model is not None:
+                record["model"] = model.strip()
+            if effort is not None:
+                record["effort"] = effort.strip()
     if queued:
         session = _session_of(task_id)
         if session is None:
@@ -2630,10 +2657,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self._send_json(200, _create_task(self._read_json_body()))
             return
         # 发消息:立即返回 running,后台执行,前端经 deltas 流式取增量。
+        # model/effort 随消息提交(TaskDetail 切换器),会话层按需重建。
         if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"] and parts[4] == "messages":
             body = self._read_json_body()
             code, payload = _post_message(
-                self.workspace, self.sessions_root, parts[3], str(body.get("text", ""))
+                self.workspace,
+                self.sessions_root,
+                parts[3],
+                str(body.get("text", "")),
+                model=body.get("model") if isinstance(body.get("model"), str) else None,
+                effort=body.get("effort") if isinstance(body.get("effort"), str) else None,
             )
             self._send_json(code, payload)
             return

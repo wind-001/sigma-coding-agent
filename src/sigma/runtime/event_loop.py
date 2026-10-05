@@ -703,6 +703,11 @@ class AgentLoop:
                 )
             else:
                 note = "[系统注记] 本轮没有可解析输出：模型未产出任何文本或工具调用。"
+                # 上游出错(如 401 密钥失效)导致的空轮,注记必须把真实错误
+                # 带给用户——只说"没有输出"会把配置问题伪装成模型问题,
+                # 用户在坏配置上反复重试(2026-10-05 实测)。
+                if error_summary is not None:
+                    note = f"{note}（{error_summary}）"
             blocks.append(TextBlock(text=note))
 
         assistant = AssistantMessage(

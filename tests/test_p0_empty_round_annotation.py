@@ -256,3 +256,31 @@ async def test_annotation_does_not_disturb_existing_unparsed_user_note() -> None
         and isinstance(m.message, UserMessage)
     ]
     assert any("无法解析" in str(n.content) for n in user_notes)
+
+
+@pytest.mark.asyncio
+async def test_error_round_annotation_carries_upstream_error() -> None:
+    """上游错误(401 密钥失效这类)导致的空轮:注记必须携带真实错误文本。
+
+    2026-10-05 实测:错误只在 error_message/trace 里,气泡上只有"没有
+    可解析输出"——用户把密钥过期误读成"模型不行",在坏配置上连发三轮。
+    注记确定性文本 += error_summary,回放仍逐字节一致。
+    """
+    loop = _make_loop(
+        [
+            [
+                {
+                    "type": "error",
+                    "error": {"code": "auth", "message": "令牌已过期或验证不正确"},
+                },
+            ],
+        ]
+    )
+
+    result = await loop.run_turn(_history())
+    assistants = _assistants_of(result.messages)
+    assert len(assistants) == 1
+    texts = [b.text for b in assistants[0].content if isinstance(b, TextBlock)]
+    note = next(t for t in texts if ANNOTATION_MARK in t)
+    assert "令牌已过期或验证不正确" in note, "上游错误文案必须出现在注记里"
+    assert "模型流式返回出错" in note

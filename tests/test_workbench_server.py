@@ -1927,3 +1927,38 @@ def test_trash_delete_restore_roundtrip(http_server: tuple[str, Path]) -> None:
     code, tasks = _get(base, "/api/v1/tasks")
     assert code == 200
     assert any(task["id"] == "s-http" for task in tasks)
+
+
+def test_session_rebuilds_when_task_model_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """任务记录的 model 变化 → 缓存会话**同树重建**(provider/model 换新);
+    不变 → 复用同一实例。没有它,TaskDetail 的模型切换器只是改了 UI
+    (实测 2026-10-05:切到 deepseek-reasoner,三轮仍打旧模型)。"""
+    for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(SERVER, "resolve_api_key", lambda: ("test-key", "test"))
+    monkeypatch.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("好"))
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    task_id = "t-rebuild"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    root = tmp_path / "sessions"
+    SERVER._TASKS[task_id] = {"id": task_id, "model": "deepseek", "effort": "", "access": "full"}
+    try:
+        s1 = SERVER._get_or_create_session(task_id, repo, "full", root)
+        s2 = SERVER._get_or_create_session(task_id, repo, "full", root)
+        assert s2 is s1  # 元数据不变 → 复用
+
+        SERVER._TASKS[task_id]["model"] = "zhipu"
+        s3 = SERVER._get_or_create_session(task_id, repo, "full", root)
+        assert s3 is not s1  # 模型变了 → 重建
+        assert SERVER._SESSION_META[task_id]["model"] == "zhipu"
+        s4 = SERVER._get_or_create_session(task_id, repo, "full", root)
+        assert s4 is s3  # 新元数据稳定后继续复用
+    finally:
+        with SERVER._SESSIONS_LOCK:
+            SERVER._SESSIONS.pop(task_id, None)
+            SERVER._SESSION_META.pop(task_id, None)
+        with SERVER._TASKS_LOCK:
+            SERVER._TASKS.pop(task_id, None)
