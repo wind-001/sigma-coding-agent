@@ -555,6 +555,32 @@
   opacity: 1;
 }
 
+/* 行内删除确认键(星辰 2026-10-05,对标 Chiron:弹窗改条目右侧红色按键)。
+   确认态下替代垃圾桶常显(不悬停也看得见),红底白字;点别处整行退出确认态。 */
+.sidebar__item-confirm {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: #fff;
+  background: var(--danger);
+  box-shadow: 0 1px 4px rgba(229, 72, 77, 0.35);
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+
+.sidebar__item-confirm:hover {
+  background: #d13a3f;
+}
+
+.sidebar__item-confirm:active {
+  transform: translateY(-50%) scale(0.96);
+}
+
 .sidebar__item-time,
 .sidebar__count {
   transition: opacity 120ms ease;

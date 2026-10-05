@@ -72,8 +72,11 @@ interface SidebarTaskItemProps {
   variant: 'group' | 'task'
   selected: boolean
   onSelect: (taskId: string) => void
-  /** 提供时条目悬停显示删除按钮 */
+  /** 提供时条目悬停显示删除按钮;点击进入**行内确认态**(弹窗已废,星辰 2026-10-05) */
   onDelete?: (taskId: string) => void
+  /** 本条目处于行内确认态:垃圾桶变红色「确认」键,时间戳让位 */
+  confirming?: boolean
+  onConfirmDelete?: (taskId: string) => void
   /** 批量选择模式(2026-10-03):点条目=勾选,悬停删除隐藏 */
   selectMode?: boolean
   checked?: boolean
@@ -86,6 +89,8 @@ function SidebarTaskItem({
   selected,
   onSelect,
   onDelete,
+  confirming = false,
+  onConfirmDelete,
   selectMode = false,
   checked = false,
   onToggleSelect,
@@ -126,21 +131,37 @@ function SidebarTaskItem({
           />
           <span className="sidebar__item-title">{task.title}</span>
         </span>
-        <span className="sidebar__item-time">{formatRelative(task.updatedAt)}</span>
+        {/* 确认态时间戳让位给红色「确认」键(对标 Chiron 截图:标题左,确认右) */}
+        {confirming ? null : <span className="sidebar__item-time">{formatRelative(task.updatedAt)}</span>}
       </button>
       {onDelete !== undefined && !selectMode ? (
-        <button
-          type="button"
-          className="sidebar__item-del"
-          aria-label={`删除会话「${task.title}」`}
-          title="删除会话"
-          onClick={(event: React.MouseEvent<HTMLButtonElement>): void => {
-            event.stopPropagation()
-            onDelete(task.id)
-          }}
-        >
-          <Trash2 size={13} aria-hidden="true" />
-        </button>
+        confirming ? (
+          <button
+            type="button"
+            className="sidebar__item-confirm"
+            aria-label={`确认删除会话「${task.title}」`}
+            title="再点一次确认删除;点别处取消"
+            onClick={(event: React.MouseEvent<HTMLButtonElement>): void => {
+              event.stopPropagation()
+              onConfirmDelete?.(task.id)
+            }}
+          >
+            确认
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="sidebar__item-del"
+            aria-label={`删除会话「${task.title}」`}
+            title="删除会话"
+            onClick={(event: React.MouseEvent<HTMLButtonElement>): void => {
+              event.stopPropagation()
+              onDelete(task.id)
+            }}
+          >
+            <Trash2 size={13} aria-hidden="true" />
+          </button>
+        )
       ) : null}
     </div>
   )
@@ -155,6 +176,9 @@ interface ProjectSectionProps {
   onSelectTask: (taskId: string) => void
   onCreateSession: (projectId: string) => void
   onDeleteTask: (taskId: string) => void
+  /** 行内删除确认态(2026-10-05):该 id 的条目亮红色「确认」键 */
+  confirmingTaskId?: string | null
+  onConfirmDeleteTask?: (taskId: string) => void
   /** 批量删除(2026-10-03,星辰:入口在组头行,按项目勾选):
    *  batchActive=本项目处于勾选模式;组头悬停显形清单图标切换 */
   batchActive?: boolean
@@ -177,6 +201,8 @@ function ProjectSection({
   onSelectTask,
   onCreateSession,
   onDeleteTask,
+  confirmingTaskId = null,
+  onConfirmDeleteTask,
   batchActive = false,
   onToggleBatch,
   selectedIds = [],
@@ -282,6 +308,8 @@ function ProjectSection({
                 selected={selectedTaskId === task.id}
                 onSelect={onSelectTask}
                 onDelete={onDeleteTask}
+                confirming={confirmingTaskId === task.id}
+                onConfirmDelete={onConfirmDeleteTask}
                 selectMode={batchActive}
                 checked={selectedIds.includes(task.id)}
                 onToggleSelect={onToggleSelect}
@@ -306,6 +334,9 @@ export default function Sidebar(): JSX.Element {
   const [toast, setToast] = useState<string | null>(null)
   const filterRef = useRef<HTMLDivElement | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 行内删除确认(星辰 2026-10-05,对标 Chiron:弹窗改条目右侧红色「确认」键)。
+   *  同时只允许一行处于确认态;点任何别处(含别的行)即取消。 */
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   useEffect((): (() => void) => {
     return () => {
@@ -329,6 +360,25 @@ export default function Sidebar(): JSX.Element {
       document.removeEventListener('mousedown', handleDocumentMouseDown)
     }
   }, [filterOpen])
+
+  // 行内删除确认的「点别处取消」:确认键之外的任何 mousedown 都退出确认态。
+  // 用 mousedown 而非 click:先于 click 处理,点另一行垃圾桶时 重置→再置 顺序成立。
+  useEffect((): (() => void) | undefined => {
+    if (confirmDeleteId === null) {
+      return undefined
+    }
+    const handleDocumentMouseDown = (event: MouseEvent): void => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.sidebar__item-confirm') !== null) {
+        return
+      }
+      setConfirmDeleteId(null)
+    }
+    document.addEventListener('mousedown', handleDocumentMouseDown)
+    return (): void => {
+      document.removeEventListener('mousedown', handleDocumentMouseDown)
+    }
+  }, [confirmDeleteId])
 
   /** 本地 toast:复用全局 .toast 样式(store 未暴露 showToast,只能就地提示) */
   const showToast = (message: string): void => {
@@ -386,11 +436,15 @@ export default function Sidebar(): JSX.Element {
     }
   }
 
+  /** 第一次点删除:进入行内确认态(不弹窗),该行右侧亮出红色「确认」键。 */
   const handleDeleteTask = (taskId: string): void => {
-    const task = state.tasks.find((item) => item.id === taskId)
-    if (task !== undefined && window.confirm(`确认删除会话「${task.title}」?该操作不可撤销。`)) {
-      void actions.deleteTaskById(taskId)
-    }
+    setConfirmDeleteId(taskId)
+  }
+
+  /** 第二次点「确认」:真删(进回收站,可从回收站恢复)。 */
+  const handleConfirmDelete = (taskId: string): void => {
+    setConfirmDeleteId(null)
+    void actions.deleteTaskById(taskId)
   }
 
   // ===== 批量删除(2026-10-03,星辰改:入口在项目组头行,按项目批量) =====
@@ -401,9 +455,11 @@ export default function Sidebar(): JSX.Element {
       prev.includes(taskId) ? prev.filter((id) => id !== taskId) : [...prev, taskId],
     )
   }
-  /** 进入/退出某项目的勾选模式;进入时顺手展开该组(折叠着勾选没意义)。 */
+  /** 进入/退出某项目的勾选模式;进入时顺手展开该组(折叠着勾选没意义)。
+   *  勾选模式隐藏行内删除键,确认态一并退出,防止两套删除入口叠加。 */
   const handleToggleBatch = (projectId: string): void => {
     setSelectedIds([])
+    setConfirmDeleteId(null)
     if (batchProjectId === projectId) {
       setBatchProjectId(null)
       return
@@ -435,7 +491,11 @@ export default function Sidebar(): JSX.Element {
       showToast('先在列表中选择一个任务')
       return
     }
-    if (window.confirm(`确认删除任务「${selected.title}」?该操作不可撤销。`)) {
+    // 与行内删除同一条确认路径:选中的行在列表里可见 → 它的行亮红色「确认」键;
+    // 被状态筛选藏住了没有行可亮 → 退回弹窗(能力不丢)。
+    if (visibleTasks.some((task) => task.id === selected.id)) {
+      setConfirmDeleteId(selected.id)
+    } else if (window.confirm(`确认删除会话「${selected.title}」?将移入回收站。`)) {
       void actions.deleteTaskById(selected.id)
     }
   }
@@ -472,6 +532,8 @@ export default function Sidebar(): JSX.Element {
                         selected={state.selectedTaskId === task.id}
                         onSelect={handleSelectTask}
                         onDelete={handleDeleteTask}
+                        confirming={confirmDeleteId === task.id}
+                        onConfirmDelete={handleConfirmDelete}
                       />
                     ))
                   )}
@@ -490,6 +552,8 @@ export default function Sidebar(): JSX.Element {
               onSelectTask={handleSelectTask}
               onCreateSession={handleCreateSession}
               onDeleteTask={handleDeleteTask}
+              confirmingTaskId={confirmDeleteId}
+              onConfirmDeleteTask={handleConfirmDelete}
               batchActive={batchProjectId === project.id}
               onToggleBatch={() => handleToggleBatch(project.id)}
               selectedIds={selectedIds}
