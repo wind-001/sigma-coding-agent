@@ -537,6 +537,7 @@ def test_models_endpoint_custom_first_and_no_key_leak(
     from sigma.providers.registry import builtin_providers
 
     monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    monkeypatch.setenv("TEST_MODEL_KEY", "real-key")  # 变量名必须真实存在
     base, _root = http_server
     code, saved = _post(base, "/api/v1/models/save", {
         "name": "GLM-5.3-Flash",
@@ -570,6 +571,8 @@ def test_model_save_rejects_duplicate_name(
     """name 是执行链的解析键:重名(含改名撞名)一律 400;密钥只落**变量名**
     apiKeyEnv,每次保存整体覆盖,JSON 里没有任何明文 key 字段。"""
     monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    monkeypatch.setenv("K_VAR", "real-key")  # 变量名必须真实存在
+    monkeypatch.setenv("K_VAR2", "real-key")
     base, _root = http_server
     payload = {
         "name": "my-model", "protocol": "openai-compat",
@@ -702,6 +705,7 @@ def test_model_save_rejects_bad_api_key_env(
     """apiKeyEnv 是指向 ~/.sigma/.env 某一行的指针,写错等于指空气——
     非法变量名在保存时就拦下,不进注册表。"""
     monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    monkeypatch.setenv("GOOD_VAR_1", "real-key")  # 合法名分支需要变量真实存在
     base, _root = http_server
     payload = {
         "name": "bad-var", "protocol": "openai-compat",
@@ -2034,3 +2038,26 @@ def tmp_models_registry(*, name: str, base_url: str) -> Any:
         }]
     }), encoding="utf-8")
     return p
+
+
+def test_model_save_rejects_missing_env_var(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """apiKeyEnv 指向的变量必须真实存在(env 或 ~/.sigma/.env)——实测用户把
+    key 本体粘进变量名字段(ak_… 恰好像合法变量名),保存成功但 key 永远
+    用不上。指向空气的指针在保存时就拦下。"""
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    base, _root = http_server
+    payload = {
+        "name": "needs-var", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKeyEnv": "NO_SUCH_VAR_XYZ",
+        "modelId": "m", "efforts": [], "effortStyle": "reasoning_effort",
+    }
+    code, body = _post(base, "/api/v1/models/save", payload)
+    assert code == 400 and "都不存在" in body["detail"]
+
+    monkeypatch.setenv("NO_SUCH_VAR_XYZ", "real-key")
+    code, body = _post(base, "/api/v1/models/save", payload)
+    assert code == 200 and body["ok"] is True

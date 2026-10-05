@@ -363,6 +363,16 @@ def _save_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     api_key_env = str(body.get("apiKeyEnv") or "").strip()
     if api_key_env != "" and ENV_NAME_RE.fullmatch(api_key_env) is None:
         return 400, {"detail": "apiKeyEnv 必须是合法环境变量名(字母/下划线开头,只含字母/数字/下划线)"}
+    if api_key_env != "":
+        # 变量名必须**真实存在**:实测 2026-10-05,用户把 key 本体粘进变量名
+        # 字段(ak_… 恰好长得像合法变量名),保存成功但 key 从未被用上——
+        # 指向空气的指针必须在保存时就拦下,而不是等运行时静默回落别的链。
+        found, _src = resolve_api_key(var_name=api_key_env)
+        if not found:
+            return 400, {
+                "detail": f"变量 {api_key_env} 在环境变量和 ~/.sigma/.env 里都不存在。"
+                "先把 key 写进 ~/.sigma/.env(如 LONGCAT_API_KEY=ak…),这里只填变量名。"
+            }
     target["apiKeyEnv"] = api_key_env
     target.pop("apiKey", None)
     reg["models"] = models
