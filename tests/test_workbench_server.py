@@ -329,8 +329,12 @@ def test_memory_payload(tmp_path: Path) -> None:
 
 
 @pytest.fixture()
-def http_server(tmp_path: Path) -> tuple[str, Path]:
+def http_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, Path]:
     sessions_root = tmp_path / "sessions"
+    # 密钥落盘目标一律指向临时文件:shunt 路径(直粘 key 归位)会写 .env,
+    # 夹具级防线保证任何用例漏配也不会碰真实 ~/.sigma/.env——实测
+    # 2026-10-05 一次失败运行曾把测试串泄漏进真实文件(BAD_VAR_API_KEY)。
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", tmp_path / "dotenv")
     _write_session(
         sessions_root,
         "s-http",
