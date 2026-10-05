@@ -2061,3 +2061,169 @@ def test_model_save_rejects_missing_env_var(
     monkeypatch.setenv("NO_SUCH_VAR_XYZ", "real-key")
     code, body = _post(base, "/api/v1/models/save", payload)
     assert code == 200 and body["ok"] is True
+
+
+def test_looks_like_key_body_classification() -> None:
+    """密钥本体识别的三条命中与两条绝不命中:拼错的变量名(全大写+
+    下划线,或全大写+连字符)必须被判成"变量名拼错"走 400 指路,
+    不能被当成 key 静默写进 .env。"""
+    f = SERVER._looks_like_key_body
+    # 命中:厂商前缀
+    assert f("ak_2lc7Qt2jR84l0Te1RA3560WG5eU4f") is True
+    assert f("sk-proj-abcdefghij1234567890") is True
+    # 命中:无前缀但够长且大小写数字混杂(base62 型)
+    assert f("AbCdEf1234567890AbCdEf1234567890") is True
+    # 命中:含连字符 + 小写 + 数字 + 够长(带横线厂商 key)
+    assert f("my-secret-key-abc12345") is True
+    # 绝不命中:拼错的变量名(全大写+下划线 / 全大写+连字符 / 太短 /
+    # 数字开头带横线 / 带空格 / 中文)——与 test_model_save_rejects_bad_api_key_env 同集
+    assert f("LONGCAT_API_KEYY") is False
+    assert f("LONGCAT-API-KEY") is False
+    assert f("NO_SUCH_VAR_XYZ") is False
+    assert f("sk-short") is False
+    assert f("1startsWith-digit") is False
+    assert f("has-dash") is False
+    assert f("has space") is False
+    assert f("中文名") is False
+    # 绝不命中:带空格/中文等
+    assert f("ak key with spaces 123456") is False
+
+
+def test_model_save_pasted_key_body_shunts_to_env(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """把密钥本体直接粘进密钥栏 → 服务端替用户写进 .env,注册表只存
+    派生的变量名(2026-10-05 拍板:粘贴动作成立,注册表不落明文不变)。"""
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    env_file = tmp_path / "dotenv"
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", env_file)
+    base, _root = http_server
+    key = "ak_TestKey1234567890abcdef"
+    code, body = _post(base, "/api/v1/models/save", {
+        "name": "LongCat Test", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKeyEnv": key,
+        "modelId": "m", "efforts": [], "effortStyle": "reasoning_effort",
+    })
+    assert code == 200 and body["ok"] is True
+    reg = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
+    stored = reg["models"][0]["apiKeyEnv"]
+    assert stored == "LONGCAT_TEST_API_KEY"  # 条目里是变量名,不是 key 本体
+    assert key not in (tmp_path / "models.json").read_text(encoding="utf-8")
+    lines = env_file.read_text(encoding="utf-8").splitlines()
+    assert lines == [f"LONGCAT_TEST_API_KEY={key}"]
+
+
+def test_model_save_pasted_key_reuses_existing_env_var(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """粘的 key 在 .env 里已有同值变量 → 复用该变量名,不繁殖重复行
+    (实测场景:LONGCAT_API_KEY 已在 .env,用户又粘了同一把 key)。"""
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    env_file = tmp_path / "dotenv"
+    key = "ak_TestKey1234567890abcdef"
+    env_file.write_text(f"LONGCAT_API_KEY={key}\nOTHER=1\n", encoding="utf-8")
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", env_file)
+    base, _root = http_server
+    code, _body = _post(base, "/api/v1/models/save", {
+        "name": "LongCat Test", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKeyEnv": key,
+        "modelId": "m", "efforts": [], "effortStyle": "reasoning_effort",
+    })
+    assert code == 200
+    reg = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
+    assert reg["models"][0]["apiKeyEnv"] == "LONGCAT_API_KEY"
+    assert env_file.read_text(encoding="utf-8").splitlines() == [
+        f"LONGCAT_API_KEY={key}", "OTHER=1",
+    ]
+
+
+def test_model_save_typo_var_name_never_writes_env(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """拼错的变量名(全大写+下划线、不像任何 key)→ 400 指路,
+    .env 与注册表都原封不动——识别函数绝不能把错别字当 key。"""
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    env_file = tmp_path / "dotenv"
+    env_file.write_text("KEEP_ME=1\n", encoding="utf-8")
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", env_file)
+    base, _root = http_server
+    code, body = _post(base, "/api/v1/models/save", {
+        "name": "typo-var", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKeyEnv": "LONGCAT_API_KEYY",
+        "modelId": "m", "efforts": [], "effortStyle": "reasoning_effort",
+    })
+    assert code == 400 and "都不存在" in body["detail"]
+    assert env_file.read_text(encoding="utf-8") == "KEEP_ME=1\n"
+    assert not (tmp_path / "models.json").exists()  # 失败的保存不落盘
+
+
+def test_model_save_legacy_api_key_field_shunts(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """旧前端只发明文字段 apiKey → 同路 shunt,不再静默丢弃。"""
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", tmp_path / "models.json")
+    env_file = tmp_path / "dotenv"
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", env_file)
+    base, _root = http_server
+    key = "sk-LegacyKey1234567890ab"
+    code, _body = _post(base, "/api/v1/models/save", {
+        "name": "Legacy Client", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKey": key,
+        "modelId": "m", "efforts": [], "effortStyle": "reasoning_effort",
+    })
+    assert code == 200
+    reg = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
+    entry = reg["models"][0]
+    assert entry["apiKeyEnv"] == "LEGACY_CLIENT_API_KEY"
+    assert "apiKey" not in entry  # 残留明文字段照旧清掉
+    assert f"LEGACY_CLIENT_API_KEY={key}" in env_file.read_text(encoding="utf-8")
+
+
+def test_execution_params_self_heals_key_body_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ba37a54 之前放行的坏条目(key 本体躺在 apiKeyEnv)在执行链上
+    自愈:落 .env、条目改指变量名、本轮用上正确的 key——实测 2026-10-05
+    无效的AppId: sk 的根因,用户无需重存。"""
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    reg_path = d / "models.json"
+    key = "ak_HealKey1234567890abcdef"
+    reg_path.write_text(json.dumps({"models": [{
+        "id": "mdl-bad", "name": "BrokenCat", "protocol": "openai-compat",
+        "baseUrl": "https://x/v1", "apiKeyEnv": key,  # key 本体躺在变量名栏
+        "modelId": "m", "efforts": [], "effortStyle": "reasoning_effort",
+    }]}), encoding="utf-8")
+    env_file = d / "dotenv"
+    monkeypatch.setattr(SERVER, "_MODELS_REGISTRY_PATH", reg_path)
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", env_file)
+
+    calls: list[str] = []
+
+    def fake_resolve(
+        *, explicit: str | None = None,
+        candidates: Any = None, var_name: str = "SIGMA_API_KEY",
+    ) -> tuple[str | None, str]:
+        calls.append(var_name)
+        # key 本体不是合法变量 → None;治愈后的派生变量名 → 假装从
+        # .env 读到(生产里 shunt 刚写入的正是 resolve 同一文件)。
+        if var_name == "BROKENCAT_API_KEY":
+            return key, "配置文件(测试)"
+        return None, "未找到"
+
+    monkeypatch.setattr(SERVER, "resolve_api_key", fake_resolve)
+    for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+
+    base_url, api_key, _m, _p, _e = SERVER._execution_params("BrokenCat")
+    assert api_key == key  # 本轮就用上,不再回落全局链
+    assert calls == [key, "BROKENCAT_API_KEY"]
+    healed = json.loads(reg_path.read_text(encoding="utf-8"))["models"][0]["apiKeyEnv"]
+    assert healed == "BROKENCAT_API_KEY"  # 条目已改指变量名
+    assert f"BROKENCAT_API_KEY={key}" in env_file.read_text(encoding="utf-8")

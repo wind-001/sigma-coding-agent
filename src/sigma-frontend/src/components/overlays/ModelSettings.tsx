@@ -158,18 +158,19 @@ export default function ModelSettings(): JSX.Element {
               </div>
               <div className="models-form__row">
                 <label className="models-form__label">
-                  密钥变量名(~/.sigma/.env 里的变量;留空 = 用全局 SIGMA_API_KEY)
+                  密钥(.env 里的变量名,或直接粘贴密钥;留空 = 用全局 SIGMA_API_KEY)
                 </label>
                 <input
                   className="models-form__input"
                   value={form.apiKeyEnv}
-                  placeholder="例如:DEEPSEEK_API_KEY"
+                  placeholder="例如:DEEPSEEK_API_KEY,或直接粘密钥"
                   onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
                     setForm({ ...form, apiKeyEnv: e.target.value })
                   }
                 />
                 <p className="models-form__hint">
-                  密钥本体只写在 ~/.sigma/.env,不经过浏览器、不落工作台配置。
+                  推荐:把密钥写进 ~/.sigma/.env 后这里填变量名。直接粘贴密钥也行——服务端会
+                  自动替你写进 .env,注册表只存变量名,不落明文。
                 </p>
               </div>
               <div className="models-form__row">

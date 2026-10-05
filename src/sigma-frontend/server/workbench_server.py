@@ -44,7 +44,7 @@ from urllib.parse import parse_qs
 
 from sigma import __version__
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
-from sigma.config.settings import resolve_api_key
+from sigma.config.settings import CANDIDATE_FILES, resolve_api_key
 from sigma.events.lifecycle import (
     ApprovalDecision,
     HookEvent,
@@ -269,6 +269,15 @@ _MODELS_REGISTRY_PATH = Path.home() / ".sigma" / "workbench-models.json"
 #: 写错了等于指了个空气,必须在保存时就拦下。
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+#: 厂商密钥本体的常见形态:带前缀(sk-/ak_/rk_/cs-/ghp_)。变量名拼错
+#: (LONGCAT_API_KEYY 这类全大写+下划线)不会命中——错别字要的是报错
+#: 指路,不能被当成 key 静默写进 .env。
+KEY_BODY_RE = re.compile(r"^(?:sk[-_]|ak[-_]|rk[-_]|cs[-_]|ghp_)[A-Za-z0-9_-]{10,}$")
+
+#: 密钥落盘目标:与 resolve_api_key 同源(CANDIDATE_FILES 首选),写进
+#: 这里 resolve 才读得到。模块级变量是为了测试可替换(monkeypatch)。
+_ENV_FILE_PATH: Path = CANDIDATE_FILES[0]
+
 #: 档位随附方式:OpenAI 风格 reasoning_effort 字符串 / 智谱风格 thinking 对象。
 #: 取值集合刻意封闭——线格式是协议事实,不该让用户自由发挥。
 EFFORT_STYLES: tuple[str, ...] = ("reasoning_effort", "thinking")
@@ -301,6 +310,66 @@ def _effort_extra_body(style: str, effort: str) -> dict[str, Any] | None:
     return {"reasoning_effort": effort}
 
 
+def _looks_like_key_body(value: str) -> bool:
+    """判断变量名栏里粘进来的串是不是**密钥本体**。
+
+    三类命中:带厂商前缀(ak_…/sk-…);含连字符等非法变量名字符且够长
+    (必须同时有小写和数字——排除 has-dash / 1startsWith-digit 这类
+    拼错的变量名);无前缀但够长且大小写数字混杂(base62 型 key)。
+    已知盲区:无前缀的纯 hex key 不识别(与超长变量名无法区分),
+    走 400 指路。粘贴动作本身成立是 2026-10-05 拍板的口径:实测用户
+    两次把 key 粘进变量名栏,与其 400 让人猜,不如服务端替他归位。
+    """
+    v = value.strip().strip("\"'").strip()
+    if len(v) < 16 or len(v) > 200 or not v.isascii() or any(c.isspace() for c in v):
+        return False
+    if KEY_BODY_RE.fullmatch(v) is not None:
+        return True
+    has_lower = any(c.islower() for c in v)
+    has_digit = any(c.isdigit() for c in v)
+    if ENV_NAME_RE.fullmatch(v) is None:  # 含连字符等:不可能是合法变量名
+        return has_lower and has_digit and len(v) >= 20
+    return len(v) >= 24 and has_digit and has_lower and any(c.isupper() for c in v)
+
+
+def _shunt_key_to_env_file(key: str, entry_name: str) -> str:
+    """把粘进来的密钥本体写进 ``_ENV_FILE_PATH``(~/.sigma/.env),返回
+    承载它的变量名。**注册表不落明文(2026-10-03 拍板)不变**:key 在
+    .env,条目仍只存变量名。
+
+    同值已有变量 → 直接复用(同一把 key 不在 .env 里繁殖多份);否则按
+    条目名派生(非字母数字折叠成 _ 后大写,数字开头补 M_ 前缀保证合法),
+    撞了已有**不同值**的变量时加序号避让。
+    """
+    lines: list[str] = (
+        _ENV_FILE_PATH.read_text(encoding="utf-8").splitlines()
+        if _ENV_FILE_PATH.is_file()
+        else []
+    )
+    existing: dict[str, str] = {}
+    for line in lines:
+        k, sep, v = line.partition("=")
+        if sep:
+            existing[k.strip()] = v.strip().strip('"').strip("'")
+    for var, val in existing.items():
+        if val == key:
+            return var
+    base = re.sub(r"[^A-Za-z0-9]+", "_", entry_name).strip("_").upper()
+    if base == "":
+        base = "WORKBENCH"
+    if base[0].isdigit():
+        base = "M_" + base
+    candidate = f"{base}_API_KEY"
+    n = 2
+    while candidate in existing:
+        candidate = f"{base}_{n}_API_KEY"
+        n += 1
+    lines.append(f"{candidate}={key}")
+    _ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ENV_FILE_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return candidate
+
+
 def _normalize_base_url(url: str) -> str:
     """BaseURL 归一化:配置的语义是 **API 根**(provider 自己拼
     ``/chat/completions``)。用户把完整端点粘进来是最常见的错——实测
@@ -315,9 +384,11 @@ def _normalize_base_url(url: str) -> str:
 
 def _save_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """新增/更新模型条目。``name`` 是执行链的解析键,必须唯一;
-    密钥只落**变量名** ``apiKeyEnv``(本体在 ~/.sigma/.env,服务端
-    从不接触 key 本身,也就不存在"留空 = 保留原值"的问题——变量名
-    不是机密,GET 原样回传,每次保存都整体覆盖)。"""
+    密钥在 ~/.sigma/.env,条目只记**变量名** ``apiKeyEnv``(2026-10-03
+    拍板:注册表不落明文)。变量名栏三种输入都收:① 已存在的变量名
+    原样登记;② 密钥本体 → 服务端替用户写进 .env 再登记变量名(实测
+    用户会把 key 粘进这个栏,与其 400 让人猜不如让粘贴直接成立);
+    ③ 都不像 → 400 指路。留空 = 走全局 SIGMA_API_KEY 链。"""
     name = str(body.get("name") or "").strip()
     base_url = _normalize_base_url(str(body.get("baseUrl") or ""))
     model_id = str(body.get("modelId") or "").strip()
@@ -358,21 +429,24 @@ def _save_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             "createdAt": target.get("createdAt", _now_stamp()),
         }
     )
-    # 密钥本体在 ~/.sigma/.env,条目只记变量名(空 = 走全局 SIGMA_API_KEY 链)。
-    # 旧版条目曾把明文 key 存在这里,任何一次保存都顺手清掉残留字段。
+    # 密钥三种输入三条路(见函数 docstring)。旧前端的明文字段 apiKey
+    # 同路处理,不再静默丢弃;每次保存整体覆盖,顺手清掉残留字段。
     api_key_env = str(body.get("apiKeyEnv") or "").strip()
-    if api_key_env != "" and ENV_NAME_RE.fullmatch(api_key_env) is None:
-        return 400, {"detail": "apiKeyEnv 必须是合法环境变量名(字母/下划线开头,只含字母/数字/下划线)"}
+    legacy_key = str(body.get("apiKey") or "").strip()
+    if api_key_env == "" and legacy_key != "":
+        api_key_env = legacy_key
     if api_key_env != "":
-        # 变量名必须**真实存在**:实测 2026-10-05,用户把 key 本体粘进变量名
-        # 字段(ak_… 恰好长得像合法变量名),保存成功但 key 从未被用上——
-        # 指向空气的指针必须在保存时就拦下,而不是等运行时静默回落别的链。
+        # 先按变量名解析:命中就是合法指针,原样登记。
         found, _src = resolve_api_key(var_name=api_key_env)
         if not found:
-            return 400, {
-                "detail": f"变量 {api_key_env} 在环境变量和 ~/.sigma/.env 里都不存在。"
-                "先把 key 写进 ~/.sigma/.env(如 LONGCAT_API_KEY=ak…),这里只填变量名。"
-            }
+            if not _looks_like_key_body(api_key_env):
+                return 400, {
+                    "detail": f"apiKeyEnv 无效:变量 {api_key_env} 在环境变量和 ~/.sigma/.env "
+                    "里都不存在,也不像密钥本体。把 key 写进 ~/.sigma/.env"
+                    "(如 LONGCAT_API_KEY=ak…),这里填变量名;或直接把密钥粘到本栏,"
+                    "服务端会自动写入 .env。"
+                }
+            api_key_env = _shunt_key_to_env_file(api_key_env, name)
     target["apiKeyEnv"] = api_key_env
     target.pop("apiKey", None)
     reg["models"] = models
@@ -1094,6 +1168,20 @@ def _execution_params(
             var_name = str(entry.get("apiKeyEnv") or "").strip()
             if var_name != "":
                 api_key, _source = resolve_api_key(var_name=var_name)
+            if not api_key and var_name != "" and _looks_like_key_body(var_name):
+                # 旧坏条目自愈:ba37a54 之前保存放行过"key 本体躺在
+                # apiKeyEnv 里"的条目(ak_… 恰好像合法变量名),运行时
+                # 指向空气 → 静默回落全局链 → 拿 DeepSeek 的 sk- key 打
+                # LongCat(实测 2026-10-05 无效的AppId: sk)。与其等用户
+                # 重存,执行时顺手把 key 归位(.env 落 key、条目改指
+                # 变量名),本轮即用,下一轮与正常条目无异。
+                healed = _shunt_key_to_env_file(var_name, hint)
+                api_key, _source = resolve_api_key(var_name=healed)
+                reg = _models_registry_read()
+                for e in reg.get("models", []):
+                    if e.get("name") == hint:
+                        e["apiKeyEnv"] = healed
+                _models_registry_write(reg)
             if not api_key:
                 chained, _source = resolve_api_key()
                 api_key = chained or ""
