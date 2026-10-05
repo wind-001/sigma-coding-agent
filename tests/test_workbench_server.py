@@ -1962,3 +1962,34 @@ def test_session_rebuilds_when_task_model_changes(
             SERVER._SESSION_META.pop(task_id, None)
         with SERVER._TASKS_LOCK:
             SERVER._TASKS.pop(task_id, None)
+
+
+def test_post_message_synthesizes_record_for_disk_session(
+    http_server: tuple[str, Path], execution_env: str
+) -> None:
+    """纯磁盘会话(重启后内存无记录)发消息:model/effort 必须有处可落——
+    合成内存记录承载意图。没有它,切模型随消息提交也静默回落 CLI 链
+    (实测 2026-10-05:切 reasoner,请求仍打旧模型)。"""
+    base, _root = http_server
+    code, started = _post(
+        base,
+        "/api/v1/tasks/s-http/messages",
+        {"text": "你好", "model": "zhipu", "effort": "开启"},
+    )
+    assert code == 200 and started["status"] == "running"
+    for _ in range(100):
+        time.sleep(0.2)
+        if "s-http" not in SERVER._RUNNING:
+            break
+    with SERVER._TASKS_LOCK:
+        record = SERVER._TASKS.get("s-http")
+    assert record is not None, "磁盘会话应合成内存记录"
+    assert record["model"] == "zhipu" and record["effort"] == "开启"
+    assert SERVER._SESSION_META.get("s-http", {}).get("model") == "zhipu"
+    # 清理模块态,不污染后续测试
+    with SERVER._SESSIONS_LOCK:
+        SERVER._SESSIONS.pop("s-http", None)
+        SERVER._SESSION_META.pop("s-http", None)
+    with SERVER._TASKS_LOCK:
+        SERVER._TASKS.pop("s-http", None)
+    SERVER._RUNNING.discard("s-http")

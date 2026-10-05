@@ -1626,6 +1626,22 @@ def _post_message(
         record = _TASKS.get(task_id)
         if record is None and not session_path(sessions_root, task_id).is_file():
             return 404, {"detail": f"任务 {task_id} 不存在(草稿随工作台重启消失,已执行的会话在磁盘上)"}
+        if record is None:
+            # 纯磁盘会话(服务重启后内存无记录):补一条内存记录承载
+            # access/model/effort 意图——否则切模型随消息提交也没地方落,
+            # 执行静默回落 CLI 链(实测 2026-10-05:切 reasoner 三轮打旧模型)。
+            record = {
+                "id": task_id,
+                "projectId": PROJECT_ID,
+                "title": "",
+                "description": "",
+                "access": "full",
+                "model": "",
+                "effort": "",
+                "status": "draft",
+                "createdAt": _now_stamp(),
+            }
+            _TASKS[task_id] = record
         if task_id in _RUNNING:
             # 排队判定只做标记,**锁外处理**——排队分支要调
             # _merged_task_payload(内部重入 _TASKS_LOCK),threading.Lock
