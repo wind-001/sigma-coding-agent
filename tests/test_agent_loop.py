@@ -914,3 +914,73 @@ async def test_stream_without_stop_event_is_error_not_completed() -> None:
 
     assert result.status == "error"
     assert "截断" in result.reason or "结束" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_transient_error_with_zero_output_retries_once() -> None:
+    """瞬时空轮 → 自动重试一次(实测 2026-10-06:LongCat 挂 52s 后断开连接,
+    RemoteProtocolError 零产出,用户侧表现为"卡死")。
+
+    第一轮流 = [transient ErrorEvent] 且**零产出** → 消费下一轮重试;
+    第二轮流正常 → 整轮 completed,内容来自重试轮。判据里 remaining_rounds
+    为 0 证明重试真实发生了(两份脚本都被消费)。"""
+    loop, _, _ = _make_loop(
+        [
+            [_error_event("transient", "Server disconnected without sending a response")],
+            [
+                {"type": "text_delta", "text": "重试后的回复", "text_signature": None},
+                {"type": "stop", "stop_reason": "stop"},
+            ],
+        ],
+        tools=[EchoTool()],
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "completed"
+    assert any("重试后的回复" in str(m) for m in result.messages)
+
+
+@pytest.mark.asyncio
+async def test_auth_error_does_not_retry() -> None:
+    """鉴权失败重试无意义:零产出也不重试,status=error,下一轮流不被消费。"""
+    loop, provider, _ = _make_loop(
+        [
+            [_error_event("auth", "bad key")],
+            [
+                {"type": "text_delta", "text": "不该被消费", "text_signature": None},
+                {"type": "stop", "stop_reason": "stop"},
+            ],
+        ],
+        tools=[EchoTool()],
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "error"
+    assert provider.remaining_rounds == 1  # 没有重试:第二轮流原样留着
+
+
+@pytest.mark.asyncio
+async def test_transient_error_after_partial_output_does_not_retry() -> None:
+    """已产出半截内容再断流 → **不重试**:重试会让内容在树里和钩子流里
+    出现两份。partial 保留走既有的 error 路径。"""
+    loop, provider, _ = _make_loop(
+        [
+            [
+                {"type": "text_delta", "text": "先吐了半截", "text_signature": None},
+                _error_event("transient", "断流"),
+            ],
+            [
+                {"type": "text_delta", "text": "不该被消费", "text_signature": None},
+                {"type": "stop", "stop_reason": "stop"},
+            ],
+        ],
+        tools=[EchoTool()],
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "error"
+    assert provider.remaining_rounds == 1
+    assert any("先吐了半截" in str(m) for m in result.messages)

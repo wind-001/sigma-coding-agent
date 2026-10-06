@@ -66,6 +66,7 @@ from sigma.runtime.loop_guard import (
 )
 from sigma.providers import stamps
 from sigma.providers.base import CancelToken, NeverCancelled, SamplingParams
+from sigma.providers.errors import ErrorCode
 from sigma.providers.events import (
     ErrorEvent,
     StopEvent,
@@ -622,39 +623,76 @@ class AgentLoop:
         # 但**兜底要放在这一层**：换一个 provider 实现不该让这个信号丢回去。
         saw_stop = False
         error_codes: list[str] = []
+        # 瞬时故障自动重试（实测 2026-10-06：LongCat 挂 52s 后直接断开连接,
+        # RemoteProtocolError 属 transient——零产出时重试一次就能救回整轮）。
+        attempts = 0
 
-        async for event in self._provider.stream(
-            messages,
-            self._registry.schemas(),
-            model=self._model,
-            signal=signal,
-            sampling=self._sampling,
-        ):
-            if isinstance(event, TextDelta):
-                text_parts.append(event.text)
-                # **逐块透传**：聚合后再发就没有"流式"了（hooks.TextChunk 的说明）
-                await self._emit(TextChunk(text=event.text))
-                if event.text_signature is not None:
-                    text_signature = event.text_signature
-            elif isinstance(event, ThinkingDelta):
-                thinking_parts.append(event.thinking)
-                await self._emit(ThinkingChunk(text=event.thinking))
-            elif isinstance(event, ToolCallDelta):
-                assembler.feed(event)
-            elif isinstance(event, UsageEvent):
-                usage = event.usage
-            elif isinstance(event, StopEvent):
-                saw_stop = True
-                stop_reason = event.stop_reason
-            elif isinstance(event, ErrorEvent):
-                error_messages.append(f"{event.error.code}: {event.error.message}")
-                error_codes.append(str(event.error.code.value))
+        while True:
+            attempts += 1
+            if attempts > 1:
+                # 重试前清空上一轮的残局:半途重置所有累积器,不能有脏状态。
+                text_parts.clear()
+                thinking_parts.clear()
+                error_messages.clear()
+                error_codes.clear()
+                text_signature = None
+                usage = None
+                stop_reason = "stop"
+                saw_stop = False
+                assembler = ToolCallAssembler()
+            produced_any = False
 
-        calls = assembler.finish()
+            async for event in self._provider.stream(
+                messages,
+                self._registry.schemas(),
+                model=self._model,
+                signal=signal,
+                sampling=self._sampling,
+            ):
+                if isinstance(event, TextDelta):
+                    produced_any = True
+                    text_parts.append(event.text)
+                    # **逐块透传**：聚合后再发就没有"流式"了（hooks.TextChunk 的说明）
+                    await self._emit(TextChunk(text=event.text))
+                    if event.text_signature is not None:
+                        text_signature = event.text_signature
+                elif isinstance(event, ThinkingDelta):
+                    produced_any = True
+                    thinking_parts.append(event.thinking)
+                    await self._emit(ThinkingChunk(text=event.thinking))
+                elif isinstance(event, ToolCallDelta):
+                    produced_any = True
+                    assembler.feed(event)
+                elif isinstance(event, UsageEvent):
+                    usage = event.usage
+                elif isinstance(event, StopEvent):
+                    saw_stop = True
+                    stop_reason = event.stop_reason
+                elif isinstance(event, ErrorEvent):
+                    error_messages.append(f"{event.error.code}: {event.error.message}")
+                    error_codes.append(str(event.error.code.value))
+
+            calls = assembler.finish()
+
+            # 重试判据:**只有首次尝试且本轮零产出**——产出过半个字再重试
+            # 会让内容在树里和钩子流里出现两份;TRANSIENT 之外(限流/鉴权/超限)
+            # 各有自己的处置路径,不在这里抢。
+            if (
+                attempts == 1
+                and not produced_any
+                and error_codes
+                and all(code == ErrorCode.TRANSIENT.value for code in error_codes)
+            ):
+                await asyncio.sleep(1.5)
+                signal.raise_if_cancelled()
+                continue
+            break
 
         error_summary: str | None = None
         if error_messages:
             error_summary = f"模型流式返回出错：{'; '.join(error_messages)}"
+            if attempts > 1:
+                error_summary += "（瞬时故障已自动重试 1 次，仍失败）"
         elif not saw_stop:
             # 没有 ErrorEvent 也没有 StopEvent——连 finish 都没看到就流干了。
             # 这种"干净的截断"是**最容易骗过所有断言**的一种：没异常、没报错、

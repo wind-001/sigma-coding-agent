@@ -64,6 +64,45 @@ function ToolChip({ event }: { event: TaskEvent }): JSX.Element {
 
 /** 思考行:模型思考增量,弱化展示(图二的"思考 · 持续了 N 秒"位)。 */
 /**
+ * 执行状态标签(2026-10-06 星辰"调用工具的时候我不知道它在调用工具"):
+ * 按**最后一条直播事件**如实报当前动作——工具在途=「正在调用工具 xxx」,
+ * 思考流=「深度思考中」,正文流=「回复流式输出中」,都没有=「等待模型响应」
+ * 并带秒针(52 秒零反馈曾让用户以为卡死)。挂载即计时,卸载即清零。
+ */
+function TypingLabel({
+  stopRequested,
+  events,
+}: {
+  stopRequested: boolean
+  events: TaskEvent[]
+}): JSX.Element {
+  const [seconds, setSeconds] = useState(0)
+  useEffect((): (() => void) => {
+    const timer = setInterval(() => setSeconds((s) => s + 1), 1000)
+    return (): void => clearInterval(timer)
+  }, [])
+  if (stopRequested) {
+    return <span>已请求中断,等待当前工具完成后停止…</span>
+  }
+  const liveEvents = events.filter((event) => event.id.startsWith('__live'))
+  const last = liveEvents[liveEvents.length - 1]
+  if (last !== undefined && last.kind === 'tool_call' && last.status === undefined) {
+    return <span>正在调用工具 {last.tool ?? ''}…</span>
+  }
+  if (last !== undefined && last.kind === 'thinking') {
+    return <span>深度思考中…</span>
+  }
+  if (last !== undefined && last.kind === 'message' && last.role === 'assistant') {
+    return <span>回复流式输出中…</span>
+  }
+  return (
+    <span>
+      等待模型响应…{seconds > 2 ? `(${seconds}s)` : ''}
+    </span>
+  )
+}
+
+/**
  * 深度思考块(2026-10-04 星辰:可折叠+上下可滑动+蓝玻璃):
  * 流式直播中默认展开,轮次结束后自动收起成一行摘要;头部点击随时展开/收起,
  * 展开态正文区限高可滚动。默认展开与否由 live 驱动——收起是"完成态"。
@@ -647,18 +686,7 @@ export default function TaskDetail({ task }: TaskDetailProps): JSX.Element {
               <span className="wb-typing__dot" />
               <span className="wb-typing__dot" />
               <span className="wb-typing__dot" />
-              {stopRequested
-                ? '已请求中断,等待当前工具完成后停止…'
-                : // 以**最后一条**事件定性:思考流过但已转正文/工具时,再说
-                  // "深度思考中"就是谎报(实测误导用户以为思考内容没展示)。
-                  (() => {
-                    const last = task.events[task.events.length - 1]
-                    return last !== undefined &&
-                      last.kind === 'thinking' &&
-                      last.id.startsWith('__live')
-                      ? '深度思考中…'
-                      : '正在执行,回复流式输出中…'
-                  })()}
+              <TypingLabel stopRequested={stopRequested} events={task.events} />
             </div>
           ) : null}
         </div>
