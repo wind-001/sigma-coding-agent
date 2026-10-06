@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, cast
 
 import pytest
 from pydantic import BaseModel, Field
@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from sigma.agent.messages import AgentMessage, LlmMessageWrapper
 from sigma.tools.base import BaseTool
 from sigma.security.shadow_checkpoint import ShadowCheckpoint
-from sigma.runtime.event_loop import AgentLoop
+from sigma.runtime.event_loop import AgentLoop, TransientBackoff
 from sigma.tools.registry import DuplicateToolError, ToolRegistry
 from sigma.agent.types import ToolContext, ToolResult
 from sigma.providers.base import CancelToken
@@ -167,12 +167,23 @@ def _make_loop(
     tools: list[BaseTool] | None = None,
     max_rounds: int = 20,
     checkpoint: ShadowCheckpoint | None = None,
+    sleeps: list[float] | None = None,
 ) -> tuple[AgentLoop, FakeProvider, ToolRegistry]:
     registry = ToolRegistry()
     for tool in tools if tools is not None else [EchoTool()]:
         registry.register(tool)
 
     provider = FakeProvider.from_rounds(rounds)
+    # 传入 sleeps 列表 → 注入录制型 sleeper：录下退避延迟、不真睡
+    # （3 次退避共 10.5s，真等会让整个套件变慢）。不传 → 生产行为。
+    backoff_sleep: Callable[[float], Awaitable[None]] | None = None
+    if sleeps is not None:
+
+        async def _record_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        backoff_sleep = _record_sleep
+
     loop = AgentLoop(
         provider=provider,
         registry=registry,
@@ -182,6 +193,7 @@ def _make_loop(
         signal=_NeverCancelled(),
         clock=lambda: FIXED_TIME,
         checkpoint=checkpoint,
+        backoff_sleep=backoff_sleep,
     )
     return loop, provider, registry
 
@@ -984,3 +996,60 @@ async def test_transient_error_after_partial_output_does_not_retry() -> None:
     assert result.status == "error"
     assert provider.remaining_rounds == 1
     assert any("先吐了半截" in str(m) for m in result.messages)
+
+
+@pytest.mark.asyncio
+async def test_transient_backoff_delays_are_exponential() -> None:
+    """连续 3 轮瞬时空轮 → 退避重试 3 次,延迟 1.5s→3s→6s,第 4 轮成功救回。
+
+    星辰拍板 2026-10-06:网络原因导致的重试用指数退避。延迟序列由注入的
+    录制 sleeper 记下做断言——测试不真等 10.5s。"""
+    sleeps: list[float] = []
+    loop, _, _ = _make_loop(
+        [
+            [_error_event("transient", "断 1")],
+            [_error_event("transient", "断 2")],
+            [_error_event("transient", "断 3")],
+            [
+                {"type": "text_delta", "text": "第四次成了", "text_signature": None},
+                {"type": "stop", "stop_reason": "stop"},
+            ],
+        ],
+        tools=[EchoTool()],
+        sleeps=sleeps,
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "completed"
+    assert any("第四次成了" in str(m) for m in result.messages)
+    assert sleeps == [1.5, 3.0, 6.0]
+
+
+@pytest.mark.asyncio
+async def test_transient_backoff_gives_up_after_max_retries() -> None:
+    """4 轮全瞬时空轮 → 3 次退避重试后放弃:status=error,措辞如实报次数。
+
+    4 轮脚本全被消费证明每一轮都真试了,不是提前掉出循环。"""
+    sleeps: list[float] = []
+    loop, provider, _ = _make_loop(
+        [[_error_event("transient", f"断 {i}")] for i in range(4)],
+        tools=[EchoTool()],
+        sleeps=sleeps,
+    )
+
+    result = await loop.run_turn(_history())
+
+    assert result.status == "error"
+    assert "已自动重试 3 次" in (result.reason or "")
+    assert provider.remaining_rounds == 0
+    assert sleeps == [1.5, 3.0, 6.0]
+
+
+def test_transient_backoff_delay_caps_at_cap_s() -> None:
+    """退避封顶:max_retries 调大时,延迟也不越过 cap_s(默认 30s)。"""
+    backoff = TransientBackoff()
+    assert backoff.delay_s(1) == 1.5
+    assert backoff.delay_s(2) == 3.0
+    assert backoff.delay_s(3) == 6.0
+    assert backoff.delay_s(10) == 30.0

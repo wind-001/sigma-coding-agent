@@ -131,6 +131,27 @@ class _Planned:
     tool: BaseTool
 
 
+@dataclass(frozen=True)
+class TransientBackoff:
+    """transient 零产出重试的退避策略（星辰拍板 2026-10-06：指数退避，最多 3 次）。
+
+    为什么是 frozen dataclass 不是 pydantic：三问皆否——不生成工具 schema、
+    不落盘/跨进程序列化、不校验外部输入（构造方是代码，不是 wire 上的数据）。
+
+    ``delay_s`` 用"刚失败的是第几次尝试"算下一间隔：1.5s → 3s → 6s…，
+    ``cap_s`` 在把 ``max_retries`` 调大时兜底（如 10 次 ≠ 等半个钟）。
+    """
+
+    max_retries: int = 3
+    base_s: float = 1.5
+    factor: float = 2.0
+    cap_s: float = 30.0
+
+    def delay_s(self, failed_attempt: int) -> float:
+        """第 ``failed_attempt`` 次尝试失败后、重试前应等待的秒数。"""
+        return min(self.base_s * self.factor ** (failed_attempt - 1), self.cap_s)
+
+
 class AgentLoop:
     """agent 循环的**唯一实现**。
 
@@ -164,6 +185,8 @@ class AgentLoop:
         ask: Callable[[str, list[str], int | None], Awaitable[str]] | None = None,
         steering_drain: Callable[[], list[AgentMessage]] | None = None,
         guard_config: "GuardConfig | None" = None,
+        transient_backoff: TransientBackoff | None = None,
+        backoff_sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -175,6 +198,13 @@ class AgentLoop:
         self.last_guard: LoopGuard | None = None
         self._sampling = sampling
         self._signal = signal
+        # transient 零产出重试的退避策略（详见 TransientBackoff docstring）。
+        # sleep 也注入：测试录下延迟序列做断言，不真等 10.5s——
+        # 与 clock/signal 同一条 DI 纪律，None = 生产行为 asyncio.sleep。
+        self._transient_backoff = transient_backoff or TransientBackoff()
+        self._backoff_sleep: Callable[[float], Awaitable[None]] = (
+            backoff_sleep or asyncio.sleep
+        )
         # 影子 git checkpoint（D5 的 L2）。**None = 没有**——回放与旧测试路径
         # 不传它，行为与加它之前逐字节一致（与渲染钩子的纪律相同）。
         # 它由产品壳构造并传入：放哪（GIT_DIR 路径）是产品壳的策略。
@@ -624,7 +654,9 @@ class AgentLoop:
         saw_stop = False
         error_codes: list[str] = []
         # 瞬时故障自动重试（实测 2026-10-06：LongCat 挂 52s 后直接断开连接,
-        # RemoteProtocolError 属 transient——零产出时重试一次就能救回整轮）。
+        # RemoteProtocolError 属 transient——零产出时重试就能救回整轮）。
+        # 退避策略见 TransientBackoff（星辰拍板 2026-10-06：指数退避，最多 3 次）：
+        # 固定 1.5s 只覆盖"抖一下"的故障，指数退避才够得着"挂几秒~几十秒再断"。
         attempts = 0
 
         while True:
@@ -674,16 +706,16 @@ class AgentLoop:
 
             calls = assembler.finish()
 
-            # 重试判据:**只有首次尝试且本轮零产出**——产出过半个字再重试
-            # 会让内容在树里和钩子流里出现两份;TRANSIENT 之外(限流/鉴权/超限)
-            # 各有自己的处置路径,不在这里抢。
+            # 重试判据:**本轮零产出**——产出过半个字再重试会让内容在树里
+            # 和钩子流里出现两份;TRANSIENT 之外(限流/鉴权/超限)各有自己的
+            # 处置路径,不在这里抢。次数与间隔交给 TransientBackoff。
             if (
-                attempts == 1
+                attempts <= self._transient_backoff.max_retries
                 and not produced_any
                 and error_codes
                 and all(code == ErrorCode.TRANSIENT.value for code in error_codes)
             ):
-                await asyncio.sleep(1.5)
+                await self._backoff_sleep(self._transient_backoff.delay_s(attempts))
                 signal.raise_if_cancelled()
                 continue
             break
@@ -692,7 +724,7 @@ class AgentLoop:
         if error_messages:
             error_summary = f"模型流式返回出错：{'; '.join(error_messages)}"
             if attempts > 1:
-                error_summary += "（瞬时故障已自动重试 1 次，仍失败）"
+                error_summary += f"（瞬时故障已自动重试 {attempts - 1} 次，仍失败）"
         elif not saw_stop:
             # 没有 ErrorEvent 也没有 StopEvent——连 finish 都没看到就流干了。
             # 这种"干净的截断"是**最容易骗过所有断言**的一种：没异常、没报错、
