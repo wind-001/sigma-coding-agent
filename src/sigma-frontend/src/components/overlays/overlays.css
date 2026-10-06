@@ -740,10 +740,32 @@
 
 .mail-detail__preview-text {
   margin: 0;
+  /* 润色稿过长时卡内上下滚动,不再把整张卡顶出屏幕(星辰 2026-10-06) */
+  max-height: 240px;
+  overflow-y: auto;
   font-size: 13px;
   line-height: 1.7;
   white-space: pre-wrap;
   color: var(--text-primary);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(138, 115, 85, 0.45) transparent;
+}
+
+.mail-detail__preview-text::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mail-detail__preview-text::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(138, 115, 85, 0.35);
+}
+
+.mail-detail__preview-text::-webkit-scrollbar-thumb:hover {
+  background: rgba(138, 115, 85, 0.55);
+}
+
+.mail-detail__preview-text::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .auto-mail__note {
