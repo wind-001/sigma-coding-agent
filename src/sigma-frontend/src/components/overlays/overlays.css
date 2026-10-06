@@ -325,8 +325,105 @@
    圆角 16 不做尖锐直角;斜向高光烘焙在自身背景(滚动不跟内容走)。
    ------------------------------------------------------------ */
 
-.auto-mail {
-  border-radius: 16px;
+/* ------------------------------------------------------------
+   自动化·邮件表单内部件(auto-mail__*):被面板与主区邮件详情共用。
+   2026-10-06 起卡片根容器改由 .mail-detail(主区)承担,面板内不再有邮件卡。
+   ------------------------------------------------------------ */
+
+/* ------------------------------------------------------------
+   自动化面板·功能单条(2026-10-06,星辰"邮件是自动化的一个功能,
+   单列一条,点击详情在主区")——与邮件卡同族宣纸底,整行可点。
+   ------------------------------------------------------------ */
+
+.auto-panel__section {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.auto-panel__section:first-child {
+  margin-top: 4px;
+}
+
+.auto-panel__feature {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(138, 115, 85, 0.22);
+  background:
+    linear-gradient(
+      155deg,
+      rgba(255, 253, 248, 0.6) 0%,
+      rgba(255, 253, 248, 0) 45%
+    ),
+    linear-gradient(168deg, rgba(253, 250, 243, 0.9), rgba(246, 240, 229, 0.82));
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+}
+
+.auto-panel__feature:hover {
+  border-color: rgba(176, 83, 60, 0.4);
+  box-shadow: 0 3px 14px rgba(84, 66, 50, 0.12);
+}
+
+.auto-panel__feature:active {
+  transform: scale(0.99);
+}
+
+.auto-panel__feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: #a86a4b;
+  background: rgba(168, 106, 75, 0.12);
+}
+
+.auto-panel__feature-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auto-panel__feature-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #5a4a3a;
+}
+
+.auto-panel__feature-sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.auto-panel__feature-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------
+   主区·邮件功能详情(2026-10-06):同一族玻璃,宽版居中布局。
+   ------------------------------------------------------------ */
+
+.mail-detail {
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 26px 26px 20px;
+  border-radius: 18px;
   border: 1px solid rgba(138, 115, 85, 0.24);
   background:
     linear-gradient(
@@ -342,10 +439,50 @@
   backdrop-filter: blur(18px) saturate(1.4);
   -webkit-backdrop-filter: blur(18px) saturate(1.4);
   box-shadow:
-    0 6px 22px rgba(84, 66, 50, 0.08),
+    0 8px 26px rgba(84, 66, 50, 0.09),
     inset 0 1px 0 rgba(255, 255, 255, 0.85);
-  padding: 14px 14px 15px;
-  margin: 4px 0 16px;
+}
+
+.mail-detail__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.mail-detail__titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.mail-detail__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #5a4a3a;
+}
+
+.mail-detail__sub {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mail-detail__back {
+  display: block;
+  margin: 14px auto 0;
+  padding: 5px 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #8a7660;
+  background: rgba(138, 115, 85, 0.08);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mail-detail__back:hover {
+  background: rgba(138, 115, 85, 0.16);
+  color: #5a4a3a;
 }
 
 .auto-mail__head {

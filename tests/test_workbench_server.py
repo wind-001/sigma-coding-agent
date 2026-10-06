@@ -2376,7 +2376,10 @@ def test_email_send_uses_right_transport_and_headers(
     assert "starttls" not in calls  # 465 隐式 SSL,不再 STARTTLS
     assert calls["login"] == ("lkk@qq.com", "authcode-xyz-123")
     assert calls["tos"] == ["friend@example.com"]
-    assert calls["from"] == "sigma 工作台<lkk@qq.com>"
+    # 信封发件人恒用认证账号(纯 ASCII;显示名走 From 头的 RFC 2047 编码)
+    assert calls["from"] == "lkk@qq.com"
+    assert "From: =?utf-8?" in calls["msg"]  # 显示名"sigma 工作台"被编码
+    assert "<lkk@qq.com>" in calls["msg"]
     # 中文主题/正文按 MIME 规则编码(RFC 2047 头 + base64 体)——原文不该裸奔在传输层
     assert "Subject: =?utf-8?" in calls["msg"]
     import base64 as _b64
@@ -2421,3 +2424,60 @@ def test_email_send_errors_are_actionable(
     monkeypatch.setenv("SMTP_PASSWORD", "wrong")
     code, body = _post(base, "/api/v1/email/send", {"to": "a@b.com", "subject": "s", "body": "x"})
     assert code == 400 and "授权码" in body["detail"]
+
+
+def test_email_send_non_ascii_sender_never_drops_connection(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """实测 2026-10-06(星辰报 Failed to fetch):发件人显示填了纯中文名
+    "不知名的model",smtplib 拼 SMTP 命令走 ascii 编码,信封地址带中文 →
+    UnicodeEncodeError(ValueError)不在捕获范围 → 处理线程炸掉=连接无响应
+    断开,浏览器只见 Failed to fetch。修后:信封恒用认证账号,显示名走
+    formataddr RFC 2047 编码,任何异常兜底成可见 400。"""
+    monkeypatch.setattr(SERVER, "_SMTP_CONFIG_PATH", tmp_path / "smtp.json")
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", tmp_path / "dotenv")
+    monkeypatch.setenv("SMTP_PASSWORD", "authcode-xyz-123")
+    calls = _install_fake_smtplib(monkeypatch)
+    base, _root = http_server
+    # 复刻星辰的真实配置:sender 是纯中文名,不含邮箱地址
+    code, _body = _post(base, "/api/v1/email/config", {
+        "host": "smtp.qq.com", "port": 465, "user": "lkx@qq.com",
+        "sender": "不知名的model", "password": "", "useTls": False,
+    })
+    assert code == 200
+    code, body = _post(base, "/api/v1/email/send", {
+        "to": "friend@example.com", "subject": "s", "body": "x",
+    })
+    assert code == 200 and body["ok"] is True, body
+    assert calls["from"] == "lkx@qq.com"  # 信封=认证账号,不含中文
+    assert "From: =?utf-8?" in calls["msg"]  # 显示名已编码
+
+
+def test_email_send_unexpected_exception_becomes_visible_400(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """兜底纪律:sendmail 抛出任何非 SMTP/OS 异常(如 ValueError 族)必须
+    转成可见的 400 detail,不能炸掉处理线程让连接无响应断开。"""
+    monkeypatch.setattr(SERVER, "_SMTP_CONFIG_PATH", tmp_path / "smtp.json")
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", tmp_path / "dotenv")
+    monkeypatch.setenv("SMTP_PASSWORD", "authcode-xyz-123")
+    calls = _install_fake_smtplib(monkeypatch)
+    base, _root = http_server
+    code, _body = _post(base, "/api/v1/email/config", {
+        "host": "smtp.qq.com", "port": 465, "user": "lkk@qq.com", "password": "",
+    })
+    assert code == 200
+
+    class _WeirdError(Exception):
+        pass
+
+    _FakeSMTPClient.calls = {}
+    _FakeSMTPClient.login_raises = _WeirdError("模拟意外异常")
+    code, body = _post(base, "/api/v1/email/send", {
+        "to": "a@b.com", "subject": "s", "body": "x",
+    })
+    assert code == 400 and "发送失败" in body["detail"] and "模拟意外异常" in body["detail"]

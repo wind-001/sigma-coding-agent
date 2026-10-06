@@ -40,6 +40,7 @@ import uuid
 from datetime import datetime
 from email.header import Header
 from email.mime.text import MIMEText
+from email.utils import formataddr, parseaddr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -587,7 +588,14 @@ def _save_email_config(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 def _send_email(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """寄出一封纯文本邮件。错误**翻译成人话**返回 400:SMTP 的异常类名
     (SMTPAuthenticationError 之类)对用户是噪音,授权码 vs 登录密码
-    这个坑必须点破——多数国内厂商(QQ/163)用的是专用授权码。"""
+    这个坑必须点破——多数国内厂商(QQ/163)用的是专用授权码。
+
+    **发件人显示名的两个坑(实测 2026-10-06"不知名的model")**:
+    ① smtplib 拼 SMTP 命令走 **ascii 编码**,非 ASCII 的信封地址会
+    UnicodeEncodeError——ValueError 不在 SMTPException/OSError 里,处理
+    线程炸掉=连接无响应断开,浏览器只见 "Failed to fetch"。所以信封
+    发件人**恒用认证账号**(纯 ASCII,服务器也认它);② 显示名进 From
+    头要走 formataddr(charset="utf-8") 的 RFC 2047 编码。"""
     to = str(body.get("to") or "").strip()
     subject = str(body.get("subject") or "").strip()
     text = str(body.get("body") or "")
@@ -611,11 +619,20 @@ def _send_email(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             }
     port = int(cfg.get("port") or 465)
     use_tls = bool(cfg.get("useTls", port != 465))
-    sender = str(cfg.get("sender") or "") or user
+    # 收件人剥显示名只留地址(带中文的原始串同样会炸 ascii 命令编码)
+    _to_display, to_addr = parseaddr(to)
+    if "@" not in to_addr:
+        to_addr = to
+    # 发件人:sender 字段是"显示"语义,可以是非地址的名字;解析出 @ 地址,
+    # 没有就退回认证账号。显示名经 formataddr 做 RFC 2047 编码。
+    raw_sender = str(cfg.get("sender") or "").strip()
+    display, addr = parseaddr(raw_sender)
+    if "@" not in addr:
+        display, addr = raw_sender, user
     msg = MIMEText(text, "plain", "utf-8")
     msg["Subject"] = str(Header(subject, "utf-8"))
-    msg["From"] = sender
-    msg["To"] = to
+    msg["From"] = formataddr((display, addr), charset="utf-8") if display else addr
+    msg["To"] = to_addr
     try:
         client: smtplib.SMTP
         if port == 465:
@@ -627,7 +644,7 @@ def _send_email(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         try:
             if password:
                 client.login(user, password)
-            client.sendmail(sender, [to], msg.as_string())
+            client.sendmail(user, [to_addr], msg.as_string())
         finally:
             try:
                 client.quit()
@@ -647,6 +664,10 @@ def _send_email(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         }
     except (smtplib.SMTPException, OSError) as exc:
         return 400, {"detail": f"SMTP 发送失败:{type(exc).__name__}: {exc}"}
+    except Exception as exc:
+        # 兜底:任何未预期异常都必须变成**可见的 400**,不能变成无响应的
+        # 断连——断连在浏览器端只有一个 "Failed to fetch",根因全被吞掉。
+        return 400, {"detail": f"发送失败:{type(exc).__name__}: {exc}"}
 
 
 def _all_projects(primary: Path) -> list[dict[str, Any]]:

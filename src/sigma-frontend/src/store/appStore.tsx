@@ -25,7 +25,8 @@ export interface AppState {
   /** 当前激活的工作区(切换语义):侧栏过滤、新任务目标、composer 显示共用这一个源 */
   activeProjectId: string
   selectedTaskId: string | null
-  view: 'home' | 'task'
+  /** home=首页 / task=会话详情 / mail=自动化·邮件功能详情(主区展示) */
+  view: 'home' | 'task' | 'mail'
   statusFilter: StatusFilter
   draft: string
   composerAccess: string
@@ -117,6 +118,9 @@ export interface AppActions {
   newTaskDraft(): void
   goHome(): void
   selectTask(taskId: string): void
+  /** 打开自动化·邮件功能详情(主区展示,星辰 2026-10-06:邮件是自动化的
+   *  一个功能,面板里单列一条,点击后详情在主区,不塞在侧栏面板里) */
+  openMailFeature(): void
   submitDraft(): Promise<void>
   setTaskStatus(taskId: string, status: TaskStatus): Promise<void>
   deleteTaskById(taskId: string): Promise<void>
@@ -367,6 +371,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       },
       selectTask(taskId: string): void {
         patch({ view: 'task', selectedTaskId: taskId })
+      },
+      openMailFeature(): void {
+        patch({ view: 'mail', selectedTaskId: null })
       },
       async submitDraft(): Promise<void> {
         const s = stateRef.current
