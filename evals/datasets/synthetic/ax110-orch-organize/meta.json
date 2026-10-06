@@ -1,0 +1,30 @@
+{
+  "id": "ax110-orch-organize",
+  "kind": "synthetic",
+  "title": "[多步编排] 按扩展名归档目录",
+  "description": "工作区的 dump/ 目录下平铺着 12 个文件（.txt/.csv/.log 三种扩展名）。\n\n任务：把每个文件移动到 dump/ 下按扩展名命名的子目录（txt/、csv/、log/），并写 dump/manifest.json——一个 JSON 对象，键为原文件名，值为目标子目录名（如 {\"note-a.txt\": \"txt\"}）。移动后 dump/ 根下不得再有任何文件（只允许存在三个子目录和 manifest.json），文件内容必须与原来逐字节一致。\n\n约束：不要删除或修改任何文件内容；不要修改 tests/（判定时会用原始版本覆盖回去）。\n自验：python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "4 failed in 0.17s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_all_files_moved",
+      "FAILED tests/test_all.py::test_manifest",
+      "FAILED tests/test_all.py::test_root_has_no_files",
+      "FAILED tests/test_all.py::test_content_preserved"
+    ],
+    "recorded_at": "2026-10-04T20:19:21",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

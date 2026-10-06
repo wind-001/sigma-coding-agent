@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:20:16",
+  "task": "ax120-syn-regression",
+  "title": "[规格综合] 修折扣不破坏退费与批量价",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax120-syn-regression",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 348,
+    "completion_tokens": 146,
+    "wall_clock_s": 1.071,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax120-syn-regression\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "...........                                                              [100%]\n11 passed in 0.04s"
+    }
+  }
+}

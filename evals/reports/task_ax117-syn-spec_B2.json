@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:13:21",
+  "task": "ax117-syn-spec",
+  "title": "[规格综合] 按 SPEC 生成报告",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax117-syn-spec",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 7,
+    "tool_calls": 7,
+    "tool_failures": 1,
+    "prompt_tokens": 24583,
+    "completion_tokens": 797,
+    "wall_clock_s": 8.224,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax117-syn-spec\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "..                                                                       [100%]\n2 passed in 0.02s"
+    }
+  }
+}

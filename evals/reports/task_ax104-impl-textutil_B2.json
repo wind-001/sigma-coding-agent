@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:27",
+  "task": "ax104-impl-textutil",
+  "title": "[从零实现] 词频与命名转换",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax104-impl-textutil",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 5,
+    "tool_calls": 5,
+    "tool_failures": 0,
+    "prompt_tokens": 17908,
+    "completion_tokens": 959,
+    "wall_clock_s": 8.404,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax104-impl-textutil\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": ".........                                                                [100%]\n9 passed in 0.04s"
+    }
+  }
+}

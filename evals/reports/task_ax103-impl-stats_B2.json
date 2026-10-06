@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:23",
+  "task": "ax103-impl-stats",
+  "title": "[从零实现] 描述统计类",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax103-impl-stats",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 8,
+    "tool_calls": 8,
+    "tool_failures": 2,
+    "prompt_tokens": 32511,
+    "completion_tokens": 2036,
+    "wall_clock_s": 13.454,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax103-impl-stats\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "........                                                                 [100%]\n8 passed in 0.06s"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "ax120-syn-regression",
+  "kind": "synthetic",
+  "title": "[规格综合] 修折扣不破坏退费与批量价",
+  "description": "payments.py 里 apply_discount 有 bug：'打 9 折'应是**原价的 90%**（price - price*percent//100 只在 percent 表示\"减免百分比\"时成立,而本模块的约定是 percent=折扣率,如 90 = 打九折）。tests/ 里对应的用例失败,另有两个既有行为是绿的——**不许破坏它们**。\n\n请让 tests/ 全部通过。\n\n约束:只许修改 payments.py;不得新建/删除文件;不得动 tests/;三个函数的签名都不许改。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "5 failed, 6 passed in 0.14s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_discount_ninety",
+      "FAILED tests/test_all.py::test_discount_zero",
+      "FAILED tests/test_all.py::test_discount_no_change",
+      "FAILED tests/test_all.py::test_bulk_discount",
+      "FAILED tests/test_all.py::test_bulk_discount_large"
+    ],
+    "recorded_at": "2026-10-04T20:19:35",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

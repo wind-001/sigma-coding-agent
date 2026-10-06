@@ -1,0 +1,27 @@
+{
+  "id": "ax119-syn-config",
+  "kind": "synthetic",
+  "title": "[规格综合] 配置驱动的排序器",
+  "description": "sorter.py 的 sort_items 完全无视 config.toml。config.toml（在 sort_items 被调用时读取,**不许在 import 时读死**）:\n\n```toml\n[sort]\nstrategy = \"name\"   # name=字典序 | length=按长度,同长按字典序\nreverse = false     # true=结果整体反转\n```\n\n请让 sort_items 按 config.toml 的实际取值工作,让 tests/ 全部通过。config 路径=工作区根的 config.toml(与 sorter.py 同目录);用标准库 tomllib。\n\n约束:只许修改 sorter.py;不得新建/删除文件;不得动 tests/;保持函数签名不变。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "1 failed, 6 passed in 0.13s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_reverse"
+    ],
+    "recorded_at": "2026-10-04T20:19:34",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

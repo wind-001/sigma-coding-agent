@@ -183,11 +183,25 @@ def _tail(text: str, lines: int = 12) -> str:
 
 
 def _differs(source: Path, target: Path) -> bool:
-    """``target`` 与 ``source`` 是否有内容差异（逐文件比对，不依赖 git）。"""
+    """``target`` 与 ``source`` 是否有内容差异（逐文件比对，不依赖 git）。
+
+    **忽略运行时产物**（``__pycache__`` / ``.pytest_cache``）：agent 按任务
+    描述自验（``python -m pytest``）必然产生它们——2026-10-04 实测，五个
+    B2 任务的功能测试全绿，却因这些目录被误记成"改过测试"。
+    """
+    ignored = {"__pycache__", ".pytest_cache"}
+
+    def iter_files(root: Path) -> set[Path]:
+        return {
+            p.relative_to(root)
+            for p in root.rglob("*")
+            if p.is_file() and not any(part in ignored for part in p.relative_to(root).parts)
+        }
+
     if not target.exists():
         return True
-    source_files = {p.relative_to(source) for p in source.rglob("*") if p.is_file()}
-    target_files = {p.relative_to(target) for p in target.rglob("*") if p.is_file()}
+    source_files = iter_files(source)
+    target_files = iter_files(target)
     if source_files != target_files:
         return True
     return any(

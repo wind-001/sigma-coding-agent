@@ -1,0 +1,28 @@
+{
+  "id": "ax103-impl-stats",
+  "kind": "synthetic",
+  "title": "[从零实现] 描述统计类",
+  "description": "在 descriptive.py 中实现类 DescriptiveStats(工作区当前没有该文件,只有示例测试)。\n\n规格:\n- 构造:DescriptiveStats(values: list[float])。空列表抛 ValueError;构造后外部修改原列表不得影响实例(内部保存副本)。\n- median()：中位数。偶数个取中间两数的算术平均;奇数个取排序后正中间。\n- mode()：出现次数最多的值;**平局取原序列中首次出现最早**的那个。\n- stdev()：样本标准差(除以 n-1);元素个数 <2 抛 ValueError。\n\n约束:只许用标准库(不准用 statistics 模块代算 median/stdev——自己实现);不要修改 tests/ 下的测试文件(判定时会用原始版本覆盖回去)。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 2,
+    "summary": "2 errors in 0.21s",
+    "failed_tests": [
+      "ERROR tests/test_all.py",
+      "ERROR tests/test_examples.py"
+    ],
+    "recorded_at": "2026-10-04T20:19:11",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

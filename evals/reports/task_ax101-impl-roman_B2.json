@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:19",
+  "task": "ax101-impl-roman",
+  "title": "[从零实现] 罗马数字互转",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax101-impl-roman",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 8,
+    "tool_calls": 8,
+    "tool_failures": 1,
+    "prompt_tokens": 35208,
+    "completion_tokens": 2391,
+    "wall_clock_s": 14.567,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax101-impl-roman\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "...........                                                              [100%]\n11 passed in 0.05s"
+    }
+  }
+}

@@ -112,11 +112,16 @@ def _tool_failures(result: TurnResult) -> int:
     )
 
 
-def _make_provider(api_key: str) -> OpenAICompatProvider:
+def _default_model(preset: str) -> str:
+    return builtin_providers().resolve(preset).default_model
+
+
+def _make_provider(api_key: str, preset: str = DEFAULT_PRESET) -> OpenAICompatProvider:
+    spec = builtin_providers().resolve(preset)
     return OpenAICompatProvider(
-        base_url=builtin_providers().resolve(DEFAULT_PRESET).base_url,
+        base_url=spec.base_url,
         api_key=api_key,
-        provider_name=DEFAULT_PRESET,
+        provider_name=preset,
     )
 
 
@@ -127,6 +132,7 @@ async def _run_agent(
     api_key: str,
     model: str,
     profile: EvalProfile,
+    preset: str = DEFAULT_PRESET,
 ) -> TurnResult:
     """把任务描述交给 sigma，返回它这一轮的结果。
 
@@ -134,7 +140,7 @@ async def _run_agent(
     checkpoint**——不是"不传参数"（那样会被默认 32k 策略顶掉，
     详规 §11.5 第 1 条）。
     """
-    provider = _make_provider(api_key)
+    provider = _make_provider(api_key, preset)
     try:
         return await sdk.run_task(
             spec.description,
@@ -207,14 +213,19 @@ def _task_module(workspace: Path) -> Path:
 
 
 async def _run_b0(
-    spec: TaskSpec, workspace: Path, *, api_key: str, model: str
+    spec: TaskSpec,
+    workspace: Path,
+    *,
+    api_key: str,
+    model: str,
+    preset: str = DEFAULT_PRESET,
 ) -> TaskResult:
     """B0：无工具、单轮。模型凭任务描述一次给出修好的文件，运行器替它写入。
 
     **这是健全性检查，不是正式档**：它若通过，说明这条任务不需要 agent
     ——描述+源码就够，整套 agent 评测对这条任务没有区分度。
     """
-    provider = _make_provider(api_key)
+    provider = _make_provider(api_key, preset)
     started = time.monotonic()
     try:
         module = _task_module(workspace)
@@ -289,6 +300,7 @@ async def run_one(
     no_todo: bool = False,
     sub_agent: bool = False,
     max_rounds: int | None = None,
+    preset: str = DEFAULT_PRESET,
 ) -> int:
     task_dir = DATASETS / "synthetic" / task_id
     if not task_dir.is_dir():
@@ -324,12 +336,16 @@ async def run_one(
         if not api_key:
             print("[错误] 没找到 API key（SIGMA_API_KEY / ~/.sigma/.env）", file=sys.stderr)
             return 2
-        print(f"  模型     {model or 'deepseek-chat'}（key 来源：{source}）")
+        print(f"  模型     {model or _default_model(preset)}（preset：{preset}，key 来源：{source}）")
 
         started = time.monotonic()
         if profile_name == "B0":
             task_result = await _run_b0(
-                spec, workspace, api_key=api_key, model=model or "deepseek-chat"
+                spec,
+                workspace,
+                api_key=api_key,
+                model=model or _default_model(preset),
+                preset=preset,
             )
             verdict = judge.judge(workspace, task_result)
             return _report(spec, task_result, verdict, profile_name)
@@ -357,7 +373,8 @@ async def run_one(
                 spec,
                 workspace,
                 api_key=api_key,
-                model=model or "deepseek-chat",
+                model=model or _default_model(preset),
+                preset=preset,
                 profile=profile,
             )
         except Exception as exc:  # noqa: BLE001 — 评测要如实记下失败，不能让它炸掉整轮
@@ -501,6 +518,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="跑一条任务集的评测")
     parser.add_argument("--task", required=True, help="任务 id（datasets/synthetic/<id>）")
     parser.add_argument("--model", default=None, help="覆盖模型名")
+    parser.add_argument(
+        "--preset",
+        default=DEFAULT_PRESET,
+        help="厂商 preset（决定 base_url 与默认模型），如 deepseek / zhipu",
+    )
     parser.add_argument(
         "--profile",
         default="B2",

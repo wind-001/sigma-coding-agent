@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:45",
+  "task": "ax109-orch-logstats",
+  "title": "[多步编排] 日志分级统计",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax109-orch-logstats",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 5,
+    "tool_calls": 4,
+    "tool_failures": 1,
+    "prompt_tokens": 20637,
+    "completion_tokens": 579,
+    "wall_clock_s": 6.174,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax109-orch-logstats\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "..                                                                       [100%]\n2 passed in 0.02s"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:47",
+  "task": "ax112-orch-topo",
+  "title": "[多步编排] 依赖拓扑构建顺序",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax112-orch-topo",
+    "eval_profile": "B0",
+    "status": "error",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "wall_clock_s": 0.001,
+    "error": "RuntimeError: B0 要求工作区根下恰好一个 .py 模块，找到 0 个：[]"
+  },
+  "verdict": {
+    "passed": false,
+    "reason": "判定命令 exit 1",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax112-orch-topo\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 1,
+      "summary": "        the built-in open() function does.\n        \"\"\"\n        if \"b\" not in mode:\n            encoding = io.text_encoding(encoding)\n>       return io.open(self, mode, buffering, encoding, errors, newline)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: 'C:\\\\Users\\\\刘康鑫\\\\AppData\\\\Local\\\\Temp\\\\sigma-eval-3hvp68gg\\\\workspace\\\\build_order.txt'\nD:\\Myapp\\anaconda\\Lib\\pathlib\\_local.py:537: FileNotFoundError\n=========================== short test summary info ===========================\nFAILED tests/test_all.py::test_exact_deterministic_order - FileNotFoundError:...\nFAILED tests/test_all.py::test_all_modules_present - FileNotFoundError: [Errn...\n2 failed in 0.22s"
+    }
+  }
+}

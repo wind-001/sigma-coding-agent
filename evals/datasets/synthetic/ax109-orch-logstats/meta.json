@@ -1,0 +1,27 @@
+{
+  "id": "ax109-orch-logstats",
+  "kind": "synthetic",
+  "title": "[多步编排] 日志分级统计",
+  "description": "工作区根目录有 app.log（每行格式：`2026-10-04 09:00:00 [LEVEL] 消息`，级别只有 DEBUG/INFO/WARNING/ERROR 四种）。\n\n任务：统计每个级别的行数，把结果写到 out/levels.json——一个 JSON 对象，键为 \"DEBUG\"、\"INFO\"、\"WARNING\"、\"ERROR\"（四个键都必须存在），值为对应的行数（整数）。out 目录不存在就创建。\n\n可以用任何方式完成（写脚本跑、直接命令行处理都行），产物以 out/levels.json 的最终内容为准。\n约束：不要修改 app.log；不要修改 tests/（判定时会用原始版本覆盖回去）。\n自验：python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "1 failed, 1 passed in 0.13s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_levels_json_exact"
+    ],
+    "recorded_at": "2026-10-04T20:19:19",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

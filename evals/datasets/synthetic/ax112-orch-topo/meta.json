@@ -1,0 +1,28 @@
+{
+  "id": "ax112-orch-topo",
+  "kind": "synthetic",
+  "title": "[多步编排] 依赖拓扑构建顺序",
+  "description": "工作区有 deps.txt：每行 `模块名: 依赖1 依赖2`（依赖可为空，冒号后可能没有空格），共 6 个模块。\n\n任务：生成 build_order.txt——构建顺序，每行一个模块名，满足：任何模块出现在它的所有依赖之后；**当多个模块同时可构建时，取字典序最小的一个**（输出必须与该确定性规则完全一致，不许用其他平局规则）。\n\n约束：不要修改 deps.txt；不要修改 tests/（判定时会用原始版本覆盖回去）。\n自验：python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "2 failed in 0.16s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_exact_deterministic_order",
+      "FAILED tests/test_all.py::test_all_modules_present"
+    ],
+    "recorded_at": "2026-10-04T20:19:24",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

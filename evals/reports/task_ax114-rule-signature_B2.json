@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:19:51",
+  "task": "ax114-rule-signature",
+  "title": "[指令遵循与边界] 修 bug 且不得改函数签名",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax114-rule-signature",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 4,
+    "tool_calls": 4,
+    "tool_failures": 0,
+    "prompt_tokens": 13221,
+    "completion_tokens": 312,
+    "wall_clock_s": 3.867,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax114-rule-signature\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": ".......                                                                  [100%]\n7 passed in 0.03s"
+    }
+  }
+}

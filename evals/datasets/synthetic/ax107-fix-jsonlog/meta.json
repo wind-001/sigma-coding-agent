@@ -1,0 +1,27 @@
+{
+  "id": "ax107-fix-jsonlog",
+  "kind": "synthetic",
+  "title": "[缺陷修复] JSON 日志序列化崩溃",
+  "description": "jsonlog.py 的 JsonLogger 在 log() 收到 datetime / uuid.UUID 类型的字段时直接抛 TypeError——json.dumps 不认识这些类型。\n\n请修好序列化,让 tests/ 下的测试全部通过。序列化规格:\n- datetime → ISO 8601 字符串(isoformat())\n- uuid.UUID → 其字符串形式\n- 其他 json 不支持的类型 → str(x)\n- datetime/UUID 之外的原生 JSON 类型(list/dict/数字/字符串)保持不变\n\n约束:只改 jsonlog.py;不要修改 tests/(判定时会用原始版本覆盖回去);\n保持追加写语义(多次 log 形成多行)。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "1 failed, 2 passed in 0.14s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_datetime_and_uuid"
+    ],
+    "recorded_at": "2026-10-04T20:19:17",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

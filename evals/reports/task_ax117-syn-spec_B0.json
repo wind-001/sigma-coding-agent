@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:13:14",
+  "task": "ax117-syn-spec",
+  "title": "[规格综合] 按 SPEC 生成报告",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax117-syn-spec",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 232,
+    "completion_tokens": 722,
+    "wall_clock_s": 2.609,
+    "error": null
+  },
+  "verdict": {
+    "passed": false,
+    "reason": "判定命令 exit 1",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax117-syn-spec\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 1,
+      "summary": "        Open the file pointed to by this path and return a file object, as\n        the built-in open() function does.\n        \"\"\"\n        if \"b\" not in mode:\n            encoding = io.text_encoding(encoding)\n>       return io.open(self, mode, buffering, encoding, errors, newline)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: 'C:\\\\Users\\\\刘康鑫\\\\AppData\\\\Local\\\\Temp\\\\sigma-eval-fgtgcsuz\\\\workspace\\\\report.json'\nD:\\Myapp\\anaconda\\Lib\\pathlib\\_local.py:537: FileNotFoundError\n=========================== short test summary info ===========================\nFAILED tests/test_all.py::test_report_exact - FileNotFoundError: [Errno 2] No...\n1 failed, 1 passed in 0.20s"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:22",
+  "task": "ax105-fix-slugify",
+  "title": "[缺陷修复] slugify 分隔符折叠",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax105-fix-slugify",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 277,
+    "completion_tokens": 51,
+    "wall_clock_s": 1.05,
+    "error": null
+  },
+  "verdict": {
+    "passed": false,
+    "reason": "判定命令 exit 1",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax105-fix-slugify\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 1,
+      "summary": "..F...                                                                   [100%]\n================================== FAILURES ===================================\n________________________________ test_cjk_kept ________________________________\n    def test_cjk_kept() -> None:\n>       assert slugify('  中文 标题! ') == '中文-标题'\nE       AssertionError: assert '' == '中文-标题'\nE         \nE         - 中文-标题\ntests\\test_all.py:13: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_all.py::test_cjk_kept - AssertionError: assert '' == '中文-...\n1 failed, 5 passed in 0.12s"
+    }
+  }
+}

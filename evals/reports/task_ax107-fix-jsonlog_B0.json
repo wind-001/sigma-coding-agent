@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:30",
+  "task": "ax107-fix-jsonlog",
+  "title": "[缺陷修复] JSON 日志序列化崩溃",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax107-fix-jsonlog",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 360,
+    "completion_tokens": 180,
+    "wall_clock_s": 1.32,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax107-fix-jsonlog\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": "...                                                                      [100%]\n3 passed in 0.07s"
+    }
+  }
+}

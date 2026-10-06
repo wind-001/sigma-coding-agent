@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:13:16",
+  "task": "ax118-syn-multi",
+  "title": "[规格综合] 跨模块接口错位",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax118-syn-multi",
+    "eval_profile": "B0",
+    "status": "error",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "wall_clock_s": 0.002,
+    "error": "RuntimeError: B0 要求工作区根下恰好一个 .py 模块，找到 3 个：['api.py', 'formatter.py', 'store.py']"
+  },
+  "verdict": {
+    "passed": false,
+    "reason": "判定命令 exit 1",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax118-syn-multi\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 1,
+      "summary": "    def test_store_has_name_and_username() -> None:\n        from store import get_user\n        user = get_user('u1')\n>       assert user['name'] == 'alice' and user['username'] == 'alice'\n               ^^^^^^^^^^^^\nE       KeyError: 'name'\ntests\\test_all.py:20: KeyError\n=========================== short test summary info ===========================\nFAILED tests/test_all.py::test_describe_u1 - KeyError: 'name'\nFAILED tests/test_all.py::test_describe_u2 - KeyError: 'name'\nFAILED tests/test_all.py::test_store_has_name_and_username - KeyError: 'name'\n3 failed, 3 passed in 0.18s"
+    }
+  }
+}

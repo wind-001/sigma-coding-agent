@@ -1,0 +1,6 @@
+{"level": "INFO", "message": "任务创建"}
+{"level": "ERROR", "message": "连接超时"}
+{"level": "INFO", "message": "任务创建"}
+{"level": "WARNING", "message": "慢查询"}
+{"level": "ERROR", "message": "磁盘满"}
+{"level": "INFO", "message": "请求完成"}

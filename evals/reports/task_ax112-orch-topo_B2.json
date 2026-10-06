@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:58",
+  "task": "ax112-orch-topo",
+  "title": "[多步编排] 依赖拓扑构建顺序",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax112-orch-topo",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 6,
+    "tool_calls": 6,
+    "tool_failures": 1,
+    "prompt_tokens": 21015,
+    "completion_tokens": 1204,
+    "wall_clock_s": 9.518,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax112-orch-topo\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "..                                                                       [100%]\n2 passed in 0.02s"
+    }
+  }
+}

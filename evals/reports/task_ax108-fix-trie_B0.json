@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:35",
+  "task": "ax108-fix-trie",
+  "title": "[缺陷修复] Trie 删除误伤共享前缀",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax108-fix-trie",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 696,
+    "completion_tokens": 441,
+    "wall_clock_s": 2.016,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax108-fix-trie\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": false,
+      "exit_code": 0,
+      "summary": "......                                                                   [100%]\n6 passed in 0.07s"
+    }
+  }
+}

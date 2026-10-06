@@ -1,0 +1,29 @@
+{
+  "id": "ax105-fix-slugify",
+  "kind": "synthetic",
+  "title": "[缺陷修复] slugify 分隔符折叠",
+  "description": "slugify.py 的 slugify(text) 有 bug：非字母数字字符应统一折叠成**一个** '-',且结果首尾不允许出现 '-'。现在 'Hello,  World!' 会得到 'hello---world-'。\n\n请修好它,让 tests/ 下的测试全部通过。\n\n规格:小写化;字母/数字保留;每一段连续非字母数字字符折叠成一个 '-';首尾 '-' 去除;全空输入返回空串。\n约束:只改 slugify.py;不要修改 tests/(判定时会用原始版本覆盖回去)。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 3 passed in 0.11s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_hello_world",
+      "FAILED tests/test_all.py::test_collapse_and_strip",
+      "FAILED tests/test_all.py::test_cjk_kept"
+    ],
+    "recorded_at": "2026-10-04T20:19:14",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

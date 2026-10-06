@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:13:32",
+  "task": "ax119-syn-config",
+  "title": "[规格综合] 配置驱动的排序器",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax119-syn-config",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 4,
+    "tool_calls": 5,
+    "tool_failures": 0,
+    "prompt_tokens": 14195,
+    "completion_tokens": 532,
+    "wall_clock_s": 5.556,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax119-syn-config\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": ".......                                                                  [100%]\n7 passed in 0.05s"
+    }
+  }
+}

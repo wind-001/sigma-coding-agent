@@ -1,0 +1,29 @@
+{
+  "id": "ax106-fix-window",
+  "kind": "synthetic",
+  "title": "[缺陷修复] 滑动窗口限流器边界",
+  "description": "rate_limiter.py 的 SlidingWindowRateLimiter 有 off-by-one bug：规格要求**恰好等于窗口时长的旧事件应当滑出**(只保留 now - t < window 的事件),现在的实现把边界事件也算在窗口内,导致边界时刻被错误拒绝。\n\n请修好它,让 tests/ 下的测试全部通过。\n\n约束:只改 rate_limiter.py;不要修改 tests/(判定时会用原始版本覆盖回去);\n不要改 allow() 的函数签名。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 1 passed in 0.13s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_boundary_event_slides_out",
+      "FAILED tests/test_all.py::test_window_expiry_frees_slot",
+      "FAILED tests/test_all.py::test_single_event_window"
+    ],
+    "recorded_at": "2026-10-04T20:19:15",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "ax101-impl-roman",
+  "kind": "synthetic",
+  "title": "[从零实现] 罗马数字互转",
+  "description": "在 roman.py 中实现罗马数字与整数的互转(工作区当前没有该文件,只有示例测试)。\n\n规格:\n- to_roman(n: int) -> str：1..3999 的整数 → 罗马数字,采用减写法(4=IV,9=IX,40=XL,90=XC,400=CD,900=CM)。越界(<=0 或 >3999)抛 ValueError。\n- from_roman(s: str) -> int：合法罗马数字 → 整数;非法输入(空串、小写、非法字符、非减写法的重复如 IIII、VV)抛 ValueError。\n\n约束:只许用标准库;不要修改 tests/ 下的测试文件(判定时会用原始版本覆盖回去)。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 2,
+    "summary": "2 errors in 0.28s",
+    "failed_tests": [
+      "ERROR tests/test_all.py",
+      "ERROR tests/test_examples.py"
+    ],
+    "recorded_at": "2026-10-04T20:19:08",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

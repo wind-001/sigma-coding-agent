@@ -1,0 +1,28 @@
+{
+  "id": "ax108-fix-trie",
+  "kind": "synthetic",
+  "title": "[缺陷修复] Trie 删除误伤共享前缀",
+  "description": "trie.py 的 Trie.remove(word) 有 bug：删除一个单词时会**误删共享前缀上仍是其他单词结尾的节点**,导致 apple 被误伤(api 被删后 apple 也消失了)。\n\n请修好它,让 tests/ 下的测试全部通过。remove 语义:删掉的只是该单词本身的结尾标记,以及**不再被任何其他单词用到**的尾部节点;单词不存在时返回 False(也不抛异常)。\n\n约束:只改 trie.py;不要修改 tests/(判定时会用原始版本覆盖回去);\n保持类名与各方法签名不变。\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "2 failed, 4 passed in 0.14s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_stem_is_also_word",
+      "FAILED tests/test_all.py::test_remove_longer_keeps_shorter_word"
+    ],
+    "recorded_at": "2026-10-04T20:19:18",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

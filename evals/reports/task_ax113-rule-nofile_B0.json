@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:19:37",
+  "task": "ax113-rule-nofile",
+  "title": "[指令遵循与边界] 修 bug 且不得新建文件",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax113-rule-nofile",
+    "eval_profile": "B0",
+    "status": "completed",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 249,
+    "completion_tokens": 63,
+    "wall_clock_s": 1.078,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax113-rule-nofile\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "......                                                                   [100%]\n6 passed in 0.04s"
+    }
+  }
+}

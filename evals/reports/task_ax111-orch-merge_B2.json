@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:54",
+  "task": "ax111-orch-merge",
+  "title": "[多步编排] 双源 CSV 新值合并",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax111-orch-merge",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 6,
+    "tool_calls": 6,
+    "tool_failures": 1,
+    "prompt_tokens": 20378,
+    "completion_tokens": 1132,
+    "wall_clock_s": 9.374,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax111-orch-merge\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "..                                                                       [100%]\n2 passed in 0.02s"
+    }
+  }
+}

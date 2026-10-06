@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:13:02",
+  "task": "ax110-orch-organize",
+  "title": "[多步编排] 按扩展名归档目录",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax110-orch-organize",
+    "eval_profile": "B2",
+    "status": "completed",
+    "rounds": 12,
+    "tool_calls": 13,
+    "tool_failures": 3,
+    "prompt_tokens": 68575,
+    "completion_tokens": 2250,
+    "wall_clock_s": 19.919,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax110-orch-organize\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "....                                                                     [100%]\n4 passed in 0.06s"
+    }
+  }
+}

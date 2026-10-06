@@ -1,0 +1,29 @@
+{
+  "id": "ax118-syn-multi",
+  "kind": "synthetic",
+  "title": "[规格综合] 跨模块接口错位",
+  "description": "tests/ 里有一个集成测试现在是失败的:store.py 的 get_user 返回的字段名与 formatter.py 期望的不一致,api.py 只是组装者。\n\n修复它,让 tests/ 全部通过。\n\n硬性边界:\n1. **只允许修改 store.py**——formatter.py 与 api.py 一行都不许动（判定会比对这两个文件的哈希）。\n2. get_user 的返回必须**同时包含** name 与 email 两个键（值语义不变）,并且不得丢失 id 键。\n3. 不得新建/删除文件;不得动 tests/。\n\n自验:python -m pytest tests/ -q",
+  "judge": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": "."
+  },
+  "workspace": "workspace",
+  "judge_tests": {
+    "source": "judge_tests",
+    "target": "tests",
+    "reason": "防篡改：判定前用原始测试覆盖回去。否则「把断言改松」也能让 exit 0,而那测的是模型愿不愿意改测试,不是它会不会做任务。注意 target 相对【工作区】、source 相对【任务目录】。"
+  },
+  "initial_failure": {
+    "command": "python -m pytest tests/ -q",
+    "cwd": ".",
+    "exit_code": 1,
+    "summary": "3 failed, 3 passed in 0.12s",
+    "failed_tests": [
+      "FAILED tests/test_all.py::test_describe_u1",
+      "FAILED tests/test_all.py::test_describe_u2",
+      "FAILED tests/test_all.py::test_store_has_name_and_username"
+    ],
+    "recorded_at": "2026-10-04T20:19:32",
+    "note": "生成器实测录制;可解性经参考实现验证通过(双向验证)。"
+  }
+}

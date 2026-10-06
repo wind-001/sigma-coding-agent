@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-04T20:12:17",
+  "task": "ax104-impl-textutil",
+  "title": "[从零实现] 词频与命名转换",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax104-impl-textutil",
+    "eval_profile": "B0",
+    "status": "error",
+    "rounds": 1,
+    "tool_calls": 0,
+    "tool_failures": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "wall_clock_s": 0.001,
+    "error": "RuntimeError: B0 要求工作区根下恰好一个 .py 模块，找到 0 个：[]"
+  },
+  "verdict": {
+    "passed": false,
+    "reason": "判定命令 exit 2",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax104-impl-textutil\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 2,
+      "summary": "Hint: make sure your test modules/packages have valid Python names.\nTraceback:\nD:\\Myapp\\anaconda\\Lib\\importlib\\__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests\\test_all.py:1: in <module>\n    from textutil import camel_to_snake, top_k_words, word_frequencies\nE   ModuleNotFoundError: No module named 'textutil'\n=========================== short test summary info ===========================\nERROR tests/test_all.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.25s"
+    }
+  }
+}
