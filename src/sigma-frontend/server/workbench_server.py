@@ -69,7 +69,8 @@ from sigma.observability.trace import trace_path_for
 from sigma.prompts.system_prompt import build_system_prompt
 from sigma.tools.builtin.ask_user import IGNORE_SENTINEL
 from sigma.providers.anthropic.provider import AnthropicProvider
-from sigma.providers.base import BaseProvider
+from sigma.providers.base import BaseProvider, NeverCancelled, SamplingParams
+from sigma.providers.events import ErrorEvent, TextDelta
 from sigma.providers.messages import (
     AssistantMessage,
     ThinkingBlock,
@@ -668,6 +669,61 @@ def _send_email(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         # 兜底:任何未预期异常都必须变成**可见的 400**,不能变成无响应的
         # 断连——断连在浏览器端只有一个 "Failed to fetch",根因全被吞掉。
         return 400, {"detail": f"发送失败:{type(exc).__name__}: {exc}"}
+
+
+_POLISH_SYSTEM_PROMPT = (
+    "你是邮件润色助手。把用户的邮件正文改写得更通顺、得体、有条理:"
+    "保留原意与全部关键信息,不新增事实,不删要点;保持原语言,语气自然不浮夸。"
+    "只输出润色后的正文本身——不要任何解释、称呼语、前后缀或 Markdown 标记。"
+)
+
+
+def _polish_email_body(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """正文一键 AI 润色(2026-10-06,星辰"正文自己编撰后一键 AI 润色,
+    形成可预览版本"):一次性补全,不建会话、不落会话树——纯文本进,
+    纯文本出。模型走与任务相同的解析链(_execution_params),前端可传
+    model/effort 指定,不传回落 CLI 同链。"""
+    text = str(body.get("text") or "").strip()
+    if text == "":
+        return 400, {"detail": "正文为空,先写点内容再润色"}
+    if len(text) > 8000:
+        return 400, {"detail": "正文过长(>8000 字符),请分段润色"}
+    try:
+        base_url, api_key, model, protocol, extra_body = _execution_params(
+            str(body.get("model") or ""), str(body.get("effort") or "")
+        )
+    except LookupError as exc:
+        return 400, {"detail": str(exc)}
+    provider = _make_provider(base_url, api_key, protocol)
+
+    async def _run() -> str:
+        parts: list[str] = []
+        events = provider.stream(
+            [
+                UserMessage(
+                    content=f"{_POLISH_SYSTEM_PROMPT}\n\n[邮件正文]\n{text}",
+                    timestamp=_now_stamp(),
+                )
+            ],
+            [],
+            model=model,
+            signal=NeverCancelled(),
+            sampling=SamplingParams(extra_body=extra_body),
+        )
+        async for event in events:
+            if isinstance(event, TextDelta):
+                parts.append(event.text)
+            elif isinstance(event, ErrorEvent):
+                raise RuntimeError(event.error.message)
+        return "".join(parts).strip()
+
+    try:
+        polished = _run_on_persistent_loop(_run())
+    except Exception as exc:
+        return 400, {"detail": f"润色失败:{type(exc).__name__}: {exc}"}
+    if polished == "":
+        return 400, {"detail": "模型没有返回任何润色文本,请换模型或稍后再试"}
+    return 200, {"polished": polished}
 
 
 def _all_projects(primary: Path) -> list[dict[str, Any]]:
@@ -3006,6 +3062,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             return
         if parts == ["api", "v1", "email", "send"]:
             self._send_json(*_send_email(self._read_json_body()))
+            return
+        if parts == ["api", "v1", "email", "polish"]:
+            self._send_json(*_polish_email_body(self._read_json_body()))
             return
         # 创建草稿任务(Composer / 侧栏「新建会话」)。
         if parts == ["api", "v1", "tasks"]:

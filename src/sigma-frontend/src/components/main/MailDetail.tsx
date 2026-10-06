@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, Mail, Send, Settings2 } from 'lucide-react'
+import { ChevronDown, Mail, Send, Settings2, Sparkles } from 'lucide-react'
 import type { EmailConfig } from '../../api'
 import { apiClient } from '../../api'
 import { useAppActions } from '../../store/appStore'
@@ -43,6 +43,8 @@ export default function MailDetail(): JSX.Element {
   const [saving, setSaving] = useState(false)
   const [compose, setCompose] = useState({ to: '', subject: '', body: '' })
   const [sending, setSending] = useState(false)
+  const [polishing, setPolishing] = useState(false)
+  const [polished, setPolished] = useState<string | null>(null)
   const [note, setNote] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
   useEffect(() => {
@@ -95,6 +97,33 @@ export default function MailDetail(): JSX.Element {
     } finally {
       setSaving(false)
     }
+  }
+
+  const canPolish = compose.body.trim() !== '' && !polishing
+
+  const handlePolish = async (): Promise<void> => {
+    if (compose.body.trim() === '' || polishing) return
+    setPolishing(true)
+    setNote(null)
+    try {
+      const result = await apiClient.polishEmailBody?.({ text: compose.body })
+      if (result === undefined) {
+        setNote({ kind: 'err', text: '当前客户端不支持 AI 润色(dev mock 环境)。' })
+      } else {
+        setPolished(result.polished)
+      }
+    } catch (err) {
+      setNote({ kind: 'err', text: mailErrorMessage(err) })
+    } finally {
+      setPolishing(false)
+    }
+  }
+
+  const handleApplyPolished = (): void => {
+    if (polished === null) return
+    setCompose((prev) => ({ ...prev, body: polished }))
+    setPolished(null)
+    setNote({ kind: 'ok', text: '已替换为润色版本,可继续编辑或直接寄出。' })
   }
 
   const canSend = compose.to.trim() !== '' && compose.subject.trim() !== '' && compose.body.trim() !== ''
@@ -292,20 +321,56 @@ export default function MailDetail(): JSX.Element {
             }
           />
         </div>
+        {polished !== null ? (
+          <div className="mail-detail__preview" role="region" aria-label="AI 润色预览">
+            <div className="mail-detail__preview-head">
+              <span className="mail-detail__preview-label">润色预览 · 原文未动,满意再替换</span>
+              <div className="mail-detail__preview-actions">
+                <button
+                  type="button"
+                  className="auto-mail__btn"
+                  onClick={(): void => setPolished(null)}
+                >
+                  放弃
+                </button>
+                <button
+                  type="button"
+                  className="auto-mail__btn auto-mail__btn--primary"
+                  onClick={handleApplyPolished}
+                >
+                  用此版本
+                </button>
+              </div>
+            </div>
+            <p className="mail-detail__preview-text">{polished}</p>
+          </div>
+        ) : null}
         {note !== null ? (
           <p className={`auto-mail__note auto-mail__note--${note.kind}`} role="status">
             {note.text}
           </p>
         ) : null}
-        <button
-          type="button"
-          className="auto-mail__btn auto-mail__btn--primary auto-mail__send"
-          disabled={!canSend || sending}
-          onClick={() => void handleSend()}
-        >
-          <Send size={13} aria-hidden="true" />
-          {sending ? '寄出中…' : '寄 出'}
-        </button>
+        <div className="auto-mail__actions auto-mail__actions--split">
+          <button
+            type="button"
+            className="auto-mail__btn"
+            disabled={!canPolish}
+            onClick={() => void handlePolish()}
+            title="AI 把正文改写得更通顺,先出预览再决定是否替换"
+          >
+            <Sparkles size={13} aria-hidden="true" />
+            {polishing ? '润色中…' : 'AI 润色'}
+          </button>
+          <button
+            type="button"
+            className="auto-mail__btn auto-mail__btn--primary auto-mail__send"
+            disabled={!canSend || sending}
+            onClick={() => void handleSend()}
+          >
+            <Send size={13} aria-hidden="true" />
+            {sending ? '寄出中…' : '寄 出'}
+          </button>
+        </div>
       </div>
 
       <button type="button" className="mail-detail__back" onClick={actions.goHome}>

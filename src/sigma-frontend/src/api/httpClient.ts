@@ -4,6 +4,7 @@ import {
   type CreateTaskInput,
   type EmailConfig,
   type EmailConfigInput,
+  type EmailPolishInput,
   type EmailSendInput,
   type SystemStatus,
   type TrashEntry,
@@ -197,6 +198,14 @@ export class HttpSigmaClient implements SigmaApiClient {
 
   async sendEmail(input: EmailSendInput): Promise<void> {
     await this.request<unknown>('/email/send', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
+  async polishEmailBody(input: EmailPolishInput): Promise<{ polished: string }> {
+    // 一次性补全(不建会话),模型走服务端同一解析链。
+    return this.request<{ polished: string }>('/email/polish', {
       method: 'POST',
       body: JSON.stringify(input),
     })

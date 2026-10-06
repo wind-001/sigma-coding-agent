@@ -218,6 +218,13 @@ export interface EmailSendInput {
   body: string
 }
 
+/** 正文 AI 润色入参:model/effort 省略 = 走与任务相同的默认解析链 */
+export interface EmailPolishInput {
+  text: string
+  model?: string
+  effort?: string
+}
+
 export interface AccessOption {
   id: string
   label: string
@@ -401,6 +408,8 @@ export interface SigmaApiClient {
   saveEmailConfig?(input: EmailConfigInput): Promise<void>
   /** 自动化·邮件:寄一封纯文本邮件(可选方法,mock 不实现) */
   sendEmail?(input: EmailSendInput): Promise<void>
+  /** 自动化·邮件:正文一键 AI 润色,返回可预览的润色稿(可选方法,mock 不实现) */
+  polishEmailBody?(input: EmailPolishInput): Promise<{ polished: string }>
   /**
    * 运行时间线(契约外附加,只读桥接服务已实现)。
    * 可选方法:mock 不实现,消费方须以 `apiClient.getTaskTimeline?.()` 调用。

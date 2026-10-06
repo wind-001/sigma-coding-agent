@@ -693,12 +693,57 @@
 }
 
 .auto-mail__send {
-  width: 100%;
+  flex: 1;
   justify-content: center;
-  margin-top: 4px;
+  margin-top: 0;
   padding: 8px 14px;
   font-size: 13px;
   letter-spacing: 0.2em;
+}
+
+.auto-mail__actions--split {
+  justify-content: stretch;
+  margin-top: 8px;
+}
+
+/* AI 润色预览卡:与主卡同族但更轻一档,虚线界出"未生效"的草稿感 */
+.mail-detail__preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(176, 83, 60, 0.4);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.mail-detail__preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.mail-detail__preview-label {
+  font-size: 12px;
+  color: #a8543c;
+}
+
+.mail-detail__preview-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mail-detail__preview-actions .auto-mail__btn {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.mail-detail__preview-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  color: var(--text-primary);
 }
 
 .auto-mail__note {

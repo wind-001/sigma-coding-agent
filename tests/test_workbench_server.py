@@ -2481,3 +2481,34 @@ def test_email_send_unexpected_exception_becomes_visible_400(
         "to": "a@b.com", "subject": "s", "body": "x",
     })
     assert code == 400 and "发送失败" in body["detail"] and "模拟意外异常" in body["detail"]
+
+
+def test_email_polish_returns_model_text(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """正文一键 AI 润色:走假 provider(脚本化回复),一次性补全不建会话;
+    空正文 400;模型报错(ErrorEvent)转可读 400。"""
+    monkeypatch.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ScriptedProvider("润色后的通顺正文"))
+    for var in ("SIGMA_PRESET", "SIGMA_MODEL", "SIGMA_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(SERVER, "resolve_api_key", lambda **_kw: ("test-key", "测试"))
+    base, _root = http_server
+
+    code, body = _post(base, "/api/v1/email/polish", {"text": "  "})
+    assert code == 400 and "正文为空" in body["detail"]
+
+    code, body = _post(base, "/api/v1/email/polish", {"text": "第一版草稿,有点糙。"})
+    assert code == 200 and body["polished"] == "润色后的通顺正文", body
+
+    # 模型流中报错 → 400 带原文,不是断连
+    class _ErrorProvider(_ScriptedProvider):
+        async def stream(self, messages: list[Any], tools: list[dict[str, Any]], **_kw: Any) -> Any:
+            from sigma.providers.errors import ProviderErrorPayload
+            from sigma.providers.events import ErrorEvent as _ErrorEvent
+            yield _ErrorEvent(error=ProviderErrorPayload(code="transient", message="上游超时"))
+
+    monkeypatch.setattr(SERVER, "_PROVIDER_FACTORY", lambda: _ErrorProvider("x"))
+    code, body = _post(base, "/api/v1/email/polish", {"text": "草稿"})
+    assert code == 400 and "上游超时" in body["detail"]
