@@ -987,6 +987,13 @@
   padding: 8px 4px 12px;
 }
 
+/* 滚动列的子项一律不许收缩:否则内容超过容器高时,flex 压缩会把
+   overflow:hidden 的元素(思考卡)碾成 2px 细带(实测 59 轮会话,
+   30+ 张思考卡吸走全部压缩量)——该滚动的时候要滚动,不该压的时候不压。 */
+.wb-thread > * {
+  flex: 0 0 auto;
+}
+
 .wb-thread__empty {
   margin: auto;
   color: var(--text-muted);
