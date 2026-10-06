@@ -34,9 +34,12 @@ import asyncio
 import json
 import os
 import re
+import smtplib
 import threading
 import uuid
 from datetime import datetime
+from email.header import Header
+from email.mime.text import MIMEText
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -464,6 +467,186 @@ def _remove_model_entry(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     reg["models"] = kept
     _models_registry_write(reg)
     return 200, {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# 邮件(2026-10-05,星辰"自动化里加发送邮件+SMTP 配置按钮"):配置存
+# ~/.sigma/workbench-smtp.json,**授权码只落 ~/.sigma/.env**(与模型密钥
+# 同一条 2026-10-03 拍板:工作台配置文件不落明文密钥),JSON 里只记变量名。
+# 发送走 stdlib smtplib——零新依赖;465=隐式 SSL,其余端口按 useTls 决定
+# 是否 STARTTLS(587 常见)。
+# ---------------------------------------------------------------------------
+
+_SMTP_CONFIG_PATH = Path.home() / ".sigma" / "workbench-smtp.json"
+#: 授权码承载变量名(固定一个;与模型条目按名派生不同,SMTP 全局一份)。
+SMTP_PASSWORD_ENV = "SMTP_PASSWORD"
+
+
+def _smtp_config_read() -> dict[str, Any]:
+    try:
+        data = json.loads(_SMTP_CONFIG_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}  # 同模型注册表:配置坏按空处理
+
+
+def _smtp_config_write(cfg: dict[str, Any]) -> None:
+    _SMTP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _SMTP_CONFIG_PATH.write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _env_file_upsert(var_name: str, value: str) -> None:
+    """把 ``var_name=value`` 写进 ``_ENV_FILE_PATH``:已有该变量就**原行替换**,
+    没有就追加。与 _shunt_key_to_env_file 共用落盘文件,各自语义独立——
+    那边按值复用/派生名,这边固定变量名整体覆盖。"""
+    lines: list[str] = (
+        _ENV_FILE_PATH.read_text(encoding="utf-8").splitlines()
+        if _ENV_FILE_PATH.is_file()
+        else []
+    )
+    kept = [line for line in lines if not line.strip().startswith(f"{var_name}=")]
+    kept.append(f"{var_name}={value}")
+    _ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ENV_FILE_PATH.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
+def _resolve_env_var(var_name: str) -> str | None:
+    """工作台自管变量的解析:环境变量优先,其次 ``_ENV_FILE_PATH``。
+
+    不走 ``resolve_api_key`` 是刻意的:那个函数读 CANDIDATE_FILES,而工作台
+    **写**的是 _ENV_FILE_PATH——读写必须同源,否则"刚写完就查无此变量"
+    (测试里临时路径分歧实锤;生产两者同文件,行为不变)。"""
+    from_env = os.environ.get(var_name)
+    if from_env:
+        return from_env
+    if _ENV_FILE_PATH.is_file():
+        for line in _ENV_FILE_PATH.read_text(encoding="utf-8").splitlines():
+            k, sep, v = line.partition("=")
+            if sep and k.strip() == var_name:
+                value = v.strip().strip('"').strip("'")
+                if value:
+                    return value
+    return None
+
+
+def _email_config_payload() -> dict[str, Any]:
+    """GET 形状:**不含授权码本体**,只给变量名与在位布尔(同 /models 口径)。"""
+    cfg = _smtp_config_read()
+    password_env = str(cfg.get("passwordEnv") or "")
+    found = _resolve_env_var(password_env) if password_env != "" else None
+    return {
+        "configured": bool(cfg.get("host")) and bool(cfg.get("user")),
+        "host": str(cfg.get("host") or ""),
+        "port": int(cfg.get("port") or 465),
+        "user": str(cfg.get("user") or ""),
+        "sender": str(cfg.get("sender") or ""),
+        "useTls": bool(cfg.get("useTls", int(cfg.get("port") or 465) != 465)),
+        "passwordEnv": password_env,
+        "hasPassword": bool(found),
+    }
+
+
+def _save_email_config(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """保存 SMTP 配置。授权码**只在请求里出现一次**便落入 .env:保存后
+    GET/表单回显都只有变量名——"留空 = 不修改"因此天然成立。"""
+    host = str(body.get("host") or "").strip()
+    user = str(body.get("user") or "").strip()
+    sender = str(body.get("sender") or "").strip()
+    raw_port = body.get("port")
+    try:
+        port = int(raw_port) if raw_port not in (None, "") else 465
+    except (TypeError, ValueError):
+        return 400, {"detail": f"端口必须是整数,收到 {raw_port!r}"}
+    if not 1 <= port <= 65535:
+        return 400, {"detail": f"端口超出范围(1-65535):{port}"}
+    if host == "" or user == "":
+        return 400, {"detail": "SMTP 服务器与账号均必填"}
+    use_tls_raw = body.get("useTls")
+    use_tls = bool(use_tls_raw) if use_tls_raw is not None else port != 465
+    cfg = _smtp_config_read()
+    cfg.update(
+        {
+            "host": host,
+            "port": port,
+            "user": user,
+            "sender": sender,
+            "useTls": use_tls,
+            "passwordEnv": SMTP_PASSWORD_ENV,
+        }
+    )
+    cfg.pop("password", None)  # 旧字段残留顺手清(同模型条目口径)
+    password = str(body.get("password") or "")
+    if password != "":
+        _env_file_upsert(SMTP_PASSWORD_ENV, password)
+    _smtp_config_write(cfg)
+    return 200, {"ok": True}
+
+
+def _send_email(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """寄出一封纯文本邮件。错误**翻译成人话**返回 400:SMTP 的异常类名
+    (SMTPAuthenticationError 之类)对用户是噪音,授权码 vs 登录密码
+    这个坑必须点破——多数国内厂商(QQ/163)用的是专用授权码。"""
+    to = str(body.get("to") or "").strip()
+    subject = str(body.get("subject") or "").strip()
+    text = str(body.get("body") or "")
+    if to == "" or subject == "" or text.strip() == "":
+        return 400, {"detail": "收件人 / 主题 / 正文均必填"}
+    if "@" not in to:
+        return 400, {"detail": f"收件人不像邮箱地址:{to}"}
+    cfg = _smtp_config_read()
+    host = str(cfg.get("host") or "")
+    user = str(cfg.get("user") or "")
+    if host == "" or user == "":
+        return 400, {"detail": "尚未配置 SMTP:点「配置」填写服务器 / 账号 / 授权码"}
+    password_env = str(cfg.get("passwordEnv") or "")
+    password: str | None = ""
+    if password_env != "":
+        password = _resolve_env_var(password_env)
+        if not password:
+            return 400, {
+                "detail": f"SMTP 授权码未找到:变量 {password_env} 在环境变量和"
+                " ~/.sigma/.env 里都不存在,重新在「配置」里粘贴一次。"
+            }
+    port = int(cfg.get("port") or 465)
+    use_tls = bool(cfg.get("useTls", port != 465))
+    sender = str(cfg.get("sender") or "") or user
+    msg = MIMEText(text, "plain", "utf-8")
+    msg["Subject"] = str(Header(subject, "utf-8"))
+    msg["From"] = sender
+    msg["To"] = to
+    try:
+        client: smtplib.SMTP
+        if port == 465:
+            client = smtplib.SMTP_SSL(host, port, timeout=20)
+        else:
+            client = smtplib.SMTP(host, port, timeout=20)
+            if use_tls:
+                client.starttls()
+        try:
+            if password:
+                client.login(user, password)
+            client.sendmail(sender, [to], msg.as_string())
+        finally:
+            try:
+                client.quit()
+            except smtplib.SMTPException:
+                pass  # 发送已成功,收尾挥手失败不值得一条报错
+        return 200, {"ok": True}
+    except smtplib.SMTPAuthenticationError as exc:
+        raw_err = exc.smtp_error
+        err_text = (
+            raw_err.decode(errors="replace")[:80]
+            if isinstance(raw_err, bytes)
+            else str(raw_err)[:80]
+        )
+        return 400, {
+            "detail": f"SMTP 认证失败:多数服务(QQ/163 等)要求填**授权码**而不是"
+            f"登录密码,去邮箱设置里生成后再试。({exc.smtp_code} {err_text})"
+        }
+    except (smtplib.SMTPException, OSError) as exc:
+        return 400, {"detail": f"SMTP 发送失败:{type(exc).__name__}: {exc}"}
 
 
 def _all_projects(primary: Path) -> list[dict[str, Any]]:
@@ -2738,6 +2921,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 )
             self._send_json(200, payloads)
             return
+        # /email/config:SMTP 配置(授权码只回变量名与在位布尔,同 /models 口径)。
+        if parts == ["email", "config"]:
+            self._send_json(200, _email_config_payload())
+            return
         # /memory:契约之外的附加数据面(工作台"记忆"区)。
         # /system/status:工作台状态(底部菜单状态区)。
         if parts == ["system", "status"]:
@@ -2791,6 +2978,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             return
         if parts == ["api", "v1", "models", "remove"]:
             self._send_json(*_remove_model_entry(self._read_json_body()))
+            return
+        # 邮件:SMTP 配置保存(授权码落 ~/.sigma/.env)+ 寄信。
+        if parts == ["api", "v1", "email", "config"]:
+            self._send_json(*_save_email_config(self._read_json_body()))
+            return
+        if parts == ["api", "v1", "email", "send"]:
+            self._send_json(*_send_email(self._read_json_body()))
             return
         # 创建草稿任务(Composer / 侧栏「新建会话」)。
         if parts == ["api", "v1", "tasks"]:

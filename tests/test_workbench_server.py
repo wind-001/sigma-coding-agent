@@ -2260,3 +2260,164 @@ def test_execution_params_self_heals_key_body_entry(monkeypatch: pytest.MonkeyPa
     healed = json.loads(reg_path.read_text(encoding="utf-8"))["models"][0]["apiKeyEnv"]
     assert healed == "BROKENCAT_API_KEY"  # 条目已改指变量名
     assert f"BROKENCAT_API_KEY={key}" in env_file.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 自动化·邮件(2026-10-05,星辰"自动化里加发送邮件+SMTP 配置按钮"):
+# 授权码只落 ~/.sigma/.env,配置 JSON 不落明文——与模型密钥同一拍板。
+# ---------------------------------------------------------------------------
+
+class _FakeSMTPClient:
+    """记录构造/握手/发信调用的假 SMTP 客户端(够 _send_email 走通即可)。"""
+
+    calls: dict[str, Any] = {}
+    login_raises: Exception | None = None
+
+    def __init__(self, host: str, port: int, timeout: int = 20) -> None:
+        type(self).calls.update({"host": host, "port": port, "kind": "init"})
+
+    def starttls(self) -> None:
+        type(self).calls["starttls"] = True
+
+    def login(self, user: str, password: str) -> None:
+        if type(self).login_raises is not None:
+            raise type(self).login_raises
+        type(self).calls["login"] = (user, password)
+
+    def sendmail(self, frm: str, tos: list[str], msg: str) -> None:
+        type(self).calls.update({"from": frm, "tos": tos, "msg": msg})
+
+    def quit(self) -> None:
+        type(self).calls["quit"] = True
+
+
+def _install_fake_smtplib(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """把 SERVER.smtplib 换成假模块(SMTP=SMTP_SSL=假客户端),返回 calls。"""
+    import types as _types
+
+    fake = _types.SimpleNamespace()
+    fake.SMTP = _FakeSMTPClient
+    fake.SMTP_SSL = _FakeSMTPClient
+    fake.SMTPException = Exception
+
+    class _AuthError(Exception):
+        def __init__(self) -> None:
+            self.smtp_code = 535
+            self.smtp_error = b"auth failed"
+
+    fake.SMTPAuthenticationError = _AuthError
+    _FakeSMTPClient.calls = {}
+    _FakeSMTPClient.login_raises = None
+    monkeypatch.setattr(SERVER, "smtplib", fake)
+    return _FakeSMTPClient.calls
+
+
+def test_email_config_save_shunts_password_to_env(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """SMTP 配置保存:授权码落 ~/.sigma/.env(SMTP_PASSWORD),配置 JSON
+    不落明文;GET 只回变量名与在位布尔;留空 = 不修改。"""
+    monkeypatch.setattr(SERVER, "_SMTP_CONFIG_PATH", tmp_path / "smtp.json")
+    env_file = tmp_path / "dotenv"
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", env_file)
+    base, _root = http_server
+
+    code, body = _post(base, "/api/v1/email/config", {
+        "host": "smtp.qq.com", "port": 465, "user": "lkk@qq.com",
+        "password": "authcode-xyz-123", "useTls": False,
+    })
+    assert code == 200 and body["ok"] is True
+    stored = (tmp_path / "smtp.json").read_text(encoding="utf-8")
+    assert "authcode-xyz-123" not in stored, "授权码明文不得进配置文件"
+    assert "SMTP_PASSWORD" in stored
+    assert f"SMTP_PASSWORD=authcode-xyz-123" in env_file.read_text(encoding="utf-8")
+
+    code, cfg = _get(base, "/api/v1/email/config")
+    assert code == 200
+    assert cfg["configured"] is True and cfg["hasPassword"] is True
+    assert cfg["passwordEnv"] == "SMTP_PASSWORD"
+    assert "authcode-xyz-123" not in json.dumps(cfg)
+
+    # 留空 = 不修改:再存一次不带 password,授权码仍在
+    code, _body = _post(base, "/api/v1/email/config", {
+        "host": "smtp.qq.com", "port": 587, "user": "lkk@qq.com",
+        "password": "", "useTls": True,
+    })
+    assert code == 200
+    code, cfg = _get(base, "/api/v1/email/config")
+    assert cfg["hasPassword"] is True and cfg["port"] == 587 and cfg["useTls"] is True
+
+
+def test_email_send_uses_right_transport_and_headers(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """寄信走假 smtplib:465=SMTP_SSL 免 STARTTLS,587+useTls=STARTTLS;
+    登录用解析出的授权码,主题中文经 utf-8 头编码,From 取发件人显示。"""
+    monkeypatch.setattr(SERVER, "_SMTP_CONFIG_PATH", tmp_path / "smtp.json")
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", tmp_path / "dotenv")
+    monkeypatch.setenv("SMTP_PASSWORD", "authcode-xyz-123")
+    calls = _install_fake_smtplib(monkeypatch)
+    base, _root = http_server
+    code, _body = _post(base, "/api/v1/email/config", {
+        "host": "smtp.qq.com", "port": 465, "user": "lkk@qq.com",
+        "sender": "sigma 工作台<lkk@qq.com>", "password": "", "useTls": False,
+    })
+    assert code == 200
+
+    code, body = _post(base, "/api/v1/email/send", {
+        "to": "friend@example.com", "subject": "周报来了", "body": "第一行\n第二行",
+    })
+    assert code == 200 and body["ok"] is True
+    assert calls["host"] == "smtp.qq.com" and calls["port"] == 465
+    assert "starttls" not in calls  # 465 隐式 SSL,不再 STARTTLS
+    assert calls["login"] == ("lkk@qq.com", "authcode-xyz-123")
+    assert calls["tos"] == ["friend@example.com"]
+    assert calls["from"] == "sigma 工作台<lkk@qq.com>"
+    # 中文主题/正文按 MIME 规则编码(RFC 2047 头 + base64 体)——原文不该裸奔在传输层
+    assert "Subject: =?utf-8?" in calls["msg"]
+    import base64 as _b64
+    payload = calls["msg"].split("\n\n", 1)[1]
+    assert _b64.b64decode(payload).decode("utf-8") == "第一行\n第二行"
+
+    # 587 + useTls → 明连后升级 STARTTLS
+    _post(base, "/api/v1/email/config", {
+        "host": "smtp.qq.com", "port": 587, "user": "lkk@qq.com",
+        "password": "", "useTls": True,
+    })
+    _post(base, "/api/v1/email/send", {"to": "b@example.com", "subject": "s", "body": "x"})
+    assert calls["port"] == 587 and calls.get("starttls") is True
+
+
+def test_email_send_errors_are_actionable(
+    http_server: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """未配置 → 400 指路;认证失败 → 点破"授权码不是登录密码"这个坑。"""
+    monkeypatch.setattr(SERVER, "_SMTP_CONFIG_PATH", tmp_path / "smtp.json")
+    monkeypatch.setattr(SERVER, "_ENV_FILE_PATH", tmp_path / "dotenv")
+    calls = _install_fake_smtplib(monkeypatch)
+    base, _root = http_server
+
+    code, body = _post(base, "/api/v1/email/send", {"to": "a@b.com", "subject": "s", "body": "x"})
+    assert code == 400 and "尚未配置" in body["detail"]
+
+    code, body = _post(base, "/api/v1/email/config", {
+        "host": "smtp.qq.com", "port": 465, "user": "lkk@qq.com", "password": "good",
+    })
+    assert code == 200
+    # 缺必填
+    code, body = _post(base, "/api/v1/email/send", {"to": "a@b.com", "subject": "", "body": "x"})
+    assert code == 400 and "必填" in body["detail"]
+    # 收件人不像邮箱
+    code, body = _post(base, "/api/v1/email/send", {"to": "not-an-email", "subject": "s", "body": "x"})
+    assert code == 400 and "邮箱" in body["detail"]
+    # 认证失败 → 文案点破授权码坑
+    _FakeSMTPClient.login_raises = SERVER.smtplib.SMTPAuthenticationError()  # type: ignore[union-attr]
+    monkeypatch.setenv("SMTP_PASSWORD", "wrong")
+    code, body = _post(base, "/api/v1/email/send", {"to": "a@b.com", "subject": "s", "body": "x"})
+    assert code == 400 and "授权码" in body["detail"]

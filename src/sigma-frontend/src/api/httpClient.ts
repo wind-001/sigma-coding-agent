@@ -2,6 +2,9 @@ import {
   type Automation,
   type CommandsPayload,
   type CreateTaskInput,
+  type EmailConfig,
+  type EmailConfigInput,
+  type EmailSendInput,
   type SystemStatus,
   type TrashEntry,
   type ModelInfo,
@@ -177,6 +180,25 @@ export class HttpSigmaClient implements SigmaApiClient {
     await this.request<unknown>('/models/remove', {
       method: 'POST',
       body: JSON.stringify({ id }),
+    })
+  }
+
+  getEmailConfig(): Promise<EmailConfig> {
+    // SMTP 配置回显:授权码本体不回传,只有变量名与在位布尔。
+    return this.request<EmailConfig>('/email/config')
+  }
+
+  async saveEmailConfig(input: EmailConfigInput): Promise<void> {
+    await this.request<unknown>('/email/config', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
+  async sendEmail(input: EmailSendInput): Promise<void> {
+    await this.request<unknown>('/email/send', {
+      method: 'POST',
+      body: JSON.stringify(input),
     })
   }
 

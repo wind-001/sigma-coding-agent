@@ -188,6 +188,36 @@ export interface ModelSaveInput {
   effortStyle: string
 }
 
+/** SMTP 配置回显(自动化面板·邮件,2026-10-05):授权码本体永不回传,
+ * 只有变量名与在位布尔——与 /models 的 apiKeyEnv/hasKey 同一口径 */
+export interface EmailConfig {
+  configured: boolean
+  host: string
+  port: number
+  user: string
+  sender: string
+  useTls: boolean
+  passwordEnv: string
+  hasPassword: boolean
+}
+
+/** SMTP 配置保存:password 留空 = 不修改;非空 = 服务端写进 ~/.sigma/.env */
+export interface EmailConfigInput {
+  host: string
+  port: number
+  user: string
+  sender: string
+  useTls: boolean
+  password: string
+}
+
+/** 寄信入参(纯文本邮件) */
+export interface EmailSendInput {
+  to: string
+  subject: string
+  body: string
+}
+
 export interface AccessOption {
   id: string
   label: string
@@ -365,6 +395,12 @@ export interface SigmaApiClient {
   saveModel?(input: ModelSaveInput): Promise<void>
   /** 模型设置:移除自定义条目(可选方法,mock 不实现) */
   removeModel?(id: string): Promise<void>
+  /** 自动化·邮件:SMTP 配置回显(授权码只回变量名+在位布尔;可选方法,mock 不实现) */
+  getEmailConfig?(): Promise<EmailConfig>
+  /** 自动化·邮件:保存 SMTP 配置;password 留空=不修改(可选方法,mock 不实现) */
+  saveEmailConfig?(input: EmailConfigInput): Promise<void>
+  /** 自动化·邮件:寄一封纯文本邮件(可选方法,mock 不实现) */
+  sendEmail?(input: EmailSendInput): Promise<void>
   /**
    * 运行时间线(契约外附加,只读桥接服务已实现)。
    * 可选方法:mock 不实现,消费方须以 `apiClient.getTaskTimeline?.()` 调用。
