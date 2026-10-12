@@ -23,6 +23,7 @@ from pathlib import Path
 
 from sigma.events.lifecycle import AdvanceDecision, AdvanceFacts
 from sigma.hooks.base import AdvanceHook
+from sigma.tools.builtin.todo import unfinished_count
 
 #: 验收命令输出的注入尾部保留多长。与工具截断同款思路：尾部是 pytest 的
 #: 失败摘要所在，头部是进度噪音。1500 字符 ≈ 一次注入的合理体量。
@@ -129,3 +130,48 @@ def _decode_output(raw: bytes) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return raw.decode("gbk", errors="replace")
+
+
+class GoalContinuation(AdvanceHook):
+    """清单延续（并列判据，治"建了清单却没收尾"）：模型收手时读工作区
+    ``.sigma/todo.json``，有 pending/running → 注入清单现状并继续一轮
+    （最多 ``max_continues`` 轮）。
+
+    **为什么是并列判据不是主判据**（阶段 0 基线：22 题里只有 2 个建了
+    清单，9%）：91% 的任务模型根本不建清单，本判据对它们永不触发——
+    主判据是 VerificationGate 的验收命令。对建了清单的任务，它是
+    "差一步"的兜底：清单没清空就说做完，与 ax107 型谎报同源。
+
+    读不了/损坏 → **不干预**（放行收尾）：钩子层的宽容策略
+    （"宽容是订阅者的策略，不是总线的"）——推进是增益，不是新的失败面；
+    账本坏没坏该由 todo 工具自己向模型报错，不靠推进钩子崩掉任务。
+    """
+
+    name = "goal-continuation"
+
+    def __init__(self, workspace_root: Path, *, max_continues: int = 3) -> None:
+        self._workspace_root = Path(workspace_root)
+        self._max_continues = max_continues
+        self._continues = 0
+
+    async def advance(self, facts: AdvanceFacts) -> AdvanceDecision:
+        if self._continues >= self._max_continues:
+            return AdvanceDecision()
+        try:
+            pending = unfinished_count(self._workspace_root)
+        except (ValueError, OSError):
+            # 读不了 = 无从判断 = 不干预。理由见类 docstring。
+            return AdvanceDecision()
+        if pending == 0:
+            return AdvanceDecision()
+        self._continues += 1
+        return AdvanceDecision(
+            continue_round=True,
+            inject=(
+                f"[清单延续] 任务清单还有 {pending} 条未完成"
+                "（pending/running）——现在收尾为时过早。"
+                '用 todo(action="list") 查看，逐项 update；'
+                "全部 completed 后再收尾。"
+            ),
+            reason=f"清单还有 {pending} 条未完成",
+        )

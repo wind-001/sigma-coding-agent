@@ -56,6 +56,38 @@ from sigma.providers.messages import TextBlock
 #: （与 write 工具"不自动建父目录"不是同一条纪律，别混用）。
 TODO_RELATIVE = ".sigma/todo.json"
 
+#: 未完成状态。**判定"目标是否达成"的客观判据之一**（推进机制批次 3 的
+#: GoalContinuation 用它：模型收手时清单还有这些状态 → 目标未达成）。
+#: 放在这里而不是钩子里：格式知识只有一份，钩子通过公开函数问。
+UNFINISHED_STATUSES: frozenset[str] = frozenset({"pending", "running"})
+
+
+def unfinished_count(workspace_root: Path, relative_path: str = TODO_RELATIVE) -> int:
+    """清单里未完成（pending/running）的条数。没有清单/文件不在 → 0。
+
+    **公开只读 API**：``runtime/advance.py`` 的 GoalContinuation 要用同一个
+    判据——让它自己去 ``json.loads`` 就是第二份格式知识（todo.py 改结构它
+    不知道，症状是"钩子永远看不到未完成"且不报错）。
+
+    损坏文件抛 ValueError（与 ``TodoTool._load`` 同判据：宁可崩不要错）——
+    **调用方要自己决定容错**：钩子层选择"读不了就不干预"（宽容是订阅者的
+    策略），工具层选择"变成模型可见的错误结果"。
+    """
+    path = workspace_root / relative_path
+    if not path.exists():
+        return 0
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("清单文件不是 JSON 对象")
+    items = raw.get("items")
+    if not isinstance(items, list):
+        raise ValueError("清单文件缺少 items 数组")
+    return sum(
+        1
+        for item in items
+        if isinstance(item, dict) and item.get("status") in UNFINISHED_STATUSES
+    )
+
 Status = Literal["pending", "running", "completed"]
 _ALL_STATUSES: tuple[str, ...] = ("pending", "running", "completed")
 

@@ -217,6 +217,7 @@ async def _run_agent(
             # 的对不上号（agency.py 按报告里的 session_trace 路径复算）。
             session_id=session_id,
             verification_cmd=spec.judge.command if profile.verification else None,
+            enable_goal_continuation=profile.goal_continuation,
         )
     finally:
         await provider.aclose()
@@ -363,6 +364,7 @@ async def run_one(
     base_url: str | None = None,
     api_key_env: str = "SIGMA_API_KEY",
     verification: bool = False,
+    goal_continuation: bool = False,
 ) -> int:
     task_dir = DATASETS / "synthetic" / task_id
     if not task_dir.is_dir():
@@ -371,13 +373,14 @@ async def run_one(
 
     if profile_name == "B0" and (
         no_todo or sub_agent or max_rounds is not None or verification
+        or goal_continuation
     ):
         # 宁可报错，不要静默跑一份名不副实的报告
         # （B0 无工具单轮，消融开关对它无意义）。放在 check_only 之前：
         # 免费通路也不能逃过一致性检查。
         print(
             "[错误] B0 是无工具单轮档，--no-todo / --sub-agent / --max-rounds / "
-            "--verification 对它无意义。",
+            "--verification / --goal-continuation 对它无意义。",
             file=sys.stderr,
         )
         return 2
@@ -427,7 +430,10 @@ async def run_one(
             )
 
         profile = _PROFILES[profile_name]()
-        if no_todo or sub_agent or max_rounds is not None or verification:
+        if (
+            no_todo or sub_agent or max_rounds is not None
+            or verification or goal_continuation
+        ):
             # 消融后缀进档位名（P4-批次2 D-A3 / 轮数扫描 / 推进机制批次 2）：
             # 档位名进报告文件名与每行数据——没有它，两个月后没人说得清那份
             # JSON 是在什么配置下产生的，不同配置的报告还会互相覆盖
@@ -448,6 +454,10 @@ async def run_one(
                 # 推进机制批次 2：验证收尾的 A/B 对照臂（B2-verify 对 B2）。
                 suffix += "-verify"
                 updates["verification"] = True
+            if goal_continuation:
+                # 推进机制批次 3：清单延续的 A/B 对照臂（B2-goal 对 B2）。
+                suffix += "-goal"
+                updates["goal_continuation"] = True
             updates["name"] = profile.name + suffix
             profile = dataclasses.replace(profile, **updates)
         # 会话/trace 落盘目录（agency 评测轴数据源）。B0 无 loop，恒 None。
@@ -690,6 +700,12 @@ def main(argv: list[str] | None = None) -> int:
         "（模型收手时跑，不过 → 注入失败输出续跑，最多 2 轮后 stopped）。"
         "档位名加 -verify 后缀，报告不覆盖原档位。",
     )
+    parser.add_argument(
+        "--goal-continuation",
+        action="store_true",
+        help="推进机制批次 3：注册 GoalContinuation（模型收手但 todo 清单有 "
+        "pending/running → 注入清单现状并继续，最多 3 次）。档位名加 -goal 后缀。",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(
         run_one(
@@ -705,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             api_key_env=args.api_key_env,
             verification=args.verification,
+            goal_continuation=args.goal_continuation,
         )
     )
 

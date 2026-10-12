@@ -60,6 +60,7 @@
 | 37 | **IO 故障不许杀死 worker** | 引擎 IO 异常时 | `team/engine.py` `_on_io_fault`（永不抛） | 无 |
 | 38 | **推进钩子询问点** | 模型收手（`not calls`）且信箱空之后、completed 之前 | `event_loop.py` `not calls` 分支（推进机制批次 1）；接口 `hooks/base.py` `AdvanceHook`/`advance_decide` | 不注册推进钩子即不触发（GA-4a/4b 注入钉住零值） |
 | 39 | **验证收尾** | 推进询问点上，任务声明了 `verification_cmd` 时 | `runtime/advance.py` `VerificationGate`（批次 2）；传链 `sdk.run_task(verification_cmd=…)` → CLI `--verification-cmd` / 评测 `--verification` | `--verification-cmd` 不给 / `EvalProfile.verification=False`（GA-1a/1b 注入钉住） |
+| 40 | **清单延续** | 推进询问点上，`.sigma/todo.json` 有 pending/running 时 | `runtime/advance.py` `GoalContinuation`（批次 3）；判据 `tools/builtin/todo.py` `unfinished_count`（公开只读） | CLI `--no-goal-continuation`（默认关）/ `EvalProfile.goal_continuation=False`（GA-2 注入钉住） |
 
 ### 读表要点
 
@@ -87,7 +88,7 @@
 | --- | --- |
 | `runtime/event_loop.py` | ✅ `AgentLoop`（唯一实现，`run_turn` 全项目仅此一处）· ✅ `TransientBackoff` · `_Planned` · `_StreamedRound` |
 | `runtime/loop_guard.py` | ✅ `GuardConfig` · ✅ `LoopGuard` · ✅ `Verdict` · `CallFacts` · `normalize_args` · `result_fingerprint` · `NUDGE_TEXT` |
-| `runtime/advance.py` | ✅ `VerificationGate`（推进机制批次 2；GoalContinuation 批次 3 待落） |
+| `runtime/advance.py` | ✅ `VerificationGate`（批次 2）· ✅ `GoalContinuation`（批次 3） |
 | `runtime/sub_agent.py` | ✅ `TaskTool` · ✅ `SubAgentRounds` · `TaskParams` · `_SubTaskState` · `SUB_SYSTEM_PROMPT_PREFIX` |
 | `runtime/__init__.py` | — |
 

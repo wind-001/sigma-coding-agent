@@ -25,6 +25,11 @@
            注入：把 force_stop 决定改成 continue_round
            （腐化形状：死循环烧 token，且永远不 stopped）
 
+    GA-2   清单延续真的在看清单（有 pending → 继续）
+           注入：把 "if pending == 0" 的提前返回改成恒不干预
+           （腐化形状：判据形同虚设——建了清单也永远放行，
+           机制退化成名义开关）
+
 **为什么在真实仓库上做，而不是复制到临时目录**（batch1 的教训）：
     .venv 里 pip install -e 的 .pth 把真实仓库绝对路径写死了，临时目录里
     跑 pytest 导入到的仍是真实仓库的代码——沙箱改动不参与测试，
@@ -45,7 +50,7 @@ REPO = Path(__file__).resolve().parent.parent
 PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 
 #: 本批次注入实验的目标测试文件（基线必须绿、注入必须红、还原必须绿）。
-TARGETS = ("tests/test_advance_hook.py", "tests/test_advance_gate.py")
+TARGETS = ("tests/test_advance_hook.py", "tests/test_advance_gate.py", "tests/test_advance_goal.py")
 
 
 class Repo:
@@ -177,14 +182,27 @@ def _ga1b(repo: Repo) -> None:
     )
 
 
+def _ga2(repo: Repo) -> None:
+    repo.patch(
+        "src/sigma/runtime/advance.py",
+        """        if pending == 0:
+            return AdvanceDecision()
+        self._continues += 1""",
+        """        if True:
+            return AdvanceDecision()
+        self._continues += 1""",
+    )
+
+
 def main() -> int:
     experiment("GA-4a", "零推进钩子恒返回 continue（抹掉'没人注册'）", _ga4a, TARGETS)
     experiment("GA-4b", "loop 侧无条件询问总线（hooks=None 旧路径被拖崩）", _ga4b, TARGETS)
     experiment("GA-1a", "验证收尾不跑命令恒放行（ax107 型谎报复发）", _ga1a, TARGETS)
     experiment("GA-1b", "连续不过也永不 stopped（死循环烧 token）", _ga1b, TARGETS)
+    experiment("GA-2", "清单延续恒不干预（判据形同虚设）", _ga2, TARGETS)
 
     print()
-    print("=== GA 注入实验结果（推进机制批次 1+2） ===")
+    print("=== GA 注入实验结果（推进机制批次 1+2+3） ===")
     ok = True
     for gate, what, passed, detail in RESULTS:
         mark = "✓" if passed else "✗"

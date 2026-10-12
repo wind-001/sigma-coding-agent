@@ -301,6 +301,18 @@ def build_parser() -> argparse.ArgumentParser:
             "不给 = 不注册该机制，行为与之前逐字节一致。"
         ),
     )
+    # ⚠️ help 文本里不要出现单个 %：argparse 的 help 会做 % 格式化，
+    # "9%" 会炸 ValueError: unsupported format character。要写比例就写 "2/22"。
+    parser.add_argument(
+        "--goal-continuation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "推进机制批次 3：清单延续。开启后，模型收手时若 .sigma/todo.json "
+            "还有 pending/running 条目，注入清单现状并继续一轮（最多 3 次）。"
+            "默认关——B1 基线实测 22 题只有 2 题建清单，兜底判据不默认开。"
+        ),
+    )
     # 会话接续（P2-5）。两者互斥：一个说"续最近那个"，一个说"用这个 id"，
     # 同时给没有意义——而 argparse 的互斥组会把这句话变成启动时的报错，
     # 比"后者静默覆盖前者"好。
@@ -1022,6 +1034,7 @@ class SessionManager:
             # 推进机制批次 2：验证收尾（None = 不注册，零值不变）。
             # 产品壳的策略：用户显式给了验收命令才在收手时跑它。
             verification_cmd=self._args.verification_cmd,
+            enable_goal_continuation=self._args.goal_continuation,
             enable_trace=self._enable_trace,
             enable_memory=self._enable_memory,
             enable_repo_map=self._enable_repo_map,

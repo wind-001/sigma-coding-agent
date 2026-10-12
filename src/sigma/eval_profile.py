@@ -20,6 +20,9 @@ P4-批次2 扩了两个字段（``todo`` / ``sub_agent``），它们**一落地�
 
 推进机制批次 2 再扩一个（``verification``）：``--verification`` 把任务的
 判定命令当验收命令注册 VerificationGate（A/B：B2-verify 对 B2）。
+
+推进机制批次 3 再扩一个（``goal_continuation``）：``--goal-continuation``
+注册 GoalContinuation（清单延续，A/B：B2-goal 对 B2）。
 """
 
 from __future__ import annotations
@@ -54,6 +57,10 @@ class EvalProfile:
     #: B2 保持"无推进干预"的原语义；A/B 对照臂 = B2-verify 对 B2。
     #: 一落地就真实接线，不是名义开关（todo/sub_agent 同款纪律）。
     verification: bool = False
+    #: 清单延续（推进机制批次 3）：True 时注册 GoalContinuation
+    #: （模型收手但清单有 pending/running → 注入并继续）。默认 False——
+    #: 基线实测 22 题只有 2 个建清单（9%），兜底判据不默认开。
+    goal_continuation: bool = False
 
     @classmethod
     def b1(cls) -> EvalProfile:
