@@ -1,0 +1,33 @@
+{
+  "generated_at": "2026-10-13T01:21:20",
+  "task": "ax101-impl-roman",
+  "title": "[从零实现] 罗马数字互转",
+  "kind": "synthetic",
+  "result": {
+    "task_id": "ax101-impl-roman",
+    "eval_profile": "B1",
+    "status": "completed",
+    "rounds": 7,
+    "tool_calls": 7,
+    "tool_failures": 0,
+    "prompt_tokens": 27488,
+    "completion_tokens": 6688,
+    "wall_clock_s": 193.747,
+    "error": null
+  },
+  "verdict": {
+    "passed": true,
+    "reason": "判定命令 exit 0",
+    "evidence": {
+      "command": "python -m pytest tests/ -q",
+      "tests_restored_from": "C:\\Users\\刘康鑫\\Desktop\\sigma\\evals\\datasets\\synthetic\\ax101-impl-roman\\judge_tests",
+      "tests_restored_to": "tests",
+      "tests_were_modified": true,
+      "exit_code": 0,
+      "summary": "...........                                                              [100%]\n11 passed in 0.07s"
+    }
+  },
+  "session_trace": "evals\\reports\\sessions\\agency-baseline-20261013\\ax101-impl-roman_B1.trace.jsonl",
+  "model": "LongCat-2.5-Preview",
+  "endpoint": "https://api.longcat.chat/openai/v1"
+}

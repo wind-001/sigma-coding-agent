@@ -28,6 +28,11 @@
     ./.venv/Scripts/python.exe evals/task_runner.py --task syn-001 --profile B2
     ./.venv/Scripts/python.exe evals/task_runner.py --task syn-001 --check-only
 
+agency 评测轴落盘（阶段 0）
+    --sessions-dir <dir>  传入后会话 JSONL 与 trace 落盘（run_task 的 tree
+                          参数同时开这两样）。agency.py 从报告里的
+                          session_trace 字段复算 M3/M4。B0 档不落盘。
+
 消融开关（P4-批次2 D-A3）
     --no-todo    去掉 todo 工具（注册表 + 提示词行 + steering 三处同源关断），
                  档位名加 -no-todo 后缀；todo A/B 的对照臂 = B2 对 B2-no-todo。
@@ -116,7 +121,23 @@ def _default_model(preset: str) -> str:
     return builtin_providers().resolve(preset).default_model
 
 
-def _make_provider(api_key: str, preset: str = DEFAULT_PRESET) -> OpenAICompatProvider:
+def _make_provider(
+    api_key: str,
+    preset: str = DEFAULT_PRESET,
+    base_url: str | None = None,
+) -> OpenAICompatProvider:
+    """构造 OpenAI 兼容 provider。
+
+    ``base_url`` 非 None = 自定义端点（``--base-url``）：本机 key 对应的
+    服务不一定有内置 preset（如 LongCat，ax 报告 §5「结论绑定模型」的
+    短板就靠它补）。自定义端点只是换 URL，协议与 preset 路径完全相同。
+    """
+    if base_url is not None:
+        return OpenAICompatProvider(
+            base_url=base_url,
+            api_key=api_key,
+            provider_name="custom",
+        )
     spec = builtin_providers().resolve(preset)
     return OpenAICompatProvider(
         base_url=spec.base_url,
@@ -133,14 +154,40 @@ async def _run_agent(
     model: str,
     profile: EvalProfile,
     preset: str = DEFAULT_PRESET,
+    sessions_dir: Path | None = None,
+    base_url: str | None = None,
 ) -> TurnResult:
     """把任务描述交给 sigma，返回它这一轮的结果。
 
     档位在这里落成 ``run_task`` 的两个开关：**B1 = 显式关断压缩与
     checkpoint**——不是"不传参数"（那样会被默认 32k 策略顶掉，
     详规 §11.5 第 1 条）。
+
+    ``sessions_dir``（agency 评测轴的数据源）：非 None 时构造一棵
+    **落盘**的会话树传进去——``run_task`` 的 ``tree`` 参数同时决定两件事：
+    会话 JSONL 与 TraceHook 的 trace 都落盘（``sdk.py``：
+    ``enable_trace and tree is not None``）。**不传就是纯内存会话**，
+    行为与加这个参数之前逐字节一致（B0 档没有 loop，恒不传）。
     """
-    provider = _make_provider(api_key, preset)
+    provider = _make_provider(api_key, preset, base_url=base_url)
+    tree = None
+    session_id = f"{spec.id}_{profile.name}"
+    if sessions_dir is not None:
+        from sigma.sessions.store import JsonlStore
+        from sigma.sessions.tree import SessionTree
+
+        store = JsonlStore(sessions_dir, session_id)
+        # JsonlStore 是**只追加**的（那是审计链的地基）——但评测的一次运行
+        # 必须是一份干净数据：重跑同一任务同一档位时，不清就会把两次运行
+        # 混进同一个 jsonl/trace，agency 指标当场失真（两棵树的节点互为
+        # 父子）。这里清的是**评测自己刚生成的产物**，不是用户数据。
+        # trace 路径不自己拼——用 trace_path_for 与 TraceHook 的落点同源。
+        from sigma.observability.trace import trace_path_for
+
+        for stale in (store.path, trace_path_for(sessions_dir, session_id)):
+            if stale.exists():
+                stale.unlink()
+        tree = SessionTree.from_store(store)
     try:
         return await sdk.run_task(
             spec.description,
@@ -159,6 +206,12 @@ async def _run_agent(
             enable_checkpoint=profile.checkpoint,
             enable_todo=profile.todo,
             enable_sub_agent=profile.sub_agent,
+            tree=tree,
+            # session_id 必须与 JsonlStore 用的是同一个值：trace 文件名
+            # 由它决定（sdk.py: TraceHook(session_id, tree.store.path.parent)），
+            # 两处不一致会出现"jsonl 叫 ax101_B1、trace 叫 sigma-session"
+            # 的对不上号（agency.py 按报告里的 session_trace 路径复算）。
+            session_id=session_id,
         )
     finally:
         await provider.aclose()
@@ -301,6 +354,9 @@ async def run_one(
     sub_agent: bool = False,
     max_rounds: int | None = None,
     preset: str = DEFAULT_PRESET,
+    sessions_dir: Path | None = None,
+    base_url: str | None = None,
+    api_key_env: str = "SIGMA_API_KEY",
 ) -> int:
     task_dir = DATASETS / "synthetic" / task_id
     if not task_dir.is_dir():
@@ -332,11 +388,19 @@ async def run_one(
             verdict = judge.judge(workspace, None)  # type: ignore[arg-type]
             return _report_check_only(spec, verdict, profile_name)
 
-        api_key, source = resolve_api_key(explicit=None)
+        api_key, source = resolve_api_key(explicit=None, var_name=api_key_env)
         if not api_key:
-            print("[错误] 没找到 API key（SIGMA_API_KEY / ~/.sigma/.env）", file=sys.stderr)
+            print(
+                f"[错误] 没找到 API key（{api_key_env} / ~/.sigma/.env）",
+                file=sys.stderr,
+            )
             return 2
-        print(f"  模型     {model or _default_model(preset)}（preset：{preset}，key 来源：{source}）")
+        resolved_model = model or _default_model(preset)
+        endpoint = base_url or builtin_providers().resolve(preset).base_url
+        print(
+            f"  模型     {resolved_model}（端点：{endpoint}，"
+            f"key 来源：{source}）"
+        )
 
         started = time.monotonic()
         if profile_name == "B0":
@@ -348,7 +412,11 @@ async def run_one(
                 preset=preset,
             )
             verdict = judge.judge(workspace, task_result)
-            return _report(spec, task_result, verdict, profile_name)
+            return _report(
+                spec, task_result, verdict, profile_name,
+                model=model or _default_model(preset),
+                endpoint=base_url or builtin_providers().resolve(preset).base_url,
+            )
 
         profile = _PROFILES[profile_name]()
         if no_todo or sub_agent or max_rounds is not None:
@@ -368,14 +436,23 @@ async def run_one(
                 updates["max_rounds"] = max_rounds
             updates["name"] = profile.name + suffix
             profile = dataclasses.replace(profile, **updates)
+        # 会话/trace 落盘目录（agency 评测轴数据源）。B0 无 loop，恒 None。
+        # 目录名带 UTC 时间戳：一次运行的落盘自成一包，agency.py 可复算。
+        run_sessions_dir = (
+            None
+            if profile_name == "B0"
+            else (sessions_dir or REPORTS / "sessions" / time.strftime("%Y%m%dT%H%M%S", time.gmtime()))
+        )
         try:
             result = await _run_agent(
                 spec,
                 workspace,
                 api_key=api_key,
-                model=model or _default_model(preset),
+                model=resolved_model,
                 preset=preset,
                 profile=profile,
+                sessions_dir=run_sessions_dir,
+                base_url=base_url,
             )
         except Exception as exc:  # noqa: BLE001 — 评测要如实记下失败，不能让它炸掉整轮
             elapsed = time.monotonic() - started
@@ -393,7 +470,10 @@ async def run_one(
                 error=f"{type(exc).__name__}: {exc}",
             )
             verdict = JudgeVerdict(passed=False, reason="agent 抛异常", evidence={})
-            return _report(spec, task_result, verdict, profile.name)
+            return _report(
+                spec, task_result, verdict, profile.name, run_sessions_dir,
+                model=resolved_model, endpoint=endpoint,
+            )
 
         elapsed = time.monotonic() - started
         usage = result.usage
@@ -414,7 +494,10 @@ async def run_one(
               f"{task_result.wall_clock_s}s")
 
         verdict = judge.judge(workspace, task_result)
-        return _report(spec, task_result, verdict, profile.name)
+        return _report(
+            spec, task_result, verdict, profile.name, run_sessions_dir,
+            model=resolved_model, endpoint=endpoint,
+        )
 
 
 def _report_check_only(spec: TaskSpec, verdict: JudgeVerdict, profile_name: str) -> int:
@@ -460,10 +543,21 @@ def _report_check_only(spec: TaskSpec, verdict: JudgeVerdict, profile_name: str)
 
 
 def _report(
-    spec: TaskSpec, result: TaskResult, verdict: JudgeVerdict, profile_name: str
+    spec: TaskSpec, result: TaskResult, verdict: JudgeVerdict, profile_name: str,
+    sessions_dir: Path | None = None,
+    model: str = "",
+    endpoint: str = "",
 ) -> int:
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
     REPORTS.mkdir(parents=True, exist_ok=True)
+    # agency 评测轴的复算入口：报告记下这一行的 trace 落在哪（缺落盘 = None，
+    # agency.py 对 None 如实报"指标无定义"，不猜路径）。
+    session_trace = None
+    if sessions_dir is not None:
+        candidate = (sessions_dir / f"{spec.id}_{profile_name}.trace.jsonl").resolve()
+        if candidate.is_file():
+            # resolve 后再相对化：sessions_dir 可能是调用方传的相对路径
+            session_trace = str(candidate.relative_to(REPO.resolve()))
     payload = {
         "generated_at": stamp,
         "task": spec.id,
@@ -471,6 +565,11 @@ def _report(
         "kind": spec.kind,
         "result": result.model_dump(),
         "verdict": verdict.model_dump(),
+        "session_trace": session_trace,
+        # 模型与端点进报告（ax 报告 §5「结论绑定模型」的短板）：没有这两
+        # 个字段，两个月后没人说得清那份 JSON 是哪个模型、哪个端点跑的。
+        "model": model,
+        "endpoint": endpoint,
     }
     json_path = REPORTS / f"task_{spec.id}_{profile_name}.json"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
@@ -552,6 +651,24 @@ def main(argv: list[str] | None = None) -> int:
         help="轮数上限扫描（默认 20，即 run_task 缺省）；显式传入时档位名加 -rN 后缀，"
         "报告不覆盖其他轮数档",
     )
+    parser.add_argument(
+        "--sessions-dir",
+        default=None,
+        help="会话 JSONL 与 trace 的落盘目录（agency 评测轴的数据源）。"
+        "缺省 = evals/reports/sessions/<UTC 时间戳>；B0 档不落盘（无 loop）。",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="自定义 OpenAI 兼容端点（如 LongCat：https://api.longcat.chat/openai/v1）。"
+        "配 --api-key-env 使用；本机 key 对应的服务不一定有内置 preset。",
+    )
+    parser.add_argument(
+        "--api-key-env",
+        default="SIGMA_API_KEY",
+        help="从哪个环境变量/.env 键取 key（默认 SIGMA_API_KEY）。"
+        "自定义端点通常要显式指定，如 LONGCAT_API_KEY。",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(
         run_one(
@@ -562,6 +679,10 @@ def main(argv: list[str] | None = None) -> int:
             no_todo=args.no_todo,
             sub_agent=args.sub_agent,
             max_rounds=args.max_rounds,
+            preset=args.preset,
+            sessions_dir=Path(args.sessions_dir) if args.sessions_dir else None,
+            base_url=args.base_url,
+            api_key_env=args.api_key_env,
         )
     )
 

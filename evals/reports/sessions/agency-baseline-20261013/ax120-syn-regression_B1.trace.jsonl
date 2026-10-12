@@ -1,0 +1,9 @@
+{"ts": "2026-10-13T01:49:06.835", "t": 55995.08247, "kind": "llm_requested", "round": 1}
+{"ts": "2026-10-13T01:49:10.810", "t": 55999.057331, "kind": "llm_end", "round": 1, "latency_ms": 3975, "ttft_ms": 3320, "model": "LongCat-2.5-Preview", "prompt_tokens": 2681, "completion_tokens": 55, "cached_tokens": 0}
+{"ts": "2026-10-13T01:49:10.812", "t": 55999.05954, "kind": "tool_start", "name": "read", "call_id": "call_ad0c2a976df54318af9d6def"}
+{"ts": "2026-10-13T01:49:10.813", "t": 55999.060726, "kind": "tool_start", "name": "read", "call_id": "call_d9b165cbf4904afa923797be"}
+{"ts": "2026-10-13T01:49:10.826", "t": 55999.073928, "kind": "tool_end", "name": "read", "ok": true, "tool_call_id": "call_ad0c2a976df54318af9d6def", "duration_ms": 14, "truncated": false}
+{"ts": "2026-10-13T01:49:10.829", "t": 55999.076222, "kind": "tool_end", "name": "read", "ok": true, "tool_call_id": "call_d9b165cbf4904afa923797be", "duration_ms": 15, "truncated": false}
+{"ts": "2026-10-13T01:49:10.830", "t": 55999.077427, "kind": "llm_requested", "round": 2}
+{"ts": "2026-10-13T01:54:13.113", "t": 56301.360017, "kind": "llm_end", "round": 2, "latency_ms": 302283, "model": "LongCat-2.5-Preview", "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0}
+{"ts": "2026-10-13T01:54:13.114", "t": 56301.361835, "kind": "turn_end", "status": "error", "rounds": 2, "prompt_tokens": 2681, "completion_tokens": 55}

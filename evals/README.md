@@ -88,6 +88,35 @@ transcript 是否被完整消费。把 provider 换成录音之后，这些结�
 | prompt cache 命中率 | `cached_tokens / prompt_tokens` |
 | 截断发生率 | 触发输出截断的工具调用占比 |
 
+## agency 评测轴（2026-10-13，推进机制阶段 0）
+
+`agency.py` 从**既有落盘数据**算「推进能力」指标——不新建遥测设施，
+只读两种已有数据：task report（status/verdict/rounds）+ TraceHook 的 trace
+（`--sessions-dir` 落盘后才存在）。口径全文见 `agency.py` docstring。
+
+    M1 真收束率 / M1' 谎报完成率   completed 的任务里 verdict 通过/未过
+    M2 卡点自陈率                 verdict 未过的任务里 stopped+reason 非空
+    M3 未查证即结论率             首个 write/edit 前无 read/grep/task
+                                  （bash 读写混合不计入 → 上界）
+    M4 后续步骤自发起率           rounds>=2（第 2 轮起无新用户输入）
+    M5 收束轮数                   completed 任务的 rounds 中位数
+
+**对照臂是 B1 不是 B0**（B0 无工具单轮，M3/M4 无定义——开工指令 §4.2 硬提醒）。
+B1 基线（22 题 × LongCat-2.5-Preview）：`reports/agency_baseline_20261013.md`，
+逐题 trace 在 `reports/sessions/agency-baseline-20261013/`。
+
+```bash
+# 跑基线（trace 才会话 jsonl 一并落盘；B0 档不落盘）
+./.venv/Scripts/python.exe evals/task_runner.py --task syn-001 --profile B1 \
+    --sessions-dir evals/reports/sessions/<run-name>
+# 算轴（只含指定任务/档位）
+./.venv/Scripts/python.exe evals/agency.py --profile B1 --tasks syn-001,syn-011
+```
+
+自定义端点（本机 key 对应的服务不一定有内置 preset，如 LongCat）：
+`--base-url <url> --api-key-env <VAR> --model <name>`；模型与端点会记进
+每份报告（「结论绑定模型」纪律）。
+
 ## 基线
 
 | 编号 | 配置 | 用途 |
