@@ -62,6 +62,7 @@ from sigma.hooks.base import (
 )
 from sigma.runtime.event_loop import AgentLoop
 from sigma.runtime.loop_guard import GuardConfig
+from sigma.runtime.advance import VerificationGate
 from sigma.tools.registry import ReloadReport, ToolRegistry
 from sigma.skills.scanner import (
     SKILLS_DIRNAME,
@@ -319,6 +320,10 @@ class InteractiveSession:
         enable_todo: bool = True,
         enable_sub_agent: bool = False,
         enable_team_tasks: bool = False,
+        # 推进机制批次 2：验证收尾的验收命令（None = 不注册 VerificationGate，
+        # 行为与加它之前逐字节一致）。产品壳的策略：CLI ``--verification-cmd``、
+        # 评测从 TaskSpec.judge.command 带、工作台任务创建时可填。
+        verification_cmd: str | None = None,
         sub_agent_max_concurrent: int = 3,
         sub_agent_rounds: SubAgentRounds | None = None,
         signal: CancelToken | None = None,
@@ -618,6 +623,12 @@ class InteractiveSession:
             self._hooks.register(hook)
         if self._approval is not None:
             self._hooks.register_approval(self._approval)
+        # 推进机制批次 2：验证收尾。**None = 不注册 = 行为与加它之前逐字节
+        # 一致**（与 L3 审批同承诺）；注册了才在模型收手时跑验收命令。
+        if verification_cmd:
+            self._hooks.register_advance(
+                VerificationGate(workspace_root, verification_cmd)
+            )
         self._loop = self._build_loop(
             provider=provider,
             registry=self._registry,
@@ -1246,6 +1257,9 @@ async def run_task(
     enable_todo: bool = True,
     enable_sub_agent: bool = False,
     enable_team_tasks: bool = False,
+    # 推进机制批次 2：验证收尾的验收命令（None = 不注册，零值不变）。
+    # 透传 :class:`InteractiveSession`，产品壳（CLI/评测/工作台）决定填什么。
+    verification_cmd: str | None = None,
     sub_agent_max_concurrent: int = 3,
     sub_agent_rounds: SubAgentRounds | None = None,
     checkpoint_watermark_bytes: int | None = None,
@@ -1299,6 +1313,7 @@ async def run_task(
         enable_todo=enable_todo,
         enable_sub_agent=enable_sub_agent,
         enable_team_tasks=enable_team_tasks,
+        verification_cmd=verification_cmd,
         sub_agent_max_concurrent=sub_agent_max_concurrent,
         sub_agent_rounds=sub_agent_rounds,
         checkpoint_watermark_bytes=checkpoint_watermark_bytes,

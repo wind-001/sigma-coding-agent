@@ -1,24 +1,29 @@
-"""推进机制批次 1 门槛注入实验：GA-4 证伪扩展面的零值承诺。
+"""推进机制批次 1+2 门槛注入实验：GA-4 证伪扩展面零值承诺、GA-1 证伪验证收尾。
 
 为什么必须做这个（P0 核心教训，已固化为验收门）
     「配置跑绿」不等于「约束生效」。一条门槛如果从来没有红过，就不知道
-    它到底在不在工作。本脚本对 AdvanceHook 扩展面的两条承诺各做一次
-    **注入实验**：故意把被防的问题造出来，确认对应断言真的红，
-    然后还原、确认真的绿。
+    它到底在不在工作。本脚本对每条承诺各做一次**注入实验**：故意把被防的
+    问题造出来，确认对应断言真的红，然后还原、确认真的绿。
 
-两条承诺与各自的注入靶
+承诺与各自的注入靶
     GA-4a  零推进钩子 → advance_decide 返回 None
            注入：把 "return None" 改成恒返回 continue 决定
            （腐化形状：钩子面在，但"没人注册"这件事被抹掉——
            评测/回放/子会话不再静默，全部被强行续命）
-           必须红：test_advance_decide_returns_none_without_hooks
 
     GA-4b  loop 侧只在有总线时才问（hooks=None 的旧路径不被碰）
            注入：把 "if self._hooks is not None:" 改成 "if True:"
            （腐化形状：直接构造 AgentLoop 的旧测试/回放路径被拖去问一个
            不存在的总线 → AttributeError）
-           必须红：test_loop_without_advance_hooks_is_byte_identical
-           （或同文件的 hooks=None 用例）
+
+    GA-1a  验证收尾真的在跑命令（不过 → 续跑/停止）
+           注入：把 "passed, output = await self._run_command()" 改成
+           "passed, output = True, ''"（腐化形状：命令形同虚设，
+           模型一收手就放行——ax107 型谎报完成复发）
+
+    GA-1b  连续不过 → force_stop（不永远续命）
+           注入：把 force_stop 决定改成 continue_round
+           （腐化形状：死循环烧 token，且永远不 stopped）
 
 **为什么在真实仓库上做，而不是复制到临时目录**（batch1 的教训）：
     .venv 里 pip install -e 的 .pth 把真实仓库绝对路径写死了，临时目录里
@@ -40,7 +45,7 @@ REPO = Path(__file__).resolve().parent.parent
 PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 
 #: 本批次注入实验的目标测试文件（基线必须绿、注入必须红、还原必须绿）。
-TARGET = "tests/test_advance_hook.py"
+TARGETS = ("tests/test_advance_hook.py", "tests/test_advance_gate.py")
 
 
 class Repo:
@@ -69,9 +74,9 @@ class Repo:
             path.write_text(original, encoding="utf-8")
         self._pending.clear()
 
-    def run(self, target: str) -> tuple[int, str]:
+    def run(self, targets: tuple[str, ...]) -> tuple[int, str]:
         proc = subprocess.run(
-            [str(PYTHON), "-m", "pytest", target, "-q", "-p", "no:cacheprovider"],
+            [str(PYTHON), "-m", "pytest", *targets, "-q", "-p", "no:cacheprovider"],
             cwd=REPO,
             capture_output=True,
             text=True,
@@ -84,11 +89,11 @@ class Repo:
 RESULTS: list[tuple[str, str, bool, str]] = []
 
 
-def experiment(gate: str, what: str, inject) -> None:
+def experiment(gate: str, what: str, inject, targets: tuple[str, ...]) -> None:
     repo = Repo()
     try:
         # 1. 基线必须绿——否则"注入后变红"说明不了任何事
-        code, out = repo.run(TARGET)
+        code, out = repo.run(targets)
         if code != 0:
             RESULTS.append(
                 (gate, what, False, f"基线不是绿的，实验无效：{out.strip()[-200:]}")
@@ -99,7 +104,7 @@ def experiment(gate: str, what: str, inject) -> None:
         inject(repo)
 
         # 3. 必须变红
-        code, out = repo.run(TARGET)
+        code, out = repo.run(targets)
         if code == 0:
             RESULTS.append(
                 (
@@ -121,7 +126,7 @@ def experiment(gate: str, what: str, inject) -> None:
     finally:
         repo.restore()
         # 5. 还原后必须复绿（还原没还原干净，比不实验更糟）
-        code, out = repo.run(TARGET)
+        code, out = repo.run(targets)
         if code != 0:
             RESULTS.append((gate, "还原后复绿", False, f"还原后仍红：{out.strip()[-200:]}"))
         else:
@@ -142,18 +147,44 @@ def _ga4b(repo: Repo) -> None:
     repo.patch(
         "src/sigma/runtime/event_loop.py",
         """                if self._hooks is not None:
-                    decision = await self._hooks.advance_decide(""",
+                    if guard is not None:
+                        guard.pause()""",
         """                if True:
-                    decision = await self._hooks.advance_decide(""",
+                    if guard is not None:
+                        guard.pause()""",
+    )
+
+
+def _ga1a(repo: Repo) -> None:
+    repo.patch(
+        "src/sigma/runtime/advance.py",
+        """        self._attempts += 1
+        passed, output = await self._run_command()""",
+        """        self._attempts += 1
+        passed, output = True, \"\"""",
+    )
+
+
+def _ga1b(repo: Repo) -> None:
+    repo.patch(
+        "src/sigma/runtime/advance.py",
+        """        return AdvanceDecision(
+            force_stop=True,
+            reason=(""",
+        """        return AdvanceDecision(
+            continue_round=True,
+            reason=(""",
     )
 
 
 def main() -> int:
-    experiment("GA-4a", "零推进钩子恒返回 continue（抹掉'没人注册'）", _ga4a)
-    experiment("GA-4b", "loop 侧无条件询问总线（hooks=None 旧路径被拖崩）", _ga4b)
+    experiment("GA-4a", "零推进钩子恒返回 continue（抹掉'没人注册'）", _ga4a, TARGETS)
+    experiment("GA-4b", "loop 侧无条件询问总线（hooks=None 旧路径被拖崩）", _ga4b, TARGETS)
+    experiment("GA-1a", "验证收尾不跑命令恒放行（ax107 型谎报复发）", _ga1a, TARGETS)
+    experiment("GA-1b", "连续不过也永不 stopped（死循环烧 token）", _ga1b, TARGETS)
 
     print()
-    print("=== GA-4 注入实验结果（推进机制批次 1：扩展面零值承诺） ===")
+    print("=== GA 注入实验结果（推进机制批次 1+2） ===")
     ok = True
     for gate, what, passed, detail in RESULTS:
         mark = "✓" if passed else "✗"

@@ -224,16 +224,22 @@ class HookManager:
     async def advance_decide(self, facts: AdvanceFacts) -> AdvanceDecision | None:
         """对一次"模型想收手"询问全部推进钩子。
 
-        **没有注册任何推进钩子 → None**（= 不干预，行为与加它之前逐字节
+        **没有注册任何推进钩子 → None**（= 没问过，行为与加它之前逐字节
         一致，与 ``approve_tool`` 的"零审批钩子默认放行"同一条承诺）。
 
-        多钩子裁决（与审批"任一拒绝→拒绝"对偶，但停止权重高于继续——
+        注册了钩子时**永不返回 None**（哪怕全部不干预）：返回
+        ``AdvanceDecision()``（全 False）——"问了、说不用管"与"没问"
+        是两件必须分得清的事（loop 据此落一条 AdvanceDecided，
+        trace 上才看得出 gate 在工作；折叠成 None 会把
+        "没注册"和"注册了且验收已过"混成同一种静默）。
+
+        多钩子的裁决顺序（与审批"任一拒绝→拒绝"对偶，但停止权重高于继续——
         验收/安全类判据说不完，不许被"再试试"盖过）：
 
         1. 任一 ``force_stop`` → 取第一个的（连同理由）；
         2. 否则任一 ``continue_round`` → 继续，inject 取第一个要求继续的
            （多钩子注入打架比没有更坏）；
-        3. 全部不干预 → None。
+        3. 全部不干预 → 第一个的决定（全 False）。
         """
         if not self._advance_hooks:
             return None
@@ -244,7 +250,7 @@ class HookManager:
         for decision in decisions:
             if decision.continue_round:
                 return decision
-        return None
+        return decisions[0]
 
     def advance_names(self) -> list[str]:
         """已注册推进钩子名（横幅与测试用）。"""

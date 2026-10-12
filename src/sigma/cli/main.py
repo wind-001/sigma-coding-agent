@@ -290,6 +290,17 @@ def build_parser() -> argparse.ArgumentParser:
             "本旗标可单独关掉它，不影响 task 工具本身。"
         ),
     )
+    parser.add_argument(
+        "--verification-cmd",
+        default=None,
+        metavar="CMD",
+        help=(
+            "推进机制批次 2：验证收尾的验收命令（如 'python -m pytest tests/ -q'）。"
+            "给了它，模型宣布完成时会自动跑一遍：不过 → 注入失败输出让它续修"
+            "（最多 2 轮），还不过 → 优雅 stopped（不撒谎 completed）。"
+            "不给 = 不注册该机制，行为与之前逐字节一致。"
+        ),
+    )
     # 会话接续（P2-5）。两者互斥：一个说"续最近那个"，一个说"用这个 id"，
     # 同时给没有意义——而 argparse 的互斥组会把这句话变成启动时的报错，
     # 比"后者静默覆盖前者"好。
@@ -1008,6 +1019,9 @@ class SessionManager:
             skills_root=self._skills_root,
             enable_sub_agent=self._args.sub_agent,
             enable_team_tasks=_team_tasks_enabled(self._args),
+            # 推进机制批次 2：验证收尾（None = 不注册，零值不变）。
+            # 产品壳的策略：用户显式给了验收命令才在收手时跑它。
+            verification_cmd=self._args.verification_cmd,
             enable_trace=self._enable_trace,
             enable_memory=self._enable_memory,
             enable_repo_map=self._enable_repo_map,

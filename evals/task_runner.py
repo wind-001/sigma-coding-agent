@@ -168,6 +168,10 @@ async def _run_agent(
     会话 JSONL 与 TraceHook 的 trace 都落盘（``sdk.py``：
     ``enable_trace and tree is not None``）。**不传就是纯内存会话**，
     行为与加这个参数之前逐字节一致（B0 档没有 loop，恒不传）。
+
+    ``profile.verification``（推进机制批次 2）：True 时把任务的判定命令
+    当验收命令传进去——评测的 ``TaskSpec.judge.command`` 就是现成的一例，
+    不需要另造命令。False = 不传 = 零值不变。
     """
     provider = _make_provider(api_key, preset, base_url=base_url)
     tree = None
@@ -212,6 +216,7 @@ async def _run_agent(
             # 两处不一致会出现"jsonl 叫 ax101_B1、trace 叫 sigma-session"
             # 的对不上号（agency.py 按报告里的 session_trace 路径复算）。
             session_id=session_id,
+            verification_cmd=spec.judge.command if profile.verification else None,
         )
     finally:
         await provider.aclose()
@@ -357,19 +362,22 @@ async def run_one(
     sessions_dir: Path | None = None,
     base_url: str | None = None,
     api_key_env: str = "SIGMA_API_KEY",
+    verification: bool = False,
 ) -> int:
     task_dir = DATASETS / "synthetic" / task_id
     if not task_dir.is_dir():
         print(f"[错误] 找不到任务目录：{task_dir}", file=sys.stderr)
         return 2
 
-    if profile_name == "B0" and (no_todo or sub_agent or max_rounds is not None):
+    if profile_name == "B0" and (
+        no_todo or sub_agent or max_rounds is not None or verification
+    ):
         # 宁可报错，不要静默跑一份名不副实的报告
         # （B0 无工具单轮，消融开关对它无意义）。放在 check_only 之前：
         # 免费通路也不能逃过一致性检查。
         print(
-            "[错误] B0 是无工具单轮档，--no-todo / --sub-agent / --max-rounds "
-            "对它无意义。",
+            "[错误] B0 是无工具单轮档，--no-todo / --sub-agent / --max-rounds / "
+            "--verification 对它无意义。",
             file=sys.stderr,
         )
         return 2
@@ -419,10 +427,12 @@ async def run_one(
             )
 
         profile = _PROFILES[profile_name]()
-        if no_todo or sub_agent or max_rounds is not None:
-            # 消融后缀进档位名（P4-批次2 D-A3 / 轮数扫描）：档位名进报告文件名
-            # 与每行数据——没有它，两个月后没人说得清那份 JSON 是在什么配置下
-            # 产生的，不同轮数上限的报告也会互相覆盖。
+        if no_todo or sub_agent or max_rounds is not None or verification:
+            # 消融后缀进档位名（P4-批次2 D-A3 / 轮数扫描 / 推进机制批次 2）：
+            # 档位名进报告文件名与每行数据——没有它，两个月后没人说得清那份
+            # JSON 是在什么配置下产生的，不同配置的报告还会互相覆盖
+            # （--verification 单独传时也必须进这个块，否则 B2-verify 会
+            # 静默覆盖 B2——那是把 A/B 两臂混成一份）。
             suffix = ""
             updates: dict[str, object] = {}
             if no_todo:
@@ -434,6 +444,10 @@ async def run_one(
             if max_rounds is not None:
                 suffix += f"-r{max_rounds}"
                 updates["max_rounds"] = max_rounds
+            if verification:
+                # 推进机制批次 2：验证收尾的 A/B 对照臂（B2-verify 对 B2）。
+                suffix += "-verify"
+                updates["verification"] = True
             updates["name"] = profile.name + suffix
             profile = dataclasses.replace(profile, **updates)
         # 会话/trace 落盘目录（agency 评测轴数据源）。B0 无 loop，恒 None。
@@ -669,6 +683,13 @@ def main(argv: list[str] | None = None) -> int:
         help="从哪个环境变量/.env 键取 key（默认 SIGMA_API_KEY）。"
         "自定义端点通常要显式指定，如 LONGCAT_API_KEY。",
     )
+    parser.add_argument(
+        "--verification",
+        action="store_true",
+        help="推进机制批次 2：把任务的判定命令当验收命令注册 VerificationGate"
+        "（模型收手时跑，不过 → 注入失败输出续跑，最多 2 轮后 stopped）。"
+        "档位名加 -verify 后缀，报告不覆盖原档位。",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(
         run_one(
@@ -683,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
             sessions_dir=Path(args.sessions_dir) if args.sessions_dir else None,
             base_url=args.base_url,
             api_key_env=args.api_key_env,
+            verification=args.verification,
         )
     )
 

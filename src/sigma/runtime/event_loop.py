@@ -430,10 +430,27 @@ class AgentLoop:
                 # "还不算完"的地方。零推进钩子 → advance_decide 返回 None →
                 # 原路径原样返回（零值逐字节不变，与 L3 审批同承诺）。
                 # 注入走尾部 user 消息（动态区，不进常驻区、不改前缀）。
+                # 验收等待不计墙钟（与审批等待同先例）：跑一次 pytest 的
+                # 时间不是 agent 的空转，guard.pause()/resume() 挂起计时。
                 if self._hooks is not None:
-                    decision = await self._hooks.advance_decide(
-                        AdvanceFacts(round_index=round_index, last_text=last_text)
-                    )
+                    if guard is not None:
+                        guard.pause()
+                    try:
+                        decision = await self._hooks.advance_decide(
+                            AdvanceFacts(
+                                round_index=round_index, last_text=last_text
+                            )
+                        )
+                    finally:
+                        if guard is not None:
+                            guard.resume()
+                    # 询问的结论一律落盘（含"不干预"）——否则 trace 里分不清
+                    # "没注册 gate"和"注册了且验收已过"，审计链缺一环。
+                    # 不注册时 decision is None，一个事件都不发（零值不变）。
+                    if decision is not None:
+                        await self._emit(
+                            AdvanceDecided(round_index=round_index, decision=decision)
+                        )
                     if decision is not None and decision.force_stop:
                         # 优雅停止：不抛异常（异常会绕过树持久化），
                         # reason 进 statusDetail → 前端收尾行。
@@ -445,15 +462,9 @@ class AgentLoop:
                             usage=total_usage,
                             reason=decision.reason,
                         )
-                        await self._emit(
-                            AdvanceDecided(round_index=round_index, decision=decision)
-                        )
                         await self._emit(_turn_end(stopped))
                         return stopped
                     if decision is not None and decision.continue_round:
-                        await self._emit(
-                            AdvanceDecided(round_index=round_index, decision=decision)
-                        )
                         if decision.inject:
                             advance_msg = LlmMessageWrapper(
                                 timestamp=self._clock(),

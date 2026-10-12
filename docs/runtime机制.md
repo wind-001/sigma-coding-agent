@@ -59,6 +59,7 @@
 | 36 | **失败必达 lead** | 任务 fail 时（去重键 = 任务 id + attempts） | `team/engine.py` `_notify_failures` | `--no-team` |
 | 37 | **IO 故障不许杀死 worker** | 引擎 IO 异常时 | `team/engine.py` `_on_io_fault`（永不抛） | 无 |
 | 38 | **推进钩子询问点** | 模型收手（`not calls`）且信箱空之后、completed 之前 | `event_loop.py` `not calls` 分支（推进机制批次 1）；接口 `hooks/base.py` `AdvanceHook`/`advance_decide` | 不注册推进钩子即不触发（GA-4a/4b 注入钉住零值） |
+| 39 | **验证收尾** | 推进询问点上，任务声明了 `verification_cmd` 时 | `runtime/advance.py` `VerificationGate`（批次 2）；传链 `sdk.run_task(verification_cmd=…)` → CLI `--verification-cmd` / 评测 `--verification` | `--verification-cmd` 不给 / `EvalProfile.verification=False`（GA-1a/1b 注入钉住） |
 
 ### 读表要点
 
@@ -80,12 +81,13 @@
 `src/sigma/` 共 97 个模块。下表按功能域列，粒度 = **文件 → 顶层类/函数**。
 带 ✅ 的是主表里出现过的机制承载者。
 
-### runtime（4）
+### runtime（5）
 
 | 文件 | 顶层类 / 函数 |
 | --- | --- |
 | `runtime/event_loop.py` | ✅ `AgentLoop`（唯一实现，`run_turn` 全项目仅此一处）· ✅ `TransientBackoff` · `_Planned` · `_StreamedRound` |
 | `runtime/loop_guard.py` | ✅ `GuardConfig` · ✅ `LoopGuard` · ✅ `Verdict` · `CallFacts` · `normalize_args` · `result_fingerprint` · `NUDGE_TEXT` |
+| `runtime/advance.py` | ✅ `VerificationGate`（推进机制批次 2；GoalContinuation 批次 3 待落） |
 | `runtime/sub_agent.py` | ✅ `TaskTool` · ✅ `SubAgentRounds` · `TaskParams` · `_SubTaskState` · `SUB_SYSTEM_PROMPT_PREFIX` |
 | `runtime/__init__.py` | — |
 

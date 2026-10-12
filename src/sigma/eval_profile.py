@@ -17,6 +17,9 @@ HookManager 落地、真有钩子可关的那天再加——一个永远不影�
 P4-批次2 扩了两个字段（``todo`` / ``sub_agent``），它们**一落地就真实接线**：
 ``evals/task_runner.py`` 的 ``--no-todo`` / ``--sub-agent`` 直接映射到
 ``sdk.run_task(enable_todo=…, enable_sub_agent=…)``——不是名义开关。
+
+推进机制批次 2 再扩一个（``verification``）：``--verification`` 把任务的
+判定命令当验收命令注册 VerificationGate（A/B：B2-verify 对 B2）。
 """
 
 from __future__ import annotations
@@ -46,6 +49,11 @@ class EvalProfile:
     #: （「多少 turn 下完成率不足」）靠它声明档位——显式传入时档位名加
     #: ``-r{N}`` 后缀，报告互不覆盖。
     max_rounds: int = 20
+    #: 验证收尾（推进机制批次 2）：True 时 task_runner 把任务的判定命令
+    #: 当 ``verification_cmd`` 传进去（注册 VerificationGate）。默认 False——
+    #: B2 保持"无推进干预"的原语义；A/B 对照臂 = B2-verify 对 B2。
+    #: 一落地就真实接线，不是名义开关（todo/sub_agent 同款纪律）。
+    verification: bool = False
 
     @classmethod
     def b1(cls) -> EvalProfile:

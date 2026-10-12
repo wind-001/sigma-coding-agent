@@ -130,10 +130,19 @@ async def test_advance_decide_returns_none_without_hooks() -> None:
 
 @pytest.mark.asyncio
 async def test_advance_decide_returns_none_when_all_noop() -> None:
-    """注册了但全部不干预 → None（不是"继续"的默认）。"""
+    """注册了钩子时**永不返回 None**：全不干预 → 第一个的全 False 决定。
+
+    与 None（没问过）分道扬镳是刻意的——loop 据此落一条
+    AdvanceDecided，trace 上分得清"没注册 gate"和"注册了且验收已过"
+    （折叠成 None 会把两种静默混成一种，审计链缺环）。
+    """
     manager = HookManager()
     manager.register_advance(_NoopAdvance())
-    assert await manager.advance_decide(_FACTS) is None
+    decision = await manager.advance_decide(_FACTS)
+    assert decision is not None
+    assert decision.continue_round is False
+    assert decision.force_stop is False
+    assert decision.inject is None
 
 
 @pytest.mark.asyncio
@@ -280,9 +289,11 @@ async def test_loop_continues_and_injects_when_advance_hook_says_so() -> None:
     assert any("[推进] 验收命令还没跑" in str(getattr(m, "message", "")) for m in injected)
 
     kinds = [type(e).__name__ for e in recorder.seen if recorder is not None]
-    assert kinds.count("AdvanceDecided") == 1
+    # 两次询问各落一条 AdvanceDecided：第一次 continue、第二次不干预
+    # （注册了钩子就永不静默——"问了说不用管"也要可见）。
+    assert kinds.count("AdvanceDecided") == 2
     assert kinds.count("AssistantProduced") == 2
-    # AdvanceDecided 必须在两次 AssistantProduced 之间（第一轮收手处）
+    # 第一条 AdvanceDecided 必须在两次 AssistantProduced 之间（第一轮收手处）
     assert kinds.index("AdvanceDecided") > kinds.index("AssistantProduced")
 
 
