@@ -157,6 +157,54 @@ class ApprovalDecided:
     decision: ApprovalDecision
 
 
+# ---------------------------------------------------------------------------
+# 推进（第三类决策型钩子的数据，推进机制 批次 1）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AdvanceFacts:
+    """问推进钩子的最小事实（三问判定：不生成 schema、不落盘、
+    不校验外部输入 → frozen dataclass，与 ApprovalDecision 同判据）。
+
+    "目标是否达成"的判据由实现方自取（构造时注入路径/命令）——
+    loop 只搬它自己知道的事实：第几轮、模型这一轮说了什么。
+    **不放 todo 状态/验收结果**：那些是钩子该自己取的东西，
+    loop 替它看什么，第三方实现就被锁死在内置判据里。
+    """
+
+    round_index: int
+    last_text: str
+
+
+@dataclass(frozen=True)
+class AdvanceDecision:
+    """推进决定（frozen dataclass，同 ApprovalDecision 判据）。
+
+    默认值 = 不干预：不注册推进钩子时 loop 拿到 ``None``，同效。
+
+    ``force_stop`` 是验证收尾的必需品——验收命令 2 轮还不过时，
+    钩子必须能说"别 completed"，让它带着原因优雅 stopped
+    （不抛异常：异常会绕过树持久化）。
+    """
+
+    continue_round: bool = False
+    force_stop: bool = False
+    inject: str | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class AdvanceDecided:
+    """钩子点：一次推进询问的**结论**（审计可见——"继续一轮"与注入
+    都必须经事件落盘，树上原文不许被改写）。订阅者（TraceHook）落 trace；
+    注入本身另有 ``MessageInjected``（树上原文）。
+    """
+
+    round_index: int
+    decision: AdvanceDecision
+
+
 HookEvent = (
     AssistantProduced
     | MessageInjected
@@ -167,5 +215,6 @@ HookEvent = (
     | ToolEnd
     | TurnEnd
     | ApprovalDecided
+    | AdvanceDecided
 )
 """全部钩子点。**新增时机 = 新增一个成员 + loop 里一处 emit**，接口不变。"""

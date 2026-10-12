@@ -1,14 +1,20 @@
-"""钩子层：**唯一的行为与观测扩展面**——订阅者(BaseHook/ApprovalHook)与总线(HookManager)。
+"""钩子层：**唯一的行为与观测扩展面**——订阅者(BaseHook/ApprovalHook/AdvanceHook)与总线(HookManager)。
 
 事件定义在 ``sigma/events/lifecycle.py``(P6 拆分:events 是机制,hooks 是订阅者)。
 本模块**不认识**会话、持久化与 rich;``persist.py`` 是本包里唯一碰会话的成员。
 
 **为什么是"唯一"扩展面**（P4-批次6，星辰拍板，推翻批次5 的"两通道"判据）
-    钩子不仅控制 loop 走向（将来的审批/拦截），**日志记录并告知也是钩子的
+    钩子不仅控制 loop 走向（审批/拦截/推进），**日志记录并告知也是钩子的
     义务**。"渲染"不过是一个订阅了日志事件的钩子，与持久化钩子平级。
 
     接受的代价（写明不藏）：渲染路径依赖钩子注册——不注册渲染钩子就没有
     输出。这是特性：评测与子 agent 测试天然静默，CLI 注册了才有人看。
+
+**三类决策/通知接口的分界**（推进机制批次 1 补上第三类）
+    BaseHook       订阅者：发生了一件事,你看着办（单向通知）
+    ApprovalHook   决策：这件事能不能发生（工具执行前,放行/拒绝）
+    AdvanceHook    决策：这一轮还不算完,继续（模型收敛时,继续/停/不干预）
+    三者注册进同一条总线、共用一个命名空间（重名即抛），各走询问协议。
 
 **异常向上传播**（批次5 Q2 拍板）：持久化失败还继续跑 = 审计链分叉。
     **渲染类钩子自己负责宽容**（G34/G99：TerminalRenderer 内部降级），
@@ -21,7 +27,12 @@ import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable
 
-from sigma.events.lifecycle import ApprovalDecision, HookEvent
+from sigma.events.lifecycle import (
+    AdvanceDecision,
+    AdvanceFacts,
+    ApprovalDecision,
+    HookEvent,
+)
 
 
 class BaseHook(ABC):
@@ -79,6 +90,32 @@ class ApprovalHook(ABC):
         raise NotImplementedError
 
 
+class AdvanceHook(ABC):
+    """**决策型**钩子第三类：推进——在模型没有请求的情况下，主动改变它
+    下一轮能看到什么、**或是否还有下一轮**（CONTEXT.md「推进机制」词条）。
+
+    与 :class:`ApprovalHook` 的分界：审批问"这件事能不能发生"（工具执行前，
+    结果是放行/拒绝）；推进问"这一轮还不算完，继续"（模型收敛时，结果是
+    继续一轮 / 要求优雅停止 / 不干预）。两者注册进**同一条总线**
+    (HookManager)，但走各自的名单与询问协议——统一管理，职责分开。
+
+    异常不吞（与审批通道同判据）：推进通道本身坏了应该暴露，
+    而不是静默放行——静默放行等于把"继续"的决定权偷偷交回默认路径。
+    """
+
+    name: str
+
+    @abstractmethod
+    async def advance(self, facts: AdvanceFacts) -> AdvanceDecision:
+        """对一次"模型想收手"给出决定。
+
+        ``facts`` 是 loop 能搬的全部事实；"目标是否达成"的判据由实现方
+        自取（构造时注入路径/命令）——loop 不替它决定看什么
+        （计算型归代码：清单/验收命令；推断型归模型：要不要问用户）。
+        """
+        raise NotImplementedError
+
+
 class DuplicateHookError(RuntimeError):
     """注册了同名的钩子。
 
@@ -95,6 +132,9 @@ class HookManager:
     注册顺序本身就是声明（显式优于隐式）。
 
     **零钩子 = 行为与没有钩子系统之前逐字节一致**（observer 同款承诺）。
+    这条承诺对三类钩子全境有效：不注册通知钩子不派发、不注册审批钩子
+    默认放行（``approve_tool``）、不注册推进钩子默认不干预
+    （``advance_decide`` 返回 None）——评测与子 agent 的静默是同款承诺。
     """
 
     def __init__(self) -> None:
@@ -104,6 +144,10 @@ class HookManager:
         # 但询问协议不同(要回传决定,不是单向通知)。
         self._approval_hooks: list[ApprovalHook] = []
         self._approval_by_name: dict[str, ApprovalHook] = {}
+        # 决策型钩子(推进)第三个名单:与上两者同注册、同重名拒绝,
+        # 询问协议是"这一轮还不算完,继续"(见 register_advance)。
+        self._advance_hooks: list[AdvanceHook] = []
+        self._advance_by_name: dict[str, AdvanceHook] = {}
 
     def register(self, hook: BaseHook) -> None:
         """注册一个钩子。重名（含与类型默认名撞名）即抛。"""
@@ -166,3 +210,42 @@ class HookManager:
     def approval_names(self) -> list[str]:
         """已注册审批钩子名（横幅与测试用）。"""
         return list(self._approval_by_name)
+
+    def register_advance(self, hook: AdvanceHook) -> None:
+        """注册一个推进钩子。重名(三个名单之间都不许撞)即抛。"""
+        name = hook.name or type(hook).__name__
+        if name in self._by_name or name in self._approval_by_name or name in self._advance_by_name:
+            raise DuplicateHookError(
+                f"钩子 {name!r} 已注册。推进钩子与通知型/审批型钩子共用一个命名空间。"
+            )
+        self._advance_hooks.append(hook)
+        self._advance_by_name[name] = hook
+
+    async def advance_decide(self, facts: AdvanceFacts) -> AdvanceDecision | None:
+        """对一次"模型想收手"询问全部推进钩子。
+
+        **没有注册任何推进钩子 → None**（= 不干预，行为与加它之前逐字节
+        一致，与 ``approve_tool`` 的"零审批钩子默认放行"同一条承诺）。
+
+        多钩子裁决（与审批"任一拒绝→拒绝"对偶，但停止权重高于继续——
+        验收/安全类判据说不完，不许被"再试试"盖过）：
+
+        1. 任一 ``force_stop`` → 取第一个的（连同理由）；
+        2. 否则任一 ``continue_round`` → 继续，inject 取第一个要求继续的
+           （多钩子注入打架比没有更坏）；
+        3. 全部不干预 → None。
+        """
+        if not self._advance_hooks:
+            return None
+        decisions = [await hook.advance(facts) for hook in self._advance_hooks]
+        for decision in decisions:
+            if decision.force_stop:
+                return decision
+        for decision in decisions:
+            if decision.continue_round:
+                return decision
+        return None
+
+    def advance_names(self) -> list[str]:
+        """已注册推进钩子名（横幅与测试用）。"""
+        return list(self._advance_by_name)

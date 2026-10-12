@@ -41,6 +41,8 @@ from sigma.agent.messages import (
 from sigma.tools.base import BaseTool
 from sigma.security.shadow_checkpoint import ShadowCheckpoint
 from sigma.events.lifecycle import (
+    AdvanceDecided,
+    AdvanceFacts,
     ApprovalDecided,
     AssistantProduced,
     HookEvent,
@@ -424,6 +426,46 @@ class AgentLoop:
                     for message in tail_msgs:
                         await record(message, MessageInjected(message=message))
                     continue
+                # 推进钩子（推进机制批次 1）：刹车全部通过之后，唯一能说
+                # "还不算完"的地方。零推进钩子 → advance_decide 返回 None →
+                # 原路径原样返回（零值逐字节不变，与 L3 审批同承诺）。
+                # 注入走尾部 user 消息（动态区，不进常驻区、不改前缀）。
+                if self._hooks is not None:
+                    decision = await self._hooks.advance_decide(
+                        AdvanceFacts(round_index=round_index, last_text=last_text)
+                    )
+                    if decision is not None and decision.force_stop:
+                        # 优雅停止：不抛异常（异常会绕过树持久化），
+                        # reason 进 statusDetail → 前端收尾行。
+                        stopped = TurnResult(
+                            status="stopped",
+                            messages=produced,
+                            text=last_text,
+                            rounds=round_index,
+                            usage=total_usage,
+                            reason=decision.reason,
+                        )
+                        await self._emit(
+                            AdvanceDecided(round_index=round_index, decision=decision)
+                        )
+                        await self._emit(_turn_end(stopped))
+                        return stopped
+                    if decision is not None and decision.continue_round:
+                        await self._emit(
+                            AdvanceDecided(round_index=round_index, decision=decision)
+                        )
+                        if decision.inject:
+                            advance_msg = LlmMessageWrapper(
+                                timestamp=self._clock(),
+                                message=UserMessage(
+                                    content=decision.inject,
+                                    timestamp=self._clock(),
+                                ),
+                            )
+                            await record(
+                                advance_msg, MessageInjected(message=advance_msg)
+                            )
+                        continue
                 finished = TurnResult(
                     status="completed",
                     messages=produced,

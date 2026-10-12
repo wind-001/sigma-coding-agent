@@ -34,6 +34,7 @@ from typing import Any, Callable
 
 from sigma.agent.messages import LlmMessageWrapper, ToolResultAgentMessage
 from sigma.events.lifecycle import (
+    AdvanceDecided,
     ApprovalDecided,
     AssistantProduced,
     HookEvent,
@@ -117,6 +118,7 @@ class TraceHook(BaseHook):
             ToolEnd,
             MessageInjected,
             ApprovalDecided,
+            AdvanceDecided,
             TurnEnd,
         )
 
@@ -197,6 +199,23 @@ class TraceHook(BaseHook):
                     allowed=event.decision.allowed,
                     reason=event.decision.reason,
                     approve_outside=event.decision.approve_outside,
+                )
+            )
+            return
+        if isinstance(event, AdvanceDecided):
+            # 推进决定落盘（审计可见——"继续一轮"必须可追溯：哪个钩子、
+            # 依据是什么、注入没注入）。载荷最小化：只落决定字段，
+            # 不落 facts（last_text 可能很长，且树上已有原文）。
+            d = event.decision
+            self._write(
+                self._line(
+                    "advance",
+                    t,
+                    round=event.round_index,
+                    continue_round=d.continue_round,
+                    force_stop=d.force_stop,
+                    injected=bool(d.inject),
+                    reason=d.reason,
                 )
             )
             return
