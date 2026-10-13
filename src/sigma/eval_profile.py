@@ -23,6 +23,9 @@ P4-批次2 扩了两个字段（``todo`` / ``sub_agent``），它们**一落地�
 
 推进机制批次 3 再扩一个（``goal_continuation``）：``--goal-continuation``
 注册 GoalContinuation（清单延续，A/B：B2-goal 对 B2）。
+
+推进机制批次 4 再扩一个（``positive_steering``）：``--positive-steering N``
+开正向推进注入（A/B：B2-posN 对 B2）。
 """
 
 from __future__ import annotations
@@ -61,6 +64,10 @@ class EvalProfile:
     #: （模型收手但清单有 pending/running → 注入并继续）。默认 False——
     #: 基线实测 22 题只有 2 个建清单（9%），兜底判据不默认开。
     goal_continuation: bool = False
+    #: 正向推进注入（推进机制批次 4）：连续 N 轮无 read/grep/task 推进
+    #: 信号时注入非刹车型提醒。**0 = 关**（零值不变）；A/B 对照臂
+    #: = B2-posN 对 B2。
+    positive_steering: int = 0
 
     @classmethod
     def b1(cls) -> EvalProfile:

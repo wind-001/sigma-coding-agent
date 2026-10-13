@@ -218,6 +218,7 @@ async def _run_agent(
             session_id=session_id,
             verification_cmd=spec.judge.command if profile.verification else None,
             enable_goal_continuation=profile.goal_continuation,
+            positive_steer_interval=profile.positive_steering,
         )
     finally:
         await provider.aclose()
@@ -365,6 +366,7 @@ async def run_one(
     api_key_env: str = "SIGMA_API_KEY",
     verification: bool = False,
     goal_continuation: bool = False,
+    positive_steering: int = 0,
 ) -> int:
     task_dir = DATASETS / "synthetic" / task_id
     if not task_dir.is_dir():
@@ -373,14 +375,14 @@ async def run_one(
 
     if profile_name == "B0" and (
         no_todo or sub_agent or max_rounds is not None or verification
-        or goal_continuation
+        or goal_continuation or positive_steering
     ):
         # 宁可报错，不要静默跑一份名不副实的报告
         # （B0 无工具单轮，消融开关对它无意义）。放在 check_only 之前：
         # 免费通路也不能逃过一致性检查。
         print(
             "[错误] B0 是无工具单轮档，--no-todo / --sub-agent / --max-rounds / "
-            "--verification / --goal-continuation 对它无意义。",
+            "--verification / --goal-continuation / --positive-steering 对它无意义。",
             file=sys.stderr,
         )
         return 2
@@ -432,7 +434,7 @@ async def run_one(
         profile = _PROFILES[profile_name]()
         if (
             no_todo or sub_agent or max_rounds is not None
-            or verification or goal_continuation
+            or verification or goal_continuation or positive_steering
         ):
             # 消融后缀进档位名（P4-批次2 D-A3 / 轮数扫描 / 推进机制批次 2）：
             # 档位名进报告文件名与每行数据——没有它，两个月后没人说得清那份
@@ -458,6 +460,10 @@ async def run_one(
                 # 推进机制批次 3：清单延续的 A/B 对照臂（B2-goal 对 B2）。
                 suffix += "-goal"
                 updates["goal_continuation"] = True
+            if positive_steering:
+                # 推进机制批次 4：正向推进注入的 A/B 对照臂（B2-posN 对 B2）。
+                suffix += f"-pos{positive_steering}"
+                updates["positive_steering"] = positive_steering
             updates["name"] = profile.name + suffix
             profile = dataclasses.replace(profile, **updates)
         # 会话/trace 落盘目录（agency 评测轴数据源）。B0 无 loop，恒 None。
@@ -706,6 +712,14 @@ def main(argv: list[str] | None = None) -> int:
         help="推进机制批次 3：注册 GoalContinuation（模型收手但 todo 清单有 "
         "pending/running → 注入清单现状并继续，最多 3 次）。档位名加 -goal 后缀。",
     )
+    parser.add_argument(
+        "--positive-steering",
+        type=int,
+        default=0,
+        metavar="N",
+        help="推进机制批次 4：连续 N 轮无 read/grep/task 推进信号时注入一条"
+        "非刹车型提醒。默认 0=关；档位名加 -posN 后缀。",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(
         run_one(
@@ -722,6 +736,7 @@ def main(argv: list[str] | None = None) -> int:
             api_key_env=args.api_key_env,
             verification=args.verification,
             goal_continuation=args.goal_continuation,
+            positive_steering=args.positive_steering,
         )
     )
 

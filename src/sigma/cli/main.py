@@ -313,6 +313,19 @@ def build_parser() -> argparse.ArgumentParser:
             "默认关——B1 基线实测 22 题只有 2 题建清单，兜底判据不默认开。"
         ),
     )
+    # ⚠️ help 文本里不要出现单个 %：argparse 的 help 会做 % 格式化，
+    # "9%" 会炸 ValueError: unsupported format character。要写比例就写 "2/22"。
+    parser.add_argument(
+        "--positive-steering",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "推进机制批次 4：正向推进注入。连续 N 轮没有查证动作"
+            "（read/grep/派子 agent）时，注入一条非刹车型提醒。"
+            "默认 0=关（零值不变）；A/B 证明有效后再议默认开。"
+        ),
+    )
     # 会话接续（P2-5）。两者互斥：一个说"续最近那个"，一个说"用这个 id"，
     # 同时给没有意义——而 argparse 的互斥组会把这句话变成启动时的报错，
     # 比"后者静默覆盖前者"好。
@@ -890,6 +903,10 @@ async def _run_once(
             skills_root=skills_root,
             enable_sub_agent=args.sub_agent,
             enable_team_tasks=_team_tasks_enabled(args),
+            # 推进机制批次 2/3/4：三个推进机制的 CLI 入口（零值=不注册）。
+            verification_cmd=getattr(args, "verification_cmd", None),
+            enable_goal_continuation=getattr(args, "goal_continuation", False),
+            positive_steer_interval=getattr(args, "positive_steering", 0),
             approval=approval,
             ask=ask,
             checkpoint_watermark_bytes=checkpoint_watermark_bytes,
@@ -1035,6 +1052,7 @@ class SessionManager:
             # 产品壳的策略：用户显式给了验收命令才在收手时跑它。
             verification_cmd=self._args.verification_cmd,
             enable_goal_continuation=self._args.goal_continuation,
+            positive_steer_interval=self._args.positive_steering,
             enable_trace=self._enable_trace,
             enable_memory=self._enable_memory,
             enable_repo_map=self._enable_repo_map,

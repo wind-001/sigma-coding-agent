@@ -61,6 +61,7 @@
 | 38 | **推进钩子询问点** | 模型收手（`not calls`）且信箱空之后、completed 之前 | `event_loop.py` `not calls` 分支（推进机制批次 1）；接口 `hooks/base.py` `AdvanceHook`/`advance_decide` | 不注册推进钩子即不触发（GA-4a/4b 注入钉住零值） |
 | 39 | **验证收尾** | 推进询问点上，任务声明了 `verification_cmd` 时 | `runtime/advance.py` `VerificationGate`（批次 2）；传链 `sdk.run_task(verification_cmd=…)` → CLI `--verification-cmd` / 评测 `--verification` | `--verification-cmd` 不给 / `EvalProfile.verification=False`（GA-1a/1b 注入钉住） |
 | 40 | **清单延续** | 推进询问点上，`.sigma/todo.json` 有 pending/running 时 | `runtime/advance.py` `GoalContinuation`（批次 3）；判据 `tools/builtin/todo.py` `unfinished_count`（公开只读） | CLI `--no-goal-continuation`（默认关）/ `EvalProfile.goal_continuation=False`（GA-2 注入钉住） |
+| 41 | **正向推进注入** | 每轮开头（连续 N 轮无 read/grep/task 推进信号时） | `event_loop.py` `_positive_steer_if_due` / `_count_positive_touch`（推进机制批次 4）；传链 `sdk`（`positive_steer_interval`）→ CLI `--positive-steering N` / 评测 `--positive-steering` | `--positive-steering` 不给 / `positive_steer_interval=0`（默认关；GA-3/3b 注入钉住） |
 
 ### 读表要点
 

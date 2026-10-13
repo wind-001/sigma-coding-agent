@@ -317,6 +317,9 @@ class InteractiveSession:
         enable_checkpoint: bool = True,
         skills_root: Path | None = None,
         todo_steer_interval: int = 10,
+        # 推进机制批次 4：正向推进注入间隔（连续 N 轮无 read/grep/task
+        # 推进信号时注入一条非刹车型提醒）。默认 0 = 关（零值即不变）。
+        positive_steer_interval: int = 0,
         enable_todo: bool = True,
         enable_sub_agent: bool = False,
         enable_team_tasks: bool = False,
@@ -419,6 +422,9 @@ class InteractiveSession:
         # 那段可能改成 0），所以实例成员也在这时才赋值——换表重建 loop
         # 照抄的就是这个值。见 __init__ 里那条"不能提前赋值"的注记。
         self._todo_steer_interval = todo_steer_interval
+        # 推进机制批次 4：正向推进注入（默认 0=关；没有任何 enable_* 会改它，
+        # 它的关断只由调用方显式声明——EvalProfile/task_runner/CLI）。
+        self._positive_steer_interval = positive_steer_interval
         self._clock = _real_clock
         # 压缩策略：不传就用保守窗口的默认值（见 DEFAULT_CONTEXT_WINDOW_TOKENS）。
         # **默认开**而不是默认关：压缩是长会话能不能跑下去的前提，
@@ -668,6 +674,7 @@ class InteractiveSession:
         hooks: HookManager,
         ask: Callable[[str, list[str], int | None], Awaitable[str]] | None,
         todo_steer_interval: int,
+        positive_steer_interval: int = 0,
     ) -> AgentLoop:
         """造loop。**构造期与换表重建期共用这一份参数清单**（2026-10-02）。
 
@@ -1030,6 +1037,7 @@ class InteractiveSession:
             hooks=self._hooks,
             ask=self._ask,
             todo_steer_interval=self._todo_steer_interval,
+            positive_steer_interval=self._positive_steer_interval,
         )
         return cloned.names()
 
@@ -1262,6 +1270,8 @@ async def run_task(
     enable_checkpoint: bool = True,
     skills_root: Path | None = None,
     todo_steer_interval: int = 10,
+    # 推进机制批次 4：正向推进注入间隔（默认 0=关，零值不变）。
+    positive_steer_interval: int = 0,
     enable_todo: bool = True,
     enable_sub_agent: bool = False,
     enable_team_tasks: bool = False,
@@ -1320,6 +1330,7 @@ async def run_task(
         enable_checkpoint=enable_checkpoint,
         skills_root=skills_root,
         todo_steer_interval=todo_steer_interval,
+        positive_steer_interval=positive_steer_interval,
         enable_todo=enable_todo,
         enable_sub_agent=enable_sub_agent,
         enable_team_tasks=enable_team_tasks,

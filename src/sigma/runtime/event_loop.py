@@ -180,6 +180,10 @@ class AgentLoop:
         emit: Callable[[str], None] | None = None,
         checkpoint: ShadowCheckpoint | None = None,
         todo_steer_interval: int = 10,
+        # 推进机制批次 4：正向推进注入的间隔（连续 N 轮无 read/grep/task
+        # 推进信号时注入一条非刹车型提醒）。**默认 0 = 关**——零值即不变；
+        # A/B 证明有效后再议默认开（详规 §4 口径表）。
+        positive_steer_interval: int = 0,
         tool_lock: asyncio.Lock | None = None,
         mailbox_drain: Callable[[], list[AgentMessage]] | None = None,
         mailbox_wait: Callable[[], Awaitable[list[AgentMessage]]] | None = None,
@@ -231,6 +235,11 @@ class AgentLoop:
         # 拼装失败的调用 name 为 None，自然不会被误判为"碰过"。
         self._todo_steer_interval = todo_steer_interval
         self._todo_stall = 0
+        # 推进机制批次 4：正向推进注入的计数器（与 todo_stall 同款 semantics，
+        # 但数的是"没有查证/派发动作"——治症状 B「反馈全是刹车」与
+        # 基线 M3=16% 的未查证即结论）。
+        self._positive_steer_interval = positive_steer_interval
+        self._positive_stall = 0
         # tool_lock（P4 task 工具，星辰拍板 2026-09-23）：**含写工具的批次**在锁内
         # 执行——主 loop 与后台子 agent 的 loop 传同一把锁，写文件互斥，
         # checkpoint mark 也一起被罩住（git index 不会并发冲突）。
@@ -338,6 +347,11 @@ class AgentLoop:
             # produced，模型本轮就能看到；经钩子事件落盘后，恢复会话仍可见。
             for message in self._todo_steer_if_due():
                 await record(message, MessageInjected(message=message))
+            # 推进机制批次 4：正向推进注入（非刹车型 steering）。同一个
+            # 注入点、同一条 MessageInjected 事件、同一种"不进常驻区"模式；
+            # 默认 interval=0 → 一次都不注入（零值不变）。
+            for message in self._positive_steer_if_due():
+                await record(message, MessageInjected(message=message))
             # 信箱收集（P4 task 工具）：后台子任务完成后，结果在**下一轮开始之前**
             # 被取走并注入——这正是 loop.py 顶部注释里预留的 transformContext
             # 接入点的第一个真实住客。与 steering 同模式：尾部 user 消息，
@@ -413,6 +427,8 @@ class AgentLoop:
                 # 这一轮它什么工具都没调，自然也没碰 todo——计一笔。
                 # （跨 send 累计正是 steering 的意义：跑偏发生在很多轮之后。）
                 self._todo_stall += 1
+                # 推进机制批次 4：纯文本轮同样没有推进信号（只说话不查证）。
+                self._positive_stall += 1
                 # 信箱兜底（P4 task 工具）：模型可能 dispatch 之后直接输出
                 # "已派发"就收尾——没有这一步，子任务的结果会永远留在信箱里，
                 # 而没有任何一步报错。先取已完成未回报的；信箱空但还有子任务
@@ -490,6 +506,7 @@ class AgentLoop:
             # 第 5、6 步：校验参数并执行完整批次
             results = await self._execute_batch(calls, signal=effective_signal, guard=guard)
             self._count_todo_touch(calls)
+            self._count_positive_touch(calls)
 
             # 第 7 步：逐个追加工具结果。
             # ``strict=True`` 要求数量严格相等——少一个立刻抛，不静默放过。
@@ -630,6 +647,68 @@ class AgentLoop:
     def todo_stall(self) -> int:
         """当前已连续多少轮没碰 todo。测试与观测用。"""
         return self._todo_stall
+
+    # ------------------------------------------------------------------
+    # 正向推进注入（推进机制批次 4：非刹车型 steering，治症状 B）
+    # ------------------------------------------------------------------
+
+    def _positive_steer_if_due(self) -> list[AgentMessage]:
+        """连续 N 轮没有推进信号（read/grep/task）时，产出一条提醒（并清零）。
+
+        与 ``_todo_steer_if_due`` 同款同源纪律：
+        - 尾部 user 消息，不进常驻区、不改前缀（D4 缓存不破）；
+        - 文案**按注册表现状拼**：没有 task 工具就不提"派子 agent"——
+          否则模型会去调一个不存在的工具，那一轮预算白花
+          （与"工具行与注册表必须同源"是同一条纪律的 loop 侧版本）；
+        - 提醒不带任何结论：它只把"已经 N 轮没查证了"这个事实还给模型，
+          要不要查、查什么是模型的活（计算型归代码：计数；推断型归模型）。
+
+        默认 interval=0 → 一次都不注入（零值即不变）。
+        """
+        if self._positive_steer_interval <= 0:
+            return []
+        if self._positive_stall < self._positive_steer_interval:
+            return []
+        names = self._registry.names()
+        evidence = [t for t in ("read", "grep") if t in names]
+        if not evidence:
+            # 没有查证工具可提——注入只会让模型去调不存在的东西
+            return []
+        self._positive_stall = 0
+        dispatch = (
+            "需要背景调查且不阻塞主线时，可以派子 agent（task）执行；"
+            if "task" in names
+            else ""
+        )
+        return [
+            LlmMessageWrapper(
+                timestamp=self._clock(),
+                message=UserMessage(
+                    content=(
+                        f"[推进提醒] 已连续 {self._positive_steer_interval} 轮"
+                        f"没有查证动作（{'/'.join(evidence)}）。"
+                        "若当前结论缺少证据支撑：先查再下结论。"
+                        + dispatch
+                    ),
+                    timestamp=self._clock(),
+                ),
+            )
+        ]
+
+    def _count_positive_touch(self, calls: list[AssembledCall]) -> None:
+        """本轮有推进信号（read/grep/task 任一）→ 清零；否则 +1。
+
+        todo 不算推进信号：它是规划动作，不产生新证据。
+        """
+        if any(item.name in ("read", "grep", "task") for item in calls):
+            self._positive_stall = 0
+        else:
+            self._positive_stall += 1
+
+    @property
+    def positive_stall(self) -> int:
+        """当前已连续多少轮没有推进信号。测试与观测用。"""
+        return self._positive_stall
 
     # ------------------------------------------------------------------
     # 信箱（P4 task 工具的子任务结果收集）
