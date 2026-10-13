@@ -6,9 +6,9 @@
 
 [![ci](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wind-001/sigma-coding-agent/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
-![tests](https://img.shields.io/badge/tests-1100-brightgreen)
-![mypy](https://img.shields.io/badge/mypy-strict%2098%20files-blue)
-![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-132%20experiments-brightgreen)
+![tests](https://img.shields.io/badge/tests-1136-brightgreen)
+![mypy](https://img.shields.io/badge/mypy-strict%2099%20files-blue)
+![gates](https://img.shields.io/badge/%E9%97%A8%E6%A7%9B%E6%B3%A8%E5%85%A5-134%20experiments-brightgreen)
 ![providers](https://img.shields.io/badge/protocols-OpenAI%20%E4%B8%A8%20Anthropic-orange)
 
 *终端 agent · 多 agent 团队 · Web 工作台 · 可证伪的门槛体系*
@@ -55,8 +55,8 @@ $ sigma -p "把 src/calc.py 里的 off-by-one 修掉，并跑一下测试" --wor
 
 它不是"又一层 LLM wrapper"。三条差异化，全部机器强制：
 
-1. **约束是机器强制的，不靠自觉。** 15 个功能域子包按层排序，低层引用高层即 CI 失败（`lint-imports` 分层契约）；类型全量 `mypy --strict`；行为由 **1100 个单测**覆盖。CI 就这三条命令，跑不过不合。
-2. **门槛必须可证伪。** 每条安全/行为门槛都配一次 **破坏 → 断言变红 → 还原 → 断言变绿** 的注入实验（21 份脚本、132 条实验）。写了断言却没有任何注入能让它红 = 名义门槛，宁可删掉——本项目真删过一条，也真否掉过一条。
+1. **约束是机器强制的，不靠自觉。** 15 个功能域子包按层排序，低层引用高层即 CI 失败（`lint-imports` 分层契约）；类型全量 `mypy --strict`；行为由 **1136 个单测**覆盖。CI 就这三条命令，跑不过不合。
+2. **门槛必须可证伪。** 每条安全/行为门槛都配一次 **破坏 → 断言变红 → 还原 → 断言变绿** 的注入实验（21 份脚本、134 条实验）。写了断言却没有任何注入能让它红 = 名义门槛，宁可删掉——本项目真删过一条，也真否掉过一条。
 3. **越界是"可回滚"，不是"拦得住"。** `bash` 不做命令黑名单（`python -c`、base64 都能绕过字符串匹配，那是自欺）。取而代之的是影子 git checkpoint：每个写批次之前自动快照，独立 `GIT_DIR` 绝不碰你仓库的 `.git`，`sigma --rollback` 整体退回、连事后新建的文件一起删。
 
 ## 核心特性
@@ -139,8 +139,8 @@ python src/sigma-frontend/server/workbench_server.py     # http://127.0.0.1:8301
 ### 6. 跑测试（不需要任何 API key）
 
 ```bash
-python -m pytest -q       # 1100 个单测
-mypy src                  # strict,98 文件
+python -m pytest -q       # 1136 个单测
+mypy src                  # strict,99 文件
 lint-imports              # 两条契约:分层 + 禁引评测/扩展
 ```
 
@@ -202,7 +202,7 @@ flowchart LR
 
 **三道门禁**（CI 里就是这三条）：`lint-imports` · `mypy src`（strict）· `pytest`。
 
-**每条门槛都配注入实验**：21 份脚本、**132 条实验**（破坏 → 红 → 还原 → 绿，脚本自报 `N/N 被成功证伪` 才算过）。示例（G68"回滚要删掉事后新建的文件"）：
+**每条门槛都配注入实验**：21 份脚本、**134 条实验**（破坏 → 红 → 还原 → 绿，脚本自报 `N/N 被成功证伪` 才算过）。示例（G68"回滚要删掉事后新建的文件"）：
 
 ```python
 # src：checkpoint.py 用 reset --hard 而不是 checkout
@@ -230,7 +230,7 @@ reset = self._git("reset", "--hard", "--quiet", ref)
 ## 项目结构
 
 ```
-src/sigma/          唯一顶层包（src 布局,15 个功能域子包,97 文件 / 22,000 行）
+src/sigma/          唯一顶层包（src 布局,15 个功能域子包,98 文件 / 22,886 行）
   cli/              终端壳：CLI / REPL / 渲染 / 按键交互
   runtime/          核心循环：event_loop(AgentLoop)、sub_agent
   agent/            agent 层消息模型
